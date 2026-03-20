@@ -5,10 +5,13 @@ export async function sidecarFetch<T = unknown>(
   path: string,
   options?: RequestInit,
 ): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const url = `${BASE_URL}${path}`;
+  console.log(`[sidecar] ${options?.method || "GET"} ${url}`);
+  const res = await fetch(url, {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
+  console.log(`[sidecar] response: ${res.status} ${res.statusText}`);
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(body.error || `HTTP ${res.status}`);

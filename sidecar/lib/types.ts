@@ -9,4 +9,5 @@ export interface ConnectionProfile {
   password: string;
   ssl: boolean;
   color: string;
+  env?: string;
 }

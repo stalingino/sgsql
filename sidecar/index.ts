@@ -37,6 +37,8 @@ async function main() {
       const url = new URL(req.url);
       const path = url.pathname;
 
+      console.log(`[sidecar] ${req.method} ${path}`);
+
       // CORS headers for Tauri webview
       const headers = {
         "Access-Control-Allow-Origin": "*",
@@ -51,13 +53,16 @@ async function main() {
 
       try {
         if (path === "/health") {
+          console.log("[sidecar] health check");
           return handleHealth(headers);
         }
 
         if (path === "/connections/test" && req.method === "POST") {
+          console.log("[sidecar] testing connection");
           return handleTestConnection(req, headers);
         }
 
+        console.log(`[sidecar] route not found: ${req.method} ${path}`);
         return new Response(
           JSON.stringify({ error: "not found" }),
           { status: 404, headers },

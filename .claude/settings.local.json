@@ -20,7 +20,10 @@
       "Bash(kill 97922)",
       "Bash(find /Users/gino/works/github/sgsql/src-tauri -type f -name *.rs -o -name *.json)",
       "Bash(find /Users/gino/works/github/sgsql -name tailwind.config.* -o -name *zustand* -o -name *store*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(bun build:*)",
+      "Bash(kill 4019)",
+      "Bash(xargs kill:*)"
     ]
   }
 }

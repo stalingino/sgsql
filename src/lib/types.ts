@@ -1,3 +1,5 @@
+export type ConnectionEnv = "production" | "staging" | "testing" | "development" | "local" | "";
+
 export interface ConnectionProfile {
   id: string;
   name: string;
@@ -9,6 +11,7 @@ export interface ConnectionProfile {
   password: string;
   ssl: boolean;
   color: string;
+  env: ConnectionEnv;
 }
 
 export type ConnectionTestResult = {
@@ -29,8 +32,18 @@ export function createDefaultProfile(): ConnectionProfile {
     password: "",
     ssl: false,
     color: "#ff4d4d",
+    env: "",
   };
 }
+
+export const ENV_LABELS: Record<ConnectionEnv, { label: string; color: string }> = {
+  "": { label: "", color: "" },
+  production:  { label: "prod",  color: "#f87171" },
+  staging:     { label: "stage", color: "#fb923c" },
+  testing:     { label: "test",  color: "#facc15" },
+  development: { label: "dev",   color: "#60a5fa" },
+  local:       { label: "local", color: "#4ade80" },
+};
 
 export const DB_TYPE_PORTS: Record<ConnectionProfile["type"], number> = {
   postgres: 5432,

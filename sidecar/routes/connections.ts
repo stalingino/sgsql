@@ -9,46 +9,56 @@ export async function handleTestConnection(
 
   try {
     if (profile.type === "sqlite") {
-      // For SQLite, check if the file exists or can be created
       const file = Bun.file(profile.database);
       const exists = await file.exists();
       if (!exists) {
-        return new Response(
-          JSON.stringify({ ok: false, error: `File not found: ${profile.database}` }),
-          { status: 200, headers },
-        );
+        return jsonResponse({ ok: false, error: `File not found: ${profile.database}` }, headers);
       }
-      const latency = Math.round(performance.now() - start);
-      return new Response(
-        JSON.stringify({ ok: true, latency }),
-        { status: 200, headers },
-      );
+      return jsonResponse({ ok: true, latency: elapsed(start) }, headers);
     }
 
-    // PostgreSQL / MySQL — use Bun's SQL
-    const { SQL } = await import("bun");
-    const sql = new SQL({
+    if (profile.type === "mysql") {
+      const mysql = await import("mysql2/promise");
+      const conn = await mysql.createConnection({
+        host: profile.host,
+        port: profile.port,
+        user: profile.username,
+        password: profile.password,
+        database: profile.database,
+        ssl: profile.ssl ? {} : undefined,
+        connectTimeout: 5000,
+      });
+      await conn.query("SELECT 1");
+      await conn.end();
+      return jsonResponse({ ok: true, latency: elapsed(start) }, headers);
+    }
+
+    // PostgreSQL
+    const postgres = (await import("postgres")).default;
+    const sql = postgres({
       hostname: profile.host,
       port: profile.port,
       database: profile.database,
       username: profile.username,
       password: profile.password,
+      ssl: profile.ssl ? "require" : false,
+      connect_timeout: 5,
+      max: 1,
     });
-
     await sql`SELECT 1`;
-    await sql.close();
-
-    const latency = Math.round(performance.now() - start);
-    return new Response(
-      JSON.stringify({ ok: true, latency }),
-      { status: 200, headers },
-    );
+    await sql.end();
+    return jsonResponse({ ok: true, latency: elapsed(start) }, headers);
   } catch (e: unknown) {
-    const latency = Math.round(performance.now() - start);
     const message = e instanceof Error ? e.message : "Unknown error";
-    return new Response(
-      JSON.stringify({ ok: false, error: message, latency }),
-      { status: 200, headers },
-    );
+    console.error(`[sidecar] connection test failed: ${message}`);
+    return jsonResponse({ ok: false, error: message, latency: elapsed(start) }, headers);
   }
+}
+
+function elapsed(start: number): number {
+  return Math.round(performance.now() - start);
+}
+
+function jsonResponse(data: unknown, headers: Record<string, string>): Response {
+  return new Response(JSON.stringify(data), { status: 200, headers });
 }
