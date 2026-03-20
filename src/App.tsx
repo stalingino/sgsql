@@ -1,26 +1,31 @@
 import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { waitForSidecar } from "./lib/sidecar";
-import { ConnectionManager } from "./components/ConnectionManager";
+import { openConnectionManager } from "./lib/openConnectionManager";
 import type { ConnectionProfile } from "./lib/types";
 
 function App() {
   const [sidecarReady, setSidecarReady] = useState(false);
   const [sidecarError, setSidecarError] = useState(false);
-  const [showConnManager, setShowConnManager] = useState(false);
   const [activeConnection, setActiveConnection] = useState<ConnectionProfile | null>(null);
 
   useEffect(() => {
     waitForSidecar().then((ok) => {
       setSidecarReady(ok);
       setSidecarError(!ok);
-      if (ok) setShowConnManager(true);
+      if (ok) openConnectionManager();
     });
   }, []);
 
-  function handleConnect(profile: ConnectionProfile) {
-    setActiveConnection(profile);
-    setShowConnManager(false);
-  }
+  // Listen for connection-selected event from the connection manager window
+  useEffect(() => {
+    const unlisten = listen<ConnectionProfile>("connection-selected", (event) => {
+      setActiveConnection(event.payload);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
 
   // Loading state
   if (!sidecarReady && !sidecarError) {
@@ -74,7 +79,7 @@ function App() {
           )}
         </div>
         <button
-          onClick={() => setShowConnManager(true)}
+          onClick={() => openConnectionManager()}
           className="px-3 py-1 text-xs rounded-md border border-border-light text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
         >
           Connections
@@ -88,7 +93,7 @@ function App() {
             <h1 className="text-3xl font-bold mb-1">SG SQL</h1>
             <p className="text-text-secondary mb-6 text-sm">Stupidly Good SQL</p>
             <button
-              onClick={() => setShowConnManager(true)}
+              onClick={() => openConnectionManager()}
               className="px-5 py-2 text-sm rounded-lg bg-accent hover:bg-accent-hover text-white transition-colors cursor-pointer"
             >
               Open Connection Manager
@@ -102,13 +107,6 @@ function App() {
           </div>
         )}
       </div>
-
-      {/* Connection Manager popup */}
-      <ConnectionManager
-        open={showConnManager}
-        onClose={() => setShowConnManager(false)}
-        onConnect={handleConnect}
-      />
     </div>
   );
 }
