@@ -12,11 +12,23 @@
   "app": {
     "windows": [
       {
+        "label": "connection-manager",
+        "url": "connection-manager.html",
+        "title": "SG SQL Connections",
+        "width": 740,
+        "height": 520,
+        "resizable": false,
+        "center": true,
+        "decorations": true
+      },
+      {
+        "label": "main",
         "title": "SG SQL",
         "width": 1200,
         "height": 800,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "visible": false
       }
     ],
     "security": {

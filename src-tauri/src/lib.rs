@@ -71,12 +71,16 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
-                // Kill sidecar when window is destroyed
-                if let Some(state) = window.try_state::<SidecarChild>() {
-                    if let Ok(mut guard) = state.0.lock() {
-                        if let Some(child) = guard.take() {
-                            log::info!("Killing sidecar on window close");
-                            let _ = child.kill();
+                // Only kill the sidecar when ALL windows are gone (app is truly exiting).
+                // Closing the connection-manager popup must not kill the sidecar.
+                let remaining = window.app_handle().webview_windows().len();
+                if remaining == 0 {
+                    if let Some(state) = window.app_handle().try_state::<SidecarChild>() {
+                        if let Ok(mut guard) = state.0.lock() {
+                            if let Some(child) = guard.take() {
+                                log::info!("All windows closed — killing sidecar");
+                                let _ = child.kill();
+                            }
                         }
                     }
                 }

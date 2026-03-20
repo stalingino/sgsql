@@ -1,5 +1,10 @@
 import { handleHealth } from "./routes/health";
 import { handleTestConnection } from "./routes/connections";
+import {
+  handleOpenConnection,
+  handleCloseConnection,
+  handleSchemaRequest,
+} from "./routes/schema";
 
 const DEFAULT_PORT = 7521;
 
@@ -60,6 +65,21 @@ async function main() {
         if (path === "/connections/test" && req.method === "POST") {
           console.log("[sidecar] testing connection");
           return handleTestConnection(req, headers);
+        }
+
+        if (path === "/connections/open" && req.method === "POST") {
+          console.log("[sidecar] opening connection");
+          return handleOpenConnection(req, headers);
+        }
+
+        if (path === "/connections/close" && req.method === "POST") {
+          console.log("[sidecar] closing connection");
+          return handleCloseConnection(req, headers);
+        }
+
+        if (path.startsWith("/schema/") && req.method === "GET") {
+          console.log(`[sidecar] schema request: ${path}`);
+          return handleSchemaRequest(req, path, headers);
         }
 
         console.log(`[sidecar] route not found: ${req.method} ${path}`);

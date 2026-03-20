@@ -17,7 +17,7 @@ export function isConnectionUrl(value: string): boolean {
 }
 
 /**
- * Parses a TablePlus-style connection URL into a partial ConnectionProfile.
+ * Parses a connection URL into a partial ConnectionProfile.
  * Example:
  *   mysql://user:pwd@hostname/dbname?statusColor=252525&env=testing&name=My+DB&tLSMode=1
  */

@@ -18,6 +18,35 @@
   --color-warning: #facc15;
 }
 
+/* ── Dark theme (default) ───────────────────────────────── */
+:root,
+[data-theme="dark"] {
+  --color-bg-primary: #0f0f0f;
+  --color-bg-secondary: #161616;
+  --color-bg-tertiary: #1e1e1e;
+  --color-bg-hover: #2a2a2a;
+  --color-bg-active: #333333;
+  --color-border: #2a2a2a;
+  --color-border-light: #3a3a3a;
+  --color-text-primary: #e0e0e0;
+  --color-text-secondary: #888888;
+  --color-text-muted: #555555;
+}
+
+/* ── Light theme ────────────────────────────────────────── */
+[data-theme="light"] {
+  --color-bg-primary: #ffffff;
+  --color-bg-secondary: #f4f4f5;
+  --color-bg-tertiary: #e9e9eb;
+  --color-bg-hover: #e4e4e7;
+  --color-bg-active: #d4d4d8;
+  --color-border: #e4e4e7;
+  --color-border-light: #d4d4d8;
+  --color-text-primary: #18181b;
+  --color-text-secondary: #52525b;
+  --color-text-muted: #a1a1aa;
+}
+
 * {
   -webkit-user-select: none;
   user-select: none;

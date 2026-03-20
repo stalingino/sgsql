@@ -1,6 +1,15 @@
 import { useEffect, useState } from "react";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  Plus,
+  Trash2,
+  FlaskConical,
+  Save,
+  Zap,
+  Database,
+  Loader2,
+} from "lucide-react";
 import { useConnectionsStore } from "../stores/connections";
 import {
   type ConnectionProfile,
@@ -153,6 +162,8 @@ export function ConnectionManagerWindow() {
 
   const isSqlite = draft.type === "sqlite";
   const envMeta = ENV_LABELS[draft.env] ?? ENV_LABELS[""];
+  const isDark = document.documentElement.getAttribute("data-theme") !== "light";
+  const envColor = isDark ? envMeta.dark : envMeta.light;
 
   return (
     <div className="flex h-screen bg-bg-secondary select-none">
@@ -161,14 +172,16 @@ export function ConnectionManagerWindow() {
         <div className="p-3 border-b border-border" data-tauri-drag-region>
           <button
             onClick={handleNewConnection}
-            className="w-full px-3 py-1.5 text-sm rounded-md bg-accent hover:bg-accent-hover text-white transition-colors cursor-pointer"
+            className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm rounded-md bg-accent hover:bg-accent-hover text-white transition-colors cursor-pointer"
           >
-            + New Connection
+            <Plus size={14} />
+            New Connection
           </button>
         </div>
         <div className="flex-1 overflow-y-auto">
           {profiles.map((p) => {
             const pEnv = ENV_LABELS[p.env] ?? ENV_LABELS[""];
+            const pColor = isDark ? pEnv.dark : pEnv.light;
             return (
               <button
                 key={p.id}
@@ -189,7 +202,7 @@ export function ConnectionManagerWindow() {
                     {pEnv.label && (
                       <span
                         className="shrink-0 text-[10px] px-1 py-0.5 rounded font-medium"
-                        style={{ backgroundColor: `${pEnv.color}22`, color: pEnv.color }}
+                        style={{ backgroundColor: `${pColor}22`, color: pColor }}
                       >
                         {pEnv.label}
                       </span>
@@ -203,7 +216,8 @@ export function ConnectionManagerWindow() {
             );
           })}
           {profiles.length === 0 && loaded && (
-            <div className="px-3 py-8 text-center text-sm text-text-muted">
+            <div className="flex flex-col items-center gap-2 px-3 py-8 text-center text-sm text-text-muted">
+              <Database size={24} className="opacity-30" />
               No connections yet
             </div>
           )}
@@ -221,7 +235,7 @@ export function ConnectionManagerWindow() {
             {envMeta.label && (
               <span
                 className="shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium"
-                style={{ backgroundColor: `${envMeta.color}22`, color: envMeta.color }}
+                style={{ backgroundColor: `${envColor}22`, color: envColor }}
               >
                 {envMeta.label}
               </span>
@@ -327,7 +341,7 @@ export function ConnectionManagerWindow() {
                     value={draft.env}
                     onChange={(e) => updateDraft({ env: e.target.value as ConnectionEnv })}
                     className="input-field"
-                    style={envMeta.color ? { color: envMeta.color } : undefined}
+                    style={envColor ? { color: envColor } : undefined}
                   >
                     <option value="">— none —</option>
                     <option value="local">Local</option>
@@ -378,8 +392,9 @@ export function ConnectionManagerWindow() {
               {selectedId && !isNew && (
                 <button
                   onClick={handleDelete}
-                  className="shrink-0 px-3 py-1.5 text-sm rounded-md text-error hover:bg-error/10 transition-colors cursor-pointer"
+                  className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md text-error hover:bg-error/10 transition-colors cursor-pointer"
                 >
+                  <Trash2 size={13} />
                   Delete
                 </button>
               )}
@@ -408,22 +423,25 @@ export function ConnectionManagerWindow() {
               <button
                 onClick={handleTest}
                 disabled={testing}
-                className="px-3 py-1.5 text-sm rounded-md border border-border-light text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-50 cursor-pointer"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md border border-border-light text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-50 cursor-pointer"
               >
+                {testing ? <Loader2 size={13} className="animate-spin" /> : <FlaskConical size={13} />}
                 {testing ? "Testing..." : "Test"}
               </button>
               <button
                 onClick={handleSave}
                 disabled={saving}
-                className="px-3 py-1.5 text-sm rounded-md border border-border-light text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-50 cursor-pointer"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md border border-border-light text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-50 cursor-pointer"
               >
+                {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
                 {saving ? "Saving..." : "Save"}
               </button>
               <button
                 onClick={handleConnect}
                 disabled={!selectedId && !isNew}
-                className="px-4 py-1.5 text-sm rounded-md bg-accent hover:bg-accent-hover text-white transition-colors disabled:opacity-50 cursor-pointer"
+                className="flex items-center gap-1.5 px-4 py-1.5 text-sm rounded-md bg-accent hover:bg-accent-hover text-white transition-colors disabled:opacity-50 cursor-pointer"
               >
+                <Zap size={13} />
                 Connect
               </button>
             </div>

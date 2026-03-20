@@ -36,14 +36,31 @@ export function createDefaultProfile(): ConnectionProfile {
   };
 }
 
-export const ENV_LABELS: Record<ConnectionEnv, { label: string; color: string }> = {
-  "": { label: "", color: "" },
-  production:  { label: "prod",  color: "#f87171" },
-  staging:     { label: "stage", color: "#fb923c" },
-  testing:     { label: "test",  color: "#facc15" },
-  development: { label: "dev",   color: "#60a5fa" },
-  local:       { label: "local", color: "#4ade80" },
+export const ENV_LABELS: Record<ConnectionEnv, { label: string; dark: string; light: string }> = {
+  "":          { label: "",       dark: "",        light: ""        },
+  production:  { label: "prod",   dark: "#f87171", light: "#b91c1c" },
+  staging:     { label: "stage",  dark: "#fb923c", light: "#c2410c" },
+  testing:     { label: "test",   dark: "#facc15", light: "#92400e" },
+  development: { label: "dev",    dark: "#60a5fa", light: "#1d4ed8" },
+  local:       { label: "local",  dark: "#4ade80", light: "#15803d" },
 };
+
+/** Returns the right badge inline styles based on current data-theme */
+export function envBadgeStyle(env: ConnectionEnv): { backgroundColor: string; color: string } | undefined {
+  const meta = ENV_LABELS[env];
+  if (!meta?.label) return undefined;
+  const isDark = document.documentElement.getAttribute("data-theme") !== "light";
+  const color = isDark ? meta.dark : meta.light;
+  return { backgroundColor: `${color}20`, color };
+}
+
+/** Convenience: just the resolved color string */
+export function envColor(env: ConnectionEnv): string {
+  const meta = ENV_LABELS[env];
+  if (!meta?.label) return "";
+  const isDark = document.documentElement.getAttribute("data-theme") !== "light";
+  return isDark ? meta.dark : meta.light;
+}
 
 export const DB_TYPE_PORTS: Record<ConnectionProfile["type"], number> = {
   postgres: 5432,
