@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   Plus,
   Trash2,
@@ -21,6 +22,7 @@ import {
 } from "../lib/types";
 import { isConnectionUrl, parseConnectionUrl } from "../lib/parseConnectionUrl";
 import { keychainGet } from "../lib/keychain";
+import { openConnection } from "../lib/schema";
 
 export function ConnectionManagerWindow() {
   const { profiles, loaded, loadProfiles, addProfile, updateProfile, deleteProfile, testConnection } =
@@ -31,6 +33,7 @@ export function ConnectionManagerWindow() {
   const [isNew, setIsNew] = useState(false);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [connecting, setConnecting] = useState(false);
   const [statusMsg, setStatusMsg] = useState<{ type: "url" | "ok" | "error"; text: string } | null>(null);
 
   useEffect(() => {
@@ -150,13 +153,36 @@ export function ConnectionManagerWindow() {
         setDraft(created);
         setIsNew(false);
         profile = { ...created, password: draft.password };
+      } catch (e: unknown) {
+        setStatusMsg({ type: "error", text: e instanceof Error ? e.message : "Save failed" });
+        setSaving(false);
+        return;
       } finally {
         setSaving(false);
       }
     }
-    // Emit profile WITH password to main window, then close
-    // The main window holds the password only in memory for the active session
-    await emit("connection-selected", profile);
+
+    // Open the connection here so the main window opens already connected.
+    setConnecting(true);
+    setStatusMsg(null);
+    let connectionId: string;
+    try {
+      const result = await openConnection(profile);
+      connectionId = result.connectionId;
+    } catch (e: unknown) {
+      setStatusMsg({ type: "error", text: e instanceof Error ? e.message : "Connection failed" });
+      setConnecting(false);
+      return;
+    }
+
+    // Show the main window before closing this one, so Rust doesn't see
+    // "all windows hidden" and shut everything down mid-flight.
+    const mainWin = await WebviewWindow.getByLabel("main");
+    if (mainWin) await mainWin.show();
+
+    // Pass both the profile (with password, in-memory only) and the
+    // already-open connectionId so the main window skips re-connecting.
+    await emit("connection-selected", { profile, connectionId });
     getCurrentWindow().close();
   }
 
@@ -387,36 +413,37 @@ export function ConnectionManagerWindow() {
 
         {/* Footer */}
         <div className="border-t border-border shrink-0">
+          {/* Status bar */}
+          {statusMsg && (
+            <div className={`flex items-center gap-2 px-5 py-1.5 border-b border-border text-xs ${
+              statusMsg.type === "ok"
+                ? "text-success bg-success/5"
+                : statusMsg.type === "error"
+                ? "text-error bg-error/5"
+                : "text-text-secondary"
+            }`}>
+              <span className="shrink-0">{statusMsg.type === "url" ? "✓" : "●"}</span>
+              <span className="flex-1 truncate">{statusMsg.text}</span>
+              <button
+                onClick={() => setStatusMsg(null)}
+                className="shrink-0 text-text-muted hover:text-text-primary cursor-pointer"
+              >
+                ×
+              </button>
+            </div>
+          )}
+
+          {/* Action row */}
           <div className="flex items-center justify-between px-5 py-3">
-            <div className="flex items-center gap-2 flex-1 min-w-0 mr-3">
+            <div>
               {selectedId && !isNew && (
                 <button
                   onClick={handleDelete}
-                  className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md text-error hover:bg-error/10 transition-colors cursor-pointer"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md text-error hover:bg-error/10 transition-colors cursor-pointer"
                 >
                   <Trash2 size={13} />
                   Delete
                 </button>
-              )}
-              {statusMsg && (
-                <div
-                  className={`flex items-center gap-1.5 text-xs min-w-0 ${
-                    statusMsg.type === "ok"
-                      ? "text-success"
-                      : statusMsg.type === "error"
-                      ? "text-error"
-                      : "text-text-secondary"
-                  }`}
-                >
-                  <span className="shrink-0">{statusMsg.type === "ok" ? "●" : statusMsg.type === "error" ? "●" : "✓"}</span>
-                  <span className="truncate">{statusMsg.text}</span>
-                  <button
-                    onClick={() => setStatusMsg(null)}
-                    className="shrink-0 ml-1 text-text-muted hover:text-text-primary cursor-pointer"
-                  >
-                    ×
-                  </button>
-                </div>
               )}
             </div>
             <div className="flex gap-2 shrink-0">
@@ -438,11 +465,11 @@ export function ConnectionManagerWindow() {
               </button>
               <button
                 onClick={handleConnect}
-                disabled={!selectedId && !isNew}
+                disabled={(!selectedId && !isNew) || connecting}
                 className="flex items-center gap-1.5 px-4 py-1.5 text-sm rounded-md bg-accent hover:bg-accent-hover text-white transition-colors disabled:opacity-50 cursor-pointer"
               >
-                <Zap size={13} />
-                Connect
+                {connecting ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />}
+                {connecting ? "Connecting..." : "Connect"}
               </button>
             </div>
           </div>

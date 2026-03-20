@@ -19,6 +19,8 @@ function errorResponse(message: string, headers: Record<string, string>, status 
   return json({ error: message }, headers, status);
 }
 
+import { friendlyError } from "../lib/friendlyError";
+
 function extractConnId(path: string): string | null {
   // /schema/:connId/...
   const parts = path.split("/");
@@ -100,7 +102,7 @@ export async function handleOpenConnection(
 
     return json({ connectionId: profile.id }, headers);
   } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : "Unknown error";
+    const message = friendlyError(e);
     console.error(`[sidecar] open connection failed: ${message}`);
     return errorResponse(message, headers);
   }

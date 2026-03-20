@@ -1,4 +1,5 @@
 import type { ConnectionProfile } from "../lib/types";
+import { friendlyError } from "../lib/friendlyError";
 
 export async function handleTestConnection(
   req: Request,
@@ -49,7 +50,7 @@ export async function handleTestConnection(
     await sql.end();
     return jsonResponse({ ok: true, latency: elapsed(start) }, headers);
   } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : "Unknown error";
+    const message = friendlyError(e);
     console.error(`[sidecar] connection test failed: ${message}`);
     return jsonResponse({ ok: false, error: message, latency: elapsed(start) }, headers);
   }

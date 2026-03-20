@@ -28,6 +28,10 @@ function App() {
   const connectionIdRef = useRef<string | null>(null);
   connectionIdRef.current = connectionId;
 
+  // When the connection manager pre-opens a connection, it passes the id here
+  // so the openConnection effect knows to skip re-connecting.
+  const preOpenedConnectionIdRef = useRef<string | null>(null);
+
   useEffect(() => {
     waitForSidecar().then((ok) => {
       setSidecarReady(ok);
@@ -36,12 +40,18 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const unlisten = listen<ConnectionProfile>("connection-selected", async (event) => {
-      setActiveConnection(event.payload);
-      // Main window starts hidden; reveal it the first time a connection is picked.
-      await getCurrentWindow().show();
-      await getCurrentWindow().setFocus();
-    });
+    const unlisten = listen<{ profile: ConnectionProfile; connectionId: string }>(
+      "connection-selected",
+      async (event) => {
+        const { profile, connectionId: preOpenedId } = event.payload;
+        // Store the pre-opened id so the connect effect below can use it directly.
+        preOpenedConnectionIdRef.current = preOpenedId;
+        setActiveConnection(profile);
+        // Main window starts hidden; reveal it when a connection is picked.
+        await getCurrentWindow().show();
+        await getCurrentWindow().setFocus();
+      },
+    );
     return () => { unlisten.then((fn) => fn()); };
   }, []);
 
@@ -51,6 +61,18 @@ function App() {
     setConnectingError(null);
 
     const prevConnId = connectionIdRef.current;
+
+    // If the connection manager already opened this connection, use it directly.
+    const preOpened = preOpenedConnectionIdRef.current;
+    if (preOpened) {
+      preOpenedConnectionIdRef.current = null;
+      if (prevConnId && prevConnId !== preOpened) {
+        closeConnection(prevConnId).catch(() => {});
+      }
+      setConnectionId(preOpened);
+      return;
+    }
+
     (async () => {
       if (prevConnId) {
         try { await closeConnection(prevConnId); } catch { /* best effort */ }

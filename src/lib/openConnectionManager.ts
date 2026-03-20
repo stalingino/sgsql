@@ -11,7 +11,7 @@ export async function openConnectionManager(): Promise<void> {
     url: "/connection-manager.html",
     title: "SG SQL Connections",
     width: 740,
-    height: 520,
+    height: 540,
     resizable: false,
     center: true,
     decorations: true,
