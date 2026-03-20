@@ -3,13 +3,23 @@ use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::CommandChild;
 use std::sync::Mutex;
 
+mod keychain;
+mod encrypted_store;
+
 struct SidecarChild(Mutex<Option<CommandChild>>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_store::Builder::default().build())
+        // tauri-plugin-store removed — using encrypted_store via keychain + AES-256-GCM
+        .invoke_handler(tauri::generate_handler![
+            keychain::keychain_set,
+            keychain::keychain_get,
+            keychain::keychain_delete,
+            encrypted_store::encrypted_store_save,
+            encrypted_store::encrypted_store_load,
+        ])
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(

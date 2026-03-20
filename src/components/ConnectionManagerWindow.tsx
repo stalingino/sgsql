@@ -11,6 +11,7 @@ import {
   ENV_LABELS,
 } from "../lib/types";
 import { isConnectionUrl, parseConnectionUrl } from "../lib/parseConnectionUrl";
+import { keychainGet } from "../lib/keychain";
 
 export function ConnectionManagerWindow() {
   const { profiles, loaded, loadProfiles, addProfile, updateProfile, deleteProfile, testConnection } =
@@ -38,11 +39,13 @@ export function ConnectionManagerWindow() {
     }
   }, [loaded, profiles]);
 
-  function selectProfile(p: ConnectionProfile) {
+  async function selectProfile(p: ConnectionProfile) {
     setSelectedId(p.id);
-    setDraft({ ...p });
     setIsNew(false);
     setStatusMsg(null);
+    // Hydrate password from keychain
+    const password = await keychainGet(p.id).catch(() => "");
+    setDraft({ ...p, password });
   }
 
   function handleNewConnection() {
@@ -137,12 +140,13 @@ export function ConnectionManagerWindow() {
         setSelectedId(created.id);
         setDraft(created);
         setIsNew(false);
-        profile = created;
+        profile = { ...created, password: draft.password };
       } finally {
         setSaving(false);
       }
     }
-    // Emit to main window and close
+    // Emit profile WITH password to main window, then close
+    // The main window holds the password only in memory for the active session
     await emit("connection-selected", profile);
     getCurrentWindow().close();
   }
