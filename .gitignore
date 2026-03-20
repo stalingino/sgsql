@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Sidecar binaries (compiled per-platform)
+src-tauri/binaries/
+
+# Rust build
+src-tauri/target/
+
+# Tauri generated
+src-tauri/gen/
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.*
+
+# IDE
+.vscode/
+!.vscode/extensions.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local
+*.local
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
