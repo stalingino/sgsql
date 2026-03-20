@@ -11,7 +11,7 @@ use tauri::Manager;
 
 const SERVICE_NAME: &str = "com.sgsql.desktop";
 const ENC_KEY_ACCOUNT: &str = "__store_encryption_key__";
-const STORE_FILENAME: &str = "connections.enc";
+const STORE_FILENAME: &str = "connections.sgsqlconnection";
 
 /// Get or create the AES-256 encryption key in the OS keychain.
 fn get_or_create_key() -> Result<[u8; 32], String> {
