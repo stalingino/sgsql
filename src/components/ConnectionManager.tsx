@@ -37,10 +37,14 @@ export function ConnectionManager({
     }
   }, [open, loaded, loadProfiles]);
 
-  // Select first profile when loaded
+  // Select first profile when loaded, or enter new mode if empty
   useEffect(() => {
-    if (loaded && profiles.length > 0 && !selectedId && !isNew) {
-      selectProfile(profiles[0]);
+    if (loaded && !selectedId && !isNew) {
+      if (profiles.length > 0) {
+        selectProfile(profiles[0]);
+      } else {
+        setIsNew(true);
+      }
     }
   }, [loaded, profiles]);
 
@@ -86,15 +90,21 @@ export function ConnectionManager({
 
   async function handleSave() {
     setSaving(true);
+    setStatusMsg(null);
     try {
       if (isNew) {
         const created = await addProfile(draft);
         setSelectedId(created.id);
         setDraft(created);
         setIsNew(false);
+        setStatusMsg({ type: "ok", text: "Connection saved" });
       } else if (selectedId) {
         await updateProfile(selectedId, draft);
+        setStatusMsg({ type: "ok", text: "Connection updated" });
       }
+    } catch (e: unknown) {
+      console.error("[save] failed:", e);
+      setStatusMsg({ type: "error", text: e instanceof Error ? e.message : "Save failed" });
     } finally {
       setSaving(false);
     }
@@ -121,9 +131,15 @@ export function ConnectionManager({
   async function handleDelete() {
     if (!selectedId) return;
     await deleteProfile(selectedId);
-    setSelectedId(null);
-    setDraft(createDefaultProfile());
-    setIsNew(false);
+    const remaining = profiles.filter((p) => p.id !== selectedId);
+    if (remaining.length > 0) {
+      selectProfile(remaining[0]);
+    } else {
+      setSelectedId(null);
+      setDraft(createDefaultProfile());
+      setIsNew(true);
+    }
+    setStatusMsg(null);
   }
 
   function handleConnect() {

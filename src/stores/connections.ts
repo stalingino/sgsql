@@ -34,8 +34,10 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
     try {
       const store = await getStore();
       const profiles = await store.get<ConnectionProfile[]>("connections");
+      console.log("[store] loaded profiles:", profiles);
       set({ profiles: profiles || [], loaded: true });
-    } catch {
+    } catch (e) {
+      console.error("[store] load failed:", e);
       set({ profiles: [], loaded: true });
     }
   },
@@ -43,9 +45,11 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
   addProfile: async (profile) => {
     const newProfile: ConnectionProfile = { ...profile, id: nanoid() };
     const profiles = [...get().profiles, newProfile];
+    console.log("[store] saving profiles:", profiles);
     set({ profiles });
     const store = await getStore();
     await store.set("connections", profiles);
+    console.log("[store] saved ok");
     return newProfile;
   },
 
