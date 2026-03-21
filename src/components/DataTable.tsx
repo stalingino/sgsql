@@ -15,6 +15,7 @@ import {
   type ColumnInfo,
 } from "../lib/schema";
 import { useQueryLog } from "../lib/queryLog";
+import { ResultGrid } from "./ResultGrid";
 
 interface DataTableProps {
   connectionId: string;
@@ -24,17 +25,20 @@ interface DataTableProps {
 }
 
 const PAGE_SIZE = 100;
-const MIN_COL_WIDTH = 40;
-const DEFAULT_COL_WIDTH = 150;
-const AUTO_MAX_WIDTH = 350;
-const CHAR_WIDTH = 7.5;      // ~px per char at 12px font
-const CELL_PAD = 28;         // px-3 each side (24) + border (4)
-const SAMPLE_ROWS = 20;      // only scan first N rows for auto-sizing
-const ROW_NUM_WIDTH = 50;
 
 type ViewMode = "data" | "structure";
 
-/* ── Auto-size: estimate column widths from data ───────── */
+/* ── Constants for structure view auto-sizing ───────────── */
+const MIN_COL_WIDTH = 40;
+const DEFAULT_COL_WIDTH = 150;
+const AUTO_MAX_WIDTH = 350;
+const CHAR_WIDTH = 7.5;
+const CELL_PAD = 28;
+const SAMPLE_ROWS = 20;
+const STRUCT_ROW_NUM_WIDTH = 40;
+const STRUCT_COL_KEYS = ["Column", "Type", "Null", "Default", "Key"];
+
+/* ── Auto-size helper (for structure view) ─────────────── */
 
 function estimateColWidths(
   columns: string[],
@@ -43,48 +47,44 @@ function estimateColWidths(
   const widths: Record<string, number> = {};
   for (let ci = 0; ci < columns.length; ci++) {
     const col = columns[ci];
-    // Start with header width
     let maxLen = col.length;
-    // Sample first N data rows
     if (rows) {
       const end = Math.min(rows.length, SAMPLE_ROWS);
       for (let ri = 0; ri < end; ri++) {
         const cell = rows[ri]?.[ci];
-        const len = cell === null || cell === undefined
-          ? 4 // "NULL"
-          : typeof cell === "object"
-            ? Math.min(JSON.stringify(cell).length, 40)
-            : String(cell).length;
+        const len =
+          cell === null || cell === undefined
+            ? 4
+            : typeof cell === "object"
+              ? Math.min(JSON.stringify(cell).length, 40)
+              : String(cell).length;
         if (len > maxLen) maxLen = len;
       }
     }
-    widths[col] = Math.max(MIN_COL_WIDTH, Math.min(AUTO_MAX_WIDTH, Math.round(maxLen * CHAR_WIDTH + CELL_PAD)));
+    widths[col] = Math.max(
+      MIN_COL_WIDTH,
+      Math.min(AUTO_MAX_WIDTH, Math.round(maxLen * CHAR_WIDTH + CELL_PAD)),
+    );
   }
   return widths;
 }
 
-/* ── Resizable column hook ─────────────────────────────── */
+/* ── Resizable column hook (for structure view) ────────── */
 
 function useResizableColumns(
   columnKeys: string[],
   autoSizeData?: { columns: string[]; rows?: unknown[][] },
 ) {
-  // Committed widths — only updated on mouseup (triggers one React render)
   const [widths, setWidths] = useState<Record<string, number>>({});
-  // Live ref for DOM-only updates during drag (no React renders)
   const widthsRef = useRef<Record<string, number>>({});
   const tableRef = useRef<HTMLTableElement | null>(null);
   const dragRef = useRef<{ col: string; startX: number; startW: number } | null>(null);
-  // Track which columns have been manually resized (don't overwrite with auto)
   const manualRef = useRef<Set<string>>(new Set());
 
-  // Sync ref with state
   widthsRef.current = widths;
 
-  // Auto-size: compute initial widths when columns or data change
   useEffect(() => {
     if (!autoSizeData) {
-      // No auto-size data — just initialize missing columns with defaults
       setWidths((prev) => {
         const next = { ...prev };
         let changed = false;
@@ -103,7 +103,6 @@ function useResizableColumns(
       const next = { ...prev };
       let changed = false;
       for (const key of columnKeys) {
-        // Don't overwrite manually-resized columns
         if (manualRef.current.has(key)) continue;
         const auto = estimated[key] ?? DEFAULT_COL_WIDTH;
         if (next[key] !== auto) {
@@ -115,64 +114,65 @@ function useResizableColumns(
     });
   }, [columnKeys, autoSizeData]);
 
-  const onMouseDown = useCallback((col: string, e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const startX = e.clientX;
-    const startW = widthsRef.current[col] ?? DEFAULT_COL_WIDTH;
-    dragRef.current = { col, startX, startW };
+  const onMouseDown = useCallback(
+    (col: string, e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = widthsRef.current[col] ?? DEFAULT_COL_WIDTH;
+      dragRef.current = { col, startX, startW };
 
-    const onMouseMove = (ev: MouseEvent) => {
-      if (!dragRef.current) return;
-      const delta = ev.clientX - dragRef.current.startX;
-      const newW = Math.max(MIN_COL_WIDTH, dragRef.current.startW + delta);
+      const onMouseMove = (ev: MouseEvent) => {
+        if (!dragRef.current) return;
+        const delta = ev.clientX - dragRef.current.startX;
+        const newW = Math.max(MIN_COL_WIDTH, dragRef.current.startW + delta);
 
-      // Update ref (no React render)
-      widthsRef.current = { ...widthsRef.current, [dragRef.current.col]: newW };
+        widthsRef.current = { ...widthsRef.current, [dragRef.current.col]: newW };
 
-      // Direct DOM update — find the col element and resize it + update table width
-      if (tableRef.current) {
-        const colgroup = tableRef.current.querySelector("colgroup");
-        if (colgroup) {
-          const cols = colgroup.querySelectorAll("col");
-          const colIndex = columnKeys.indexOf(dragRef.current.col);
-          if (colIndex !== -1 && cols[colIndex + 1]) {
-            // +1 because first col is the row-number column
-            (cols[colIndex + 1] as HTMLElement).style.width = `${newW}px`;
+        if (tableRef.current) {
+          const colgroup = tableRef.current.querySelector("colgroup");
+          if (colgroup) {
+            const cols = colgroup.querySelectorAll("col");
+            const colIndex = columnKeys.indexOf(dragRef.current.col);
+            if (colIndex !== -1 && cols[colIndex + 1]) {
+              (cols[colIndex + 1] as HTMLElement).style.width = `${newW}px`;
+            }
           }
+          let total = 0;
+          const cg = tableRef.current.querySelector("colgroup");
+          if (cg) {
+            cg.querySelectorAll("col").forEach((c) => {
+              total += parseFloat((c as HTMLElement).style.width) || DEFAULT_COL_WIDTH;
+            });
+          }
+          tableRef.current.style.width = `${total}px`;
         }
-        // Recalculate total width
-        let total = 0;
-        const cg = tableRef.current.querySelector("colgroup");
-        if (cg) {
-          cg.querySelectorAll("col").forEach((c) => {
-            total += parseFloat((c as HTMLElement).style.width) || DEFAULT_COL_WIDTH;
-          });
+      };
+
+      const onMouseUp = () => {
+        if (dragRef.current) {
+          manualRef.current.add(dragRef.current.col);
         }
-        tableRef.current.style.width = `${total}px`;
-      }
-    };
+        dragRef.current = null;
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        setWidths({ ...widthsRef.current });
+      };
 
-    const onMouseUp = () => {
-      if (dragRef.current) {
-        manualRef.current.add(dragRef.current.col);
-      }
-      dragRef.current = null;
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      // Commit to React state (single render)
-      setWidths({ ...widthsRef.current });
-    };
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    },
+    [columnKeys],
+  );
 
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-  }, [columnKeys]);
-
-  const getWidth = useCallback((col: string) => widths[col] ?? DEFAULT_COL_WIDTH, [widths]);
+  const getWidth = useCallback(
+    (col: string) => widths[col] ?? DEFAULT_COL_WIDTH,
+    [widths],
+  );
 
   const totalWidth = useCallback(
     (keys: string[], extra = 0) =>
@@ -183,7 +183,7 @@ function useResizableColumns(
   return { getWidth, onMouseDown, totalWidth, tableRef };
 }
 
-/* ── Resizable header cell ─────────────────────────────── */
+/* ── Resizable header cell (for structure view) ────────── */
 
 function ResizableTh({
   colKey,
@@ -410,16 +410,6 @@ function DataView({
   error: string | null;
   offset: number;
 }) {
-  // Auto-size: pass column names + row data for initial width estimation
-  const autoSizeData = useMemo(
-    () => headerColumns.length > 0
-      ? { columns: headerColumns, rows: data?.rows }
-      : undefined,
-    [headerColumns, data?.rows],
-  );
-
-  const { getWidth, onMouseDown, totalWidth, tableRef } = useResizableColumns(headerColumns, autoSizeData);
-
   if (loading && !data) {
     return (
       <div className="flex items-center justify-center h-full text-text-muted text-sm gap-2">
@@ -437,88 +427,17 @@ function DataView({
     );
   }
 
-  if (headerColumns.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-full text-text-muted text-sm">
-        No columns found.
-      </div>
-    );
-  }
-
-  const rows = data?.rows ?? [];
-  const tableW = totalWidth(headerColumns, ROW_NUM_WIDTH);
-
   return (
-    <table
-      ref={tableRef}
-      className="text-[12px] border-collapse"
-      style={{ tableLayout: "fixed", width: tableW, minWidth: "100%" }}
-    >
-      <colgroup>
-        <col style={{ width: ROW_NUM_WIDTH }} />
-        {headerColumns.map((col) => (
-          <col key={col} style={{ width: getWidth(col) }} />
-        ))}
-      </colgroup>
-      <thead className="sticky top-0 z-10">
-        <tr className="bg-bg-secondary border-b border-border">
-          <th
-            className="px-2 py-1.5 text-left text-text-muted font-semibold whitespace-nowrap border-r border-border bg-bg-secondary sticky left-0 z-20"
-          >
-            #
-          </th>
-          {headerColumns.map((col) => (
-            <ResizableTh
-              key={col}
-              colKey={col}
-              getWidth={getWidth}
-              onMouseDown={onMouseDown}
-              className="text-text-secondary"
-            >
-              {col}
-            </ResizableTh>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.length === 0 ? (
-          <tr>
-            <td
-              colSpan={headerColumns.length + 1}
-              className="px-4 py-8 text-center text-text-muted text-xs"
-            >
-              No rows in this table.
-            </td>
-          </tr>
-        ) : (
-          rows.map((row, i) => (
-            <tr
-              key={i}
-              className="border-b border-border hover:bg-bg-hover transition-colors"
-            >
-              <td className="px-2 py-1 text-text-muted font-mono tabular-nums border-r border-border bg-bg-secondary sticky left-0 z-[5]">
-                {offset + i + 1}
-              </td>
-              {row.map((cell, j) => (
-                <td
-                  key={j}
-                  className="px-3 py-1 whitespace-nowrap border-r border-border overflow-hidden text-ellipsis"
-                >
-                  <CellValue value={cell} />
-                </td>
-              ))}
-            </tr>
-          ))
-        )}
-      </tbody>
-    </table>
+    <ResultGrid
+      columns={headerColumns}
+      rows={data?.rows ?? []}
+      offset={offset}
+      emptyMessage="No rows in this table."
+    />
   );
 }
 
 /* ── Structure View ────────────────────────────────────── */
-
-const STRUCT_COL_KEYS = ["Column", "Type", "Null", "Default", "Key"];
-const STRUCT_ROW_NUM_WIDTH = 40;
 
 function StructureView({
   columns,
@@ -527,7 +446,6 @@ function StructureView({
   columns: ColumnInfo[] | null;
   loading: boolean;
 }) {
-  // Build auto-size data from column metadata
   const autoSizeData = useMemo(() => {
     if (!columns || columns.length === 0) return undefined;
     const rows: unknown[][] = columns.map((c) => [
@@ -565,7 +483,7 @@ function StructureView({
     <table
       ref={tableRef}
       className="text-[12px] border-collapse"
-      style={{ tableLayout: "fixed", width: tableW, minWidth: "100%" }}
+      style={{ tableLayout: "fixed", width: tableW }}
     >
       <colgroup>
         <col style={{ width: STRUCT_ROW_NUM_WIDTH }} />
@@ -637,22 +555,4 @@ function StructureView({
       </tbody>
     </table>
   );
-}
-
-/* ── Cell value renderer ───────────────────────────────── */
-
-function CellValue({ value }: { value: unknown }) {
-  if (value === null || value === undefined) {
-    return <span className="text-text-muted italic">NULL</span>;
-  }
-  if (typeof value === "boolean") {
-    return <span className="text-accent font-medium">{value ? "true" : "false"}</span>;
-  }
-  if (typeof value === "number") {
-    return <span className="text-accent tabular-nums">{value}</span>;
-  }
-  if (typeof value === "object") {
-    return <span className="text-text-muted font-mono">{JSON.stringify(value)}</span>;
-  }
-  return <span className="text-text-primary">{String(value)}</span>;
 }

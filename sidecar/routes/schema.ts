@@ -4,6 +4,8 @@ import {
   setConnection,
   closeConnection,
   hasConnection,
+  isConnectionError,
+  reconnect,
   type PoolEntry,
 } from "../lib/pool";
 
@@ -82,7 +84,7 @@ export async function handleOpenConnection(
       });
       const [row] = await sql`SHOW server_version`;
       serverVersion = row?.server_version ?? "";
-      setConnection(profile.id, { type: "postgres", client: sql });
+      setConnection(profile.id, { type: "postgres", client: sql }, profile);
     } else if (profile.type === "mysql") {
       const mysql = await import("mysql2/promise");
       const conn = await mysql.createConnection({
@@ -96,13 +98,13 @@ export async function handleOpenConnection(
       });
       const [rows] = await conn.query("SELECT version() AS v");
       serverVersion = (rows as any)?.[0]?.v ?? "";
-      setConnection(profile.id, { type: "mysql", client: conn });
+      setConnection(profile.id, { type: "mysql", client: conn }, profile);
     } else if (profile.type === "sqlite") {
       const { Database } = await import("bun:sqlite");
       const db = new Database(profile.database, { readonly: false });
       const row = db.query("SELECT sqlite_version() AS v").get() as any;
       serverVersion = row?.v ?? "";
-      setConnection(profile.id, { type: "sqlite", client: db });
+      setConnection(profile.id, { type: "sqlite", client: db }, profile);
     } else {
       return errorResponse(`Unsupported connection type: ${(profile as any).type}`, headers, 400);
     }
@@ -146,6 +148,36 @@ export async function handleCloseConnection(
 // GET /schema/:connId/:action  — dispatcher
 // ---------------------------------------------------------------------------
 
+async function dispatchSchemaAction(
+  entry: PoolEntry,
+  action: string,
+  db?: string,
+  schema?: string,
+  table?: string,
+  limit = 100,
+  offset = 0,
+): Promise<unknown> {
+  switch (action) {
+    case "databases": return getDatabases(entry);
+    case "schemas": return getSchemas(entry, db);
+    case "tables": return getTables(entry, db, schema);
+    case "columns":
+      if (!table) throw new Error("Missing ?table= param");
+      return getColumns(entry, db, schema, table);
+    case "indexes":
+      if (!table) throw new Error("Missing ?table= param");
+      return getIndexes(entry, db, schema, table);
+    case "fks":
+      if (!table) throw new Error("Missing ?table= param");
+      return getForeignKeys(entry, db, schema, table);
+    case "rows":
+      if (!table) throw new Error("Missing ?table= param");
+      return getRows(entry, db, schema, table, limit, offset);
+    default:
+      throw new Error(`Unknown schema action: ${action}`);
+  }
+}
+
 export async function handleSchemaRequest(
   req: Request,
   path: string,
@@ -158,7 +190,7 @@ export async function handleSchemaRequest(
     return errorResponse("Invalid schema path", headers, 400);
   }
 
-  const entry = getConnection(connId);
+  let entry = getConnection(connId);
   if (!entry) {
     return errorResponse("Connection not found. Call /connections/open first.", headers, 404);
   }
@@ -167,34 +199,26 @@ export async function handleSchemaRequest(
   const db = url.searchParams.get("db") ?? undefined;
   const schema = url.searchParams.get("schema") ?? undefined;
   const table = url.searchParams.get("table") ?? undefined;
+  const limit = parseInt(url.searchParams.get("limit") ?? "100", 10);
+  const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
 
   try {
-    switch (action) {
-      case "databases":
-        return json(await getDatabases(entry), headers);
-      case "schemas":
-        return json(await getSchemas(entry, db), headers);
-      case "tables":
-        return json(await getTables(entry, db, schema), headers);
-      case "columns":
-        if (!table) return errorResponse("Missing ?table= param", headers, 400);
-        return json(await getColumns(entry, db, schema, table), headers);
-      case "indexes":
-        if (!table) return errorResponse("Missing ?table= param", headers, 400);
-        return json(await getIndexes(entry, db, schema, table), headers);
-      case "fks":
-        if (!table) return errorResponse("Missing ?table= param", headers, 400);
-        return json(await getForeignKeys(entry, db, schema, table), headers);
-      case "rows": {
-        if (!table) return errorResponse("Missing ?table= param", headers, 400);
-        const limit = parseInt(url.searchParams.get("limit") ?? "100", 10);
-        const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
-        return json(await getRows(entry, db, schema, table, limit, offset), headers);
-      }
-      default:
-        return errorResponse(`Unknown schema action: ${action}`, headers, 404);
-    }
+    const result = await dispatchSchemaAction(entry, action, db, schema, table, limit, offset);
+    return json(result, headers);
   } catch (e: unknown) {
+    // Auto-reconnect once on connection errors
+    if (isConnectionError(e)) {
+      console.log(`[sidecar] connection error in schema/${action}, attempting reconnect for ${connId}...`);
+      try {
+        entry = await reconnect(connId);
+        const result = await dispatchSchemaAction(entry, action, db, schema, table, limit, offset);
+        return json(result, headers);
+      } catch (retryErr: unknown) {
+        const message = friendlyError(retryErr);
+        console.error(`[sidecar] reconnect+retry failed for schema/${action}: ${message}`);
+        return errorResponse(message, headers);
+      }
+    }
     const message = e instanceof Error ? e.message : "Unknown error";
     console.error(`[sidecar] schema/${action} error: ${message}`);
     return errorResponse(message, headers);
@@ -513,6 +537,32 @@ async function getForeignKeys(
 
 const SELECT_RE = /^\s*(SELECT|SHOW|DESCRIBE|EXPLAIN)/i;
 
+async function executeSQL(entry: PoolEntry, sql: string, isSelect: boolean) {
+  if (isSelect) {
+    let rawRows: any[];
+    switch (entry.type) {
+      case "postgres": rawRows = await entry.client.unsafe(sql); break;
+      case "mysql": { const [rows] = await entry.client.query(sql); rawRows = rows as any[]; break; }
+      case "sqlite": rawRows = entry.client.query(sql).all() as any[]; break;
+    }
+    const columns = rawRows.length > 0 ? Object.keys(rawRows[0]) : [];
+    return {
+      columns,
+      rows: rawRows.map((r: any) => columns.map((c) => r[c])),
+      rowCount: rawRows.length,
+      query: sql,
+    };
+  } else {
+    let affectedRows = 0;
+    switch (entry.type) {
+      case "postgres": { const result = await entry.client.unsafe(sql); affectedRows = result.count ?? 0; break; }
+      case "mysql": { const [result] = await entry.client.query(sql); affectedRows = (result as any).affectedRows ?? 0; break; }
+      case "sqlite": { const result = entry.client.run(sql); affectedRows = result.changes; break; }
+    }
+    return { affectedRows, query: sql };
+  }
+}
+
 export async function handleQuery(
   req: Request,
   headers: Record<string, string>,
@@ -529,7 +579,7 @@ export async function handleQuery(
     return errorResponse("Missing connectionId or sql", headers, 400);
   }
 
-  const entry = getConnection(connectionId);
+  let entry = getConnection(connectionId);
   if (!entry) {
     return errorResponse("Connection not found. Call /connections/open first.", headers, 404);
   }
@@ -538,64 +588,23 @@ export async function handleQuery(
 
   try {
     const t0 = performance.now();
-
-    if (isSelect) {
-      let rawRows: any[];
-
-      switch (entry.type) {
-        case "postgres": {
-          rawRows = await entry.client.unsafe(sql);
-          break;
-        }
-        case "mysql": {
-          const [rows] = await entry.client.query(sql);
-          rawRows = rows as any[];
-          break;
-        }
-        case "sqlite": {
-          rawRows = entry.client.query(sql).all() as any[];
-          break;
-        }
-      }
-
-      const duration = performance.now() - t0;
-      const columns = rawRows.length > 0 ? Object.keys(rawRows[0]) : [];
-      return json(
-        {
-          columns,
-          rows: rawRows.map((r: any) => columns.map((c) => r[c])),
-          rowCount: rawRows.length,
-          query: sql,
-          duration,
-        },
-        headers,
-      );
-    } else {
-      // Mutation (INSERT / UPDATE / DELETE / etc.)
-      let affectedRows = 0;
-
-      switch (entry.type) {
-        case "postgres": {
-          const result = await entry.client.unsafe(sql);
-          affectedRows = result.count ?? 0;
-          break;
-        }
-        case "mysql": {
-          const [result] = await entry.client.query(sql);
-          affectedRows = (result as any).affectedRows ?? 0;
-          break;
-        }
-        case "sqlite": {
-          const result = entry.client.run(sql);
-          affectedRows = result.changes;
-          break;
-        }
-      }
-
-      const duration = performance.now() - t0;
-      return json({ affectedRows, query: sql, duration }, headers);
-    }
+    const result = await executeSQL(entry, sql, isSelect);
+    return json({ ...result, duration: performance.now() - t0 }, headers);
   } catch (e: unknown) {
+    // Auto-reconnect once on connection errors
+    if (isConnectionError(e)) {
+      console.log(`[sidecar] connection error detected, attempting reconnect for ${connectionId}...`);
+      try {
+        entry = await reconnect(connectionId);
+        const t0 = performance.now();
+        const result = await executeSQL(entry, sql, isSelect);
+        return json({ ...result, duration: performance.now() - t0 }, headers);
+      } catch (retryErr: unknown) {
+        const message = friendlyError(retryErr);
+        console.error(`[sidecar] reconnect+retry failed: ${message}`);
+        return errorResponse(message, headers);
+      }
+    }
     const message = friendlyError(e);
     console.error(`[sidecar] query error: ${message}`);
     return errorResponse(message, headers);
