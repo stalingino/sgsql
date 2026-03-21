@@ -286,6 +286,32 @@ function DbTab({
   );
 }
 
+/* ── Fuzzy match ────────────────────────────────────────── */
+
+function fuzzyMatch(query: string, target: string): { match: boolean; score: number } {
+  if (!query) return { match: true, score: 0 };
+  const q = query.toLowerCase();
+  const t = target.toLowerCase();
+
+  // Exact substring = highest score
+  if (t.includes(q)) return { match: true, score: 100 + q.length };
+
+  // Fuzzy: all chars of query appear in order in target
+  let qi = 0;
+  let score = 0;
+  let consecutive = 0;
+  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+    if (t[ti] === q[qi]) {
+      qi++;
+      consecutive++;
+      score += consecutive; // reward consecutive matches
+    } else {
+      consecutive = 0;
+    }
+  }
+  return { match: qi === q.length, score };
+}
+
 /* ── Table list for a single database ───────────────────── */
 
 function TableList({
@@ -306,6 +332,10 @@ function TableList({
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+
+  // Clear search when db changes
+  useEffect(() => { setQuery(""); }, [db]);
 
   useEffect(() => {
     let cancelled = false;
@@ -340,47 +370,102 @@ function TableList({
     return () => { cancelled = true; };
   }, [connectionId, connectionType, db, schema, cacheRef]);
 
+  const filtered = query
+    ? tables
+        .map((t) => ({ t, ...fuzzyMatch(query, t.name) }))
+        .filter((r) => r.match)
+        .sort((a, b) => b.score - a.score)
+        .map((r) => r.t)
+    : tables;
+
   return (
-    <div className="flex-1 overflow-y-auto min-h-0 py-1">
-      {loading && (
-        <div className="flex items-center gap-2 px-3 py-4 text-xs text-text-muted">
-          <Loader2 size={12} className="animate-spin" />
-          Loading tables...
-        </div>
-      )}
-
-      {error && (
-        <div className="px-3 py-4 text-xs text-error">{error}</div>
-      )}
-
-      {!loading && !error && tables.length === 0 && (
-        <div className="px-3 py-4 text-xs text-text-muted">No tables found.</div>
-      )}
-
-      {!loading && !error && tables.map((t) => (
-        <TableNode
-          key={`${t.type}:${t.name}`}
-          table={t}
-          db={db}
-          schema={schema}
-          connectionId={connectionId}
-          onTableSelect={onTableSelect}
+    <div className="flex flex-col flex-1 min-h-0">
+      {/* Search input */}
+      <div className="px-2 py-1.5 border-b border-border shrink-0">
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Filter tables..."
+          className="w-full bg-bg-hover text-text-primary text-[12px] placeholder-text-muted px-2 py-1 rounded outline-none focus:ring-1 focus:ring-accent/50"
         />
-      ))}
+      </div>
+
+      <div className="flex-1 overflow-y-auto min-h-0 py-1">
+        {loading && (
+          <div className="flex items-center gap-2 px-3 py-4 text-xs text-text-muted">
+            <Loader2 size={12} className="animate-spin" />
+            Loading tables...
+          </div>
+        )}
+
+        {error && (
+          <div className="px-3 py-4 text-xs text-error">{error}</div>
+        )}
+
+        {!loading && !error && filtered.length === 0 && (
+          <div className="px-3 py-4 text-xs text-text-muted">
+            {query ? "No matches." : "No tables found."}
+          </div>
+        )}
+
+        {!loading && !error && filtered.map((t) => (
+          <TableNode
+            key={`${t.type}:${t.name}`}
+            table={t}
+            query={query}
+            db={db}
+            schema={schema}
+            connectionId={connectionId}
+            onTableSelect={onTableSelect}
+          />
+        ))}
+      </div>
     </div>
   );
 }
 
 /* ── Table node (expandable to show columns) ────────────── */
 
+function highlightMatch(name: string, query: string): React.ReactNode {
+  if (!query) return name;
+  const q = query.toLowerCase();
+  const n = name.toLowerCase();
+  // Exact substring highlight
+  const idx = n.indexOf(q);
+  if (idx !== -1) {
+    return (
+      <>
+        {name.slice(0, idx)}
+        <mark className="bg-accent/25 text-inherit rounded-[2px]">{name.slice(idx, idx + q.length)}</mark>
+        {name.slice(idx + q.length)}
+      </>
+    );
+  }
+  // Fuzzy: highlight individual matched chars
+  const result: React.ReactNode[] = [];
+  let qi = 0;
+  for (let i = 0; i < name.length; i++) {
+    if (qi < q.length && name[i].toLowerCase() === q[qi]) {
+      result.push(<mark key={i} className="bg-accent/25 text-inherit rounded-[2px]">{name[i]}</mark>);
+      qi++;
+    } else {
+      result.push(name[i]);
+    }
+  }
+  return <>{result}</>;
+}
+
 function TableNode({
   table,
+  query = "",
   db,
   schema,
   connectionId,
   onTableSelect,
 }: {
   table: TableInfo;
+  query?: string;
   db: string;
   schema: string;
   connectionId: string;
@@ -427,7 +512,7 @@ function TableNode({
           ? <Eye size={14} className="shrink-0 text-purple-400" />
           : <Table2 size={14} className="shrink-0 text-accent" />
         }
-        <span className="truncate text-[13px] text-text-primary">{table.name}</span>
+        <span className="truncate text-[13px] text-text-primary">{highlightMatch(table.name, query)}</span>
       </div>
 
       {expanded && loading && (
