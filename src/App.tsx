@@ -14,6 +14,7 @@ import {
   Eye,
   PanelLeft,
   PanelBottom,
+  Plus,
 } from "lucide-react";
 import { waitForSidecar } from "./lib/sidecar";
 import { openConnectionManager } from "./lib/openConnectionManager";
@@ -23,6 +24,7 @@ import { useWindowPersist } from "./lib/useWindowPersist";
 import { useQueryLog } from "./lib/queryLog";
 import { SchemaTree } from "./components/SchemaTree";
 import { DataTable } from "./components/DataTable";
+import { QueryEditor } from "./components/QueryEditor";
 import { QueryConsole } from "./components/QueryConsole";
 import type { ConnectionProfile } from "./lib/types";
 import { envBadgeStyle } from "./lib/types";
@@ -34,7 +36,7 @@ interface ContentTab {
   db: string;
   schema: string;
   table: string;
-  type: "table" | "view";
+  type: "table" | "view" | "query";
 }
 
 interface Tab {
@@ -221,6 +223,25 @@ function App() {
     }));
   }, [activeTabId]);
 
+  const addQueryTab = useCallback(() => {
+    setTabs((prev) => prev.map((tab) => {
+      if (tab.id !== activeTabId) return tab;
+      const queryCount = tab.contentTabs.filter((ct) => ct.type === "query").length;
+      const ct: ContentTab = {
+        id: nextContentTabId(),
+        db: "",
+        schema: "",
+        table: `Query ${queryCount + 1}`,
+        type: "query",
+      };
+      return {
+        ...tab,
+        contentTabs: [...tab.contentTabs, ct],
+        activeContentTabId: ct.id,
+      };
+    }));
+  }, [activeTabId]);
+
   /* ── Loading ──────────────────────────────────────────── */
 
   if (!sidecarReady && !sidecarError) {
@@ -262,6 +283,18 @@ function App() {
         className="flex items-center h-9 border-b border-border bg-bg-secondary shrink-0"
         data-tauri-drag-region
       >
+        {/* Left toolbar */}
+        <div className="flex items-center gap-0.5 mx-1 shrink-0">
+          {/* New connection button */}
+          <button
+            onClick={() => openConnectionManager()}
+            title="New Connection"
+            className="flex items-center gap-1 px-2 py-1 rounded-md border border-border text-text-secondary hover:text-text-primary hover:bg-bg-hover hover:border-text-muted transition-colors cursor-pointer"
+          >
+            <Plus size={14} />
+          </button>
+        </div>
+
         {/* Tabs */}
         <div className="flex items-center min-w-0 flex-1 overflow-x-auto no-scrollbar">
           {tabs.map((tab) => (
@@ -275,7 +308,7 @@ function App() {
           ))}
         </div>
 
-        {/* Right side buttons */}
+        {/* Right toolbar */}
         <div className="flex items-center gap-0.5 mx-1 shrink-0">
           {/* Toggle sidebar */}
           <button
@@ -301,15 +334,6 @@ function App() {
             }`}
           >
             <PanelBottom size={14} />
-          </button>
-
-          {/* New connection button */}
-          <button
-            onClick={() => openConnectionManager()}
-            title="New Connection"
-            className="flex items-center p-1.5 rounded-md border border-border text-text-secondary hover:text-text-primary hover:bg-bg-hover hover:border-text-muted transition-colors cursor-pointer shrink-0"
-          >
-            <PlugZap size={14} />
           </button>
         </div>
       </div>
@@ -366,16 +390,28 @@ function App() {
             <main className="flex-1 flex flex-col min-h-0 min-w-0 bg-bg-primary">
               {/* Content tab bar */}
               {activeTab.contentTabs.length > 0 && (
-                <div className="flex items-center h-8 border-b border-border bg-bg-secondary shrink-0 overflow-x-auto no-scrollbar">
-                  {activeTab.contentTabs.map((ct) => (
-                    <ContentTabItem
-                      key={ct.id}
-                      ct={ct}
-                      active={ct.id === activeTab.activeContentTabId}
-                      onActivate={() => setActiveContentTab(ct.id)}
-                      onClose={() => closeContentTab(ct.id)}
-                    />
-                  ))}
+                <div className="flex items-center h-8 border-b border-border bg-bg-secondary shrink-0">
+                  <div className="flex-1 flex items-center h-full overflow-x-auto no-scrollbar">
+                    {activeTab.contentTabs.map((ct) => (
+                      <ContentTabItem
+                        key={ct.id}
+                        ct={ct}
+                        active={ct.id === activeTab.activeContentTabId}
+                        onActivate={() => setActiveContentTab(ct.id)}
+                        onClose={() => closeContentTab(ct.id)}
+                      />
+                    ))}
+                  </div>
+                  <div className="flex items-center px-1.5 shrink-0 border-l border-border">
+                    <button
+                      onClick={addQueryTab}
+                      title="New SQL query tab"
+                      className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold tracking-wide text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer border border-border"
+                    >
+                      <Plus size={10} />
+                      SQL
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -387,12 +423,19 @@ function App() {
                       key={ct.id}
                       className={ct.id === activeTab.activeContentTabId ? "h-full" : "hidden"}
                     >
-                      <DataTable
-                        connectionId={activeTab.connectionId!}
-                        db={ct.db}
-                        schema={ct.schema}
-                        table={ct.table}
-                      />
+                      {ct.type === "query" ? (
+                        <QueryEditor
+                          connectionId={activeTab.connectionId!}
+                          storageKey={`${activeTab.id}-${ct.id}`}
+                        />
+                      ) : (
+                        <DataTable
+                          connectionId={activeTab.connectionId!}
+                          db={ct.db}
+                          schema={ct.schema}
+                          table={ct.table}
+                        />
+                      )}
                     </div>
                   ))}
                 </div>
@@ -519,9 +562,11 @@ function ContentTabItem({
           : "bg-bg-secondary text-text-muted hover:text-text-secondary hover:bg-bg-hover"
       }`}
     >
-      {ct.type === "view"
-        ? <Eye size={12} className="shrink-0 text-purple-400" />
-        : <Table2 size={12} className="shrink-0 text-accent" />
+      {ct.type === "query"
+        ? <span className="shrink-0 text-[9px] font-bold text-accent leading-none">SQL</span>
+        : ct.type === "view"
+          ? <Eye size={12} className="shrink-0 text-purple-400" />
+          : <Table2 size={12} className="shrink-0 text-accent" />
       }
       <span className="truncate font-medium">{ct.table}</span>
       <button

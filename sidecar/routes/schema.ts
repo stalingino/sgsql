@@ -507,6 +507,105 @@ async function getForeignKeys(
 // Query: Table rows
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// POST /query — arbitrary SQL execution
+// ---------------------------------------------------------------------------
+
+const SELECT_RE = /^\s*(SELECT|SHOW|DESCRIBE|EXPLAIN)/i;
+
+export async function handleQuery(
+  req: Request,
+  headers: Record<string, string>,
+): Promise<Response> {
+  let body: { connectionId?: string; sql?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return errorResponse("Invalid JSON body", headers, 400);
+  }
+
+  const { connectionId, sql } = body;
+  if (!connectionId || !sql) {
+    return errorResponse("Missing connectionId or sql", headers, 400);
+  }
+
+  const entry = getConnection(connectionId);
+  if (!entry) {
+    return errorResponse("Connection not found. Call /connections/open first.", headers, 404);
+  }
+
+  const isSelect = SELECT_RE.test(sql);
+
+  try {
+    const t0 = performance.now();
+
+    if (isSelect) {
+      let rawRows: any[];
+
+      switch (entry.type) {
+        case "postgres": {
+          rawRows = await entry.client.unsafe(sql);
+          break;
+        }
+        case "mysql": {
+          const [rows] = await entry.client.query(sql);
+          rawRows = rows as any[];
+          break;
+        }
+        case "sqlite": {
+          rawRows = entry.client.query(sql).all() as any[];
+          break;
+        }
+      }
+
+      const duration = performance.now() - t0;
+      const columns = rawRows.length > 0 ? Object.keys(rawRows[0]) : [];
+      return json(
+        {
+          columns,
+          rows: rawRows.map((r: any) => columns.map((c) => r[c])),
+          rowCount: rawRows.length,
+          query: sql,
+          duration,
+        },
+        headers,
+      );
+    } else {
+      // Mutation (INSERT / UPDATE / DELETE / etc.)
+      let affectedRows = 0;
+
+      switch (entry.type) {
+        case "postgres": {
+          const result = await entry.client.unsafe(sql);
+          affectedRows = result.count ?? 0;
+          break;
+        }
+        case "mysql": {
+          const [result] = await entry.client.query(sql);
+          affectedRows = (result as any).affectedRows ?? 0;
+          break;
+        }
+        case "sqlite": {
+          const result = entry.client.run(sql);
+          affectedRows = result.changes;
+          break;
+        }
+      }
+
+      const duration = performance.now() - t0;
+      return json({ affectedRows, query: sql, duration }, headers);
+    }
+  } catch (e: unknown) {
+    const message = friendlyError(e);
+    console.error(`[sidecar] query error: ${message}`);
+    return errorResponse(message, headers);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Query: Table rows
+// ---------------------------------------------------------------------------
+
 async function getRows(
   entry: PoolEntry,
   db?: string,

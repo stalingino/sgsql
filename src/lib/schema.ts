@@ -85,6 +85,25 @@ export async function fetchTableRows(
   );
 }
 
+export interface QueryResult {
+  columns: string[];
+  rows: unknown[][];
+  rowCount: number;
+  query: string;
+  duration: number;
+  affectedRows?: number;
+}
+
+export async function executeQuery(
+  connId: string,
+  sql: string,
+): Promise<QueryResult> {
+  return sidecarFetch<QueryResult>("/query", {
+    method: "POST",
+    body: JSON.stringify({ connectionId: connId, sql }),
+  });
+}
+
 export async function fetchColumns(
   connId: string,
   db: string,

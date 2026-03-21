@@ -4,6 +4,7 @@ import {
   handleOpenConnection,
   handleCloseConnection,
   handleSchemaRequest,
+  handleQuery,
 } from "./routes/schema";
 
 const DEFAULT_PORT = 7521;
@@ -75,6 +76,11 @@ async function main() {
         if (path === "/connections/close" && req.method === "POST") {
           console.log("[sidecar] closing connection");
           return handleCloseConnection(req, headers);
+        }
+
+        if (path === "/query" && req.method === "POST") {
+          console.log("[sidecar] executing query");
+          return handleQuery(req, headers);
         }
 
         if (path.startsWith("/schema/") && req.method === "GET") {
