@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { CellSelection } from "./ResultGrid";
 
 /* ── Detail Panel ──────────────────────────────────────── */
@@ -30,7 +31,7 @@ export function DetailPanel({ selection }: DetailPanelProps) {
       </div>
 
       {/* Field list */}
-      <div className="flex-1 overflow-auto min-h-0 p-2 space-y-2">
+      <div className="flex-1 overflow-auto min-h-0 py-1 selectable">
         {columns.map((col, i) => {
           const value = (row as unknown[])[i];
           return (
@@ -45,44 +46,69 @@ export function DetailPanel({ selection }: DetailPanelProps) {
 /* ── Individual field row ──────────────────────────────── */
 
 function FieldRow({ name, value }: { name: string; value: unknown }) {
-  const displayValue = formatValue(value);
   const isNull = value === null || value === undefined;
-  const isLong = typeof value === "string" && value.length > 100;
-  const isObject = typeof value === "object" && value !== null;
+  const isBoolean = typeof value === "boolean";
+  const [editValue, setEditValue] = useState<string | null>(null);
 
-  const handleCopyName = () => {
-    navigator.clipboard.writeText(name).catch(() => {});
-  };
-
-  const handleCopyValue = () => {
-    navigator.clipboard.writeText(displayValue).catch(() => {});
-  };
+  const displayValue = editValue ?? formatValue(value);
 
   return (
-    <div className="rounded border border-border bg-bg-primary overflow-hidden">
-      {/* Column name — clickable to copy */}
-      <div
-        className="flex items-center justify-between px-2.5 py-1 bg-bg-secondary border-b border-border cursor-pointer hover:bg-bg-hover transition-colors group"
-        onClick={handleCopyName}
-        title="Click to copy column name"
-      >
-        <span className="text-[10px] font-semibold text-text-secondary truncate">
-          {name}
-        </span>
-        <span className="text-[9px] text-text-muted opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-1">
-          copy
-        </span>
-      </div>
+    <div className="px-3 py-1.5">
+      {/* Column name — selectable text */}
+      <span className="text-[11px] font-semibold text-text-muted cursor-text">
+        {name}
+      </span>
 
-      {/* Value */}
-      <div
-        className={`px-2.5 py-1.5 text-[12px] font-mono cursor-pointer hover:bg-bg-hover/50 transition-colors ${
-          isNull ? "text-text-muted italic" : "text-text-primary"
-        } ${isLong || isObject ? "break-all whitespace-pre-wrap" : "truncate"}`}
-        onClick={handleCopyValue}
-        title="Click to copy value"
-      >
-        {displayValue}
+      {/* Value — editable */}
+      <div className="mt-0.5">
+        {isNull ? (
+          <input
+            type="text"
+            value={editValue ?? "NULL"}
+            onChange={(e) => setEditValue(e.target.value)}
+            className="w-full px-2 py-1 text-[12px] font-mono italic text-text-muted bg-bg-secondary border border-border rounded outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors"
+          />
+        ) : isBoolean ? (
+          <select
+            value={editValue ?? String(value)}
+            onChange={(e) => setEditValue(e.target.value)}
+            className="w-full px-2 py-1 text-[12px] font-mono text-text-primary bg-bg-secondary border border-border rounded outline-none cursor-pointer focus:border-accent transition-colors"
+          >
+            <option value="true">true</option>
+            <option value="false">false</option>
+          </select>
+        ) : typeof value === "object" ? (
+          <textarea
+            value={editValue ?? JSON.stringify(value, null, 2)}
+            onChange={(e) => setEditValue(e.target.value)}
+            rows={Math.min(6, (editValue ?? JSON.stringify(value, null, 2)).split("\n").length)}
+            className="w-full px-2 py-1 text-[12px] font-mono text-text-primary bg-bg-secondary border border-border rounded outline-none resize-y focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors"
+          />
+        ) : typeof value === "number" ? (
+          <input
+            type="text"
+            value={displayValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            className="w-full px-2 py-1 text-[12px] font-mono tabular-nums text-accent bg-bg-secondary border border-border rounded outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors"
+          />
+        ) : (
+          /* String / default */
+          String(value).length > 80 ? (
+            <textarea
+              value={displayValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              rows={Math.min(6, Math.ceil(displayValue.length / 40))}
+              className="w-full px-2 py-1 text-[12px] font-mono text-text-primary bg-bg-secondary border border-border rounded outline-none resize-y focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors"
+            />
+          ) : (
+            <input
+              type="text"
+              value={displayValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              className="w-full px-2 py-1 text-[12px] font-mono text-text-primary bg-bg-secondary border border-border rounded outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors"
+            />
+          )
+        )}
       </div>
     </div>
   );
