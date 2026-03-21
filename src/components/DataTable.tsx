@@ -304,7 +304,7 @@ export function DataTable({ connectionId, db, schema, table }: DataTableProps) {
   const hasNext = (data?.rows.length ?? 0) === PAGE_SIZE;
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-col h-full min-h-0 selectable">
       {/* Content area */}
       <div className="flex-1 overflow-auto min-h-0">
         {mode === "data" ? (

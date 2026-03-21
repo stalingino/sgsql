@@ -1,4 +1,4 @@
-const SIDECAR_PORT = 7521;
+const SIDECAR_PORT = 45821;
 const BASE_URL = `http://localhost:${SIDECAR_PORT}`;
 
 export async function sidecarFetch<T = unknown>(

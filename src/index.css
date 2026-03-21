@@ -47,14 +47,16 @@
   --color-text-muted: #a1a1aa;
 }
 
-* {
+/* Only disable selection on UI chrome — content areas are selectable by default */
+.no-select {
   -webkit-user-select: none;
   user-select: none;
 }
 
-input, textarea {
+.selectable {
   -webkit-user-select: text;
   user-select: text;
+  cursor: text;
 }
 
 body {

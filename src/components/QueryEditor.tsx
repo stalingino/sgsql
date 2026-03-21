@@ -83,7 +83,7 @@ export function QueryEditor({ connectionId, initialSql = "", onSqlChange }: Quer
   const hasNext = result?.rows ? offset + PAGE_SIZE < result.rows.length : false;
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-col h-full min-h-0 selectable">
       {/* SQL Editor area */}
       <div className="flex flex-col shrink-0 border-b border-border">
         <div className="relative">
@@ -140,7 +140,7 @@ export function QueryEditor({ connectionId, initialSql = "", onSqlChange }: Quer
         {/* Success message for non-SELECT */}
         {result && !result.columns?.length && result.affectedRows !== undefined && (
           <div className="px-4 py-3 text-xs text-success bg-success/5 border-b border-border">
-            Query executed successfully. {result.affectedRows} row{result.affectedRows !== 1 ? "s" : ""} affected. ({result.duration}ms)
+            Query executed successfully. {result.affectedRows} row{result.affectedRows !== 1 ? "s" : ""} affected. ({Math.round(result.duration * 100) / 100}ms)
           </div>
         )}
 
@@ -183,8 +183,8 @@ export function QueryEditor({ connectionId, initialSql = "", onSqlChange }: Quer
 
             {/* Pagination */}
             <div className="flex items-center justify-center px-3 py-1 border-t border-border bg-bg-secondary text-[11px] text-text-secondary gap-1">
-              <span className="text-text-muted mr-2">
-                {result.rows.length} row{result.rows.length !== 1 ? "s" : ""} ({result.duration}ms)
+              <span className="text-text-secondary mr-2">
+                {result.rows.length} row{result.rows.length !== 1 ? "s" : ""} ({Math.round(result.duration * 100) / 100}ms)
               </span>
               {result.rows.length > PAGE_SIZE && (
                 <>

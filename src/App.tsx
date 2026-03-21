@@ -275,7 +275,7 @@ function App() {
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
 
   return (
-    <div className="flex flex-col h-screen bg-bg-primary">
+    <div className="flex flex-col h-screen bg-bg-primary no-select">
       {/* ── Tab bar ─────────────────────────────────────────── */}
       <div
         className="flex items-center h-9 border-b border-border bg-bg-secondary shrink-0"

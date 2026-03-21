@@ -7,7 +7,7 @@ import {
   handleQuery,
 } from "./routes/schema";
 
-const DEFAULT_PORT = 7521;
+const DEFAULT_PORT = 45821; // distinctive high port — avoids collisions
 
 function getPort(): number {
   const arg = process.argv.find((a) => a.startsWith("--port="));
@@ -15,30 +15,12 @@ function getPort(): number {
   return DEFAULT_PORT;
 }
 
-async function findAvailablePort(start: number): Promise<number> {
-  for (let port = start; port < start + 10; port++) {
-    try {
-      const server = Bun.serve({
-        port,
-        fetch() {
-          return new Response("probe");
-        },
-      });
-      server.stop();
-      return port;
-    } catch {
-      // port in use, try next
-    }
-  }
-  throw new Error(`No available port found in range ${start}-${start + 9}`);
-}
-
 async function main() {
-  const requestedPort = getPort();
-  const port = await findAvailablePort(requestedPort);
+  const port = getPort();
 
   const server = Bun.serve({
     port,
+    reusePort: true, // allow quick restart without TIME_WAIT issues
     async fetch(req) {
       const url = new URL(req.url);
       const path = url.pathname;

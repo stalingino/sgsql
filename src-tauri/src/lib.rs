@@ -32,43 +32,61 @@ pub fn run() {
                 )?;
             }
 
-            // Spawn the Bun sidecar
-            let sidecar_command = app.shell().sidecar("dbsidecar").unwrap();
-            let (mut rx, child) = sidecar_command.spawn()
-                .expect("Failed to spawn sidecar");
-
-            log::info!("Sidecar spawned with PID: {}", child.pid());
-
-            // Store child handle so we can kill it on shutdown
-            app.manage(SidecarChild(Mutex::new(Some(child))));
-
-            // Log sidecar stdout/stderr in background
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                use tauri_plugin_shell::process::CommandEvent;
-                while let Some(event) = rx.recv().await {
-                    match event {
-                        CommandEvent::Stdout(line) => {
-                            let line_str = String::from_utf8_lossy(&line);
-                            log::info!("sidecar: {}", line_str);
-                        }
-                        CommandEvent::Stderr(line) => {
-                            let line_str = String::from_utf8_lossy(&line);
-                            log::warn!("sidecar stderr: {}", line_str);
-                        }
-                        CommandEvent::Terminated(status) => {
-                            log::info!("sidecar terminated: {:?}", status);
-                            break;
-                        }
-                        CommandEvent::Error(err) => {
-                            log::error!("sidecar error: {}", err);
-                            break;
-                        }
-                        _ => {}
+            // In dev mode, check if a sidecar is already running (e.g. `bun run sidecar/index.ts`)
+            let dev_sidecar_running = if cfg!(debug_assertions) {
+                match std::net::TcpStream::connect("127.0.0.1:45821") {
+                    Ok(_) => {
+                        log::info!("Dev sidecar already running on port 45821 — skipping spawn");
+                        true
                     }
+                    Err(_) => false,
                 }
-                let _ = app_handle;
-            });
+            } else {
+                false
+            };
+
+            if dev_sidecar_running {
+                // No child to manage — store None
+                app.manage(SidecarChild(Mutex::new(None)));
+            } else {
+                // Spawn the compiled sidecar binary
+                let sidecar_command = app.shell().sidecar("dbsidecar").unwrap();
+                let (mut rx, child) = sidecar_command.spawn()
+                    .expect("Failed to spawn sidecar");
+
+                log::info!("Sidecar spawned with PID: {}", child.pid());
+
+                // Store child handle so we can kill it on shutdown
+                app.manage(SidecarChild(Mutex::new(Some(child))));
+
+                // Log sidecar stdout/stderr in background
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tauri_plugin_shell::process::CommandEvent;
+                    while let Some(event) = rx.recv().await {
+                        match event {
+                            CommandEvent::Stdout(line) => {
+                                let line_str = String::from_utf8_lossy(&line);
+                                log::info!("sidecar: {}", line_str);
+                            }
+                            CommandEvent::Stderr(line) => {
+                                let line_str = String::from_utf8_lossy(&line);
+                                log::warn!("sidecar stderr: {}", line_str);
+                            }
+                            CommandEvent::Terminated(status) => {
+                                log::info!("sidecar terminated: {:?}", status);
+                                break;
+                            }
+                            CommandEvent::Error(err) => {
+                                log::error!("sidecar error: {}", err);
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    let _ = app_handle;
+                });
+            }
 
             Ok(())
         })

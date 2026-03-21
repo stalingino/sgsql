@@ -14,7 +14,7 @@ export function QueryConsole() {
   }, [entries.length]);
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-col h-full min-h-0 selectable">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-1 border-b border-border bg-bg-secondary shrink-0">
         <span className="text-[11px] font-semibold text-text-secondary uppercase tracking-wider">
@@ -67,7 +67,7 @@ function LogEntry({ entry }: { entry: QueryLogEntry }) {
       hasError ? "bg-error/5" : ""
     }`}>
       {/* Comment line: metadata */}
-      <div className="text-text-muted select-none">
+      <div className="text-text-muted">
         <span className="text-text-muted/70">-- </span>
         <span>{time}</span>
         <span className="text-text-muted/50"> | </span>
@@ -77,10 +77,10 @@ function LogEntry({ entry }: { entry: QueryLogEntry }) {
         )}
         <span className="text-text-muted/50"> | </span>
         {hasError ? (
-          <span className="text-error">{entry.duration}ms ERROR</span>
+          <span className="text-error">{Math.round(entry.duration * 100) / 100}ms ERROR</span>
         ) : (
           <>
-            <span className="text-success">{entry.duration}ms</span>
+            <span className="text-success">{Math.round(entry.duration * 100) / 100}ms</span>
             {entry.rowCount !== undefined && (
               <span className="text-text-muted/50"> | {entry.rowCount} rows</span>
             )}
