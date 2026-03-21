@@ -624,6 +624,16 @@ export function ResultGrid({
         return;
       }
 
+      // Escape: clear selection
+      if (e.key === "Escape") {
+        setSelectedRows(new Set());
+        setActiveRow(null);
+        setActiveCol(null);
+        setAnchorRow(null);
+        onCellSelect?.(null);
+        return;
+      }
+
       // Arrow navigation
       if ((e.key === "ArrowDown" || e.key === "ArrowUp") && activeRow !== null) {
         e.preventDefault();
@@ -750,7 +760,7 @@ export function ResultGrid({
                   data-row-idx={i}
                   className={`transition-colors ${
                     isSelected
-                      ? focused ? "bg-accent/8" : "bg-accent/4"
+                      ? focused ? "bg-accent/15" : "bg-accent/8"
                       : i % 2 === 1 ? "bg-bg-secondary hover:bg-bg-hover" : "hover:bg-bg-hover"
                   }`}
                   onContextMenu={(e) => handleContextMenu(e, i, activeCol ?? 0)}
