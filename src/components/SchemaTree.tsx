@@ -1,24 +1,26 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ChevronRight,
   ChevronDown,
   Database,
-  Layers,
   Table2,
   Eye,
   Columns2,
   KeyRound,
   Link2,
   Loader2,
+  Plus,
+  X,
 } from "lucide-react";
 import {
   fetchDatabases,
-  fetchSchemas,
   fetchTables,
   fetchColumns,
   type TableInfo,
   type ColumnInfo,
 } from "../lib/schema";
+
+/* ── Props ──────────────────────────────────────────────── */
 
 interface SchemaTreeProps {
   connectionId: string;
@@ -27,17 +29,16 @@ interface SchemaTreeProps {
   onTableSelect?: (db: string, schema: string, table: string) => void;
 }
 
-type NodeKind = "database" | "schema" | "table-group" | "table" | "view" | "column";
+/* ── Layered cache ──────────────────────────────────────── */
+type SchemaCache = Map<string, Map<string, TableInfo[]>>;
 
-interface TreeNode {
-  kind: NodeKind;
-  label: string;
-  db: string;
-  schema: string;
-  table: string;
-  columnInfo?: ColumnInfo;
-  tableType?: "table" | "view";
+function defaultSchema(type: "postgres" | "mysql" | "sqlite"): string {
+  if (type === "postgres") return "public";
+  if (type === "sqlite") return "main";
+  return "";
 }
+
+/* ── Component ──────────────────────────────────────────── */
 
 export function SchemaTree({
   connectionId,
@@ -45,7 +46,264 @@ export function SchemaTree({
   connectionDatabase,
   onTableSelect,
 }: SchemaTreeProps) {
-  const [rootNodes, setRootNodes] = useState<TreeNode[]>([]);
+  const [openDbs, setOpenDbs] = useState<string[]>([connectionDatabase]);
+  const [activeDb, setActiveDb] = useState(connectionDatabase);
+  const [allDatabases, setAllDatabases] = useState<string[] | null>(null);
+  const [showDbPicker, setShowDbPicker] = useState(false);
+  const [loadingDbs, setLoadingDbs] = useState(false);
+
+  const cacheRef = useRef<SchemaCache>(new Map());
+  const schema = defaultSchema(connectionType);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const addBtnRef = useRef<HTMLButtonElement>(null);
+
+  // Reset when connection changes
+  useEffect(() => {
+    setOpenDbs([connectionDatabase]);
+    setActiveDb(connectionDatabase);
+    setAllDatabases(null);
+    setShowDbPicker(false);
+    cacheRef.current = new Map();
+  }, [connectionId, connectionDatabase]);
+
+  // Close popover on outside click
+  useEffect(() => {
+    if (!showDbPicker) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        popoverRef.current && !popoverRef.current.contains(e.target as Node) &&
+        addBtnRef.current && !addBtnRef.current.contains(e.target as Node)
+      ) {
+        setShowDbPicker(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showDbPicker]);
+
+  const handleAddDb = useCallback(async () => {
+    if (allDatabases) {
+      setShowDbPicker(true);
+      return;
+    }
+    setLoadingDbs(true);
+    try {
+      const dbs = await fetchDatabases(connectionId);
+      setAllDatabases(dbs);
+      setShowDbPicker(true);
+    } catch {
+      // silently fail
+    } finally {
+      setLoadingDbs(false);
+    }
+  }, [connectionId, allDatabases]);
+
+  const selectDb = useCallback((db: string) => {
+    setOpenDbs((prev) => prev.includes(db) ? prev : [...prev, db]);
+    setActiveDb(db);
+    setShowDbPicker(false);
+  }, []);
+
+  const removeDb = useCallback((db: string) => {
+    setOpenDbs((prev) => {
+      const next = prev.filter((d) => d !== db);
+      return next;
+    });
+    setActiveDb((prev) => prev === db ? connectionDatabase : prev);
+  }, [connectionDatabase]);
+
+  const isSqlite = connectionType === "sqlite";
+
+  return (
+    <div className="flex h-full min-h-0">
+      {/* ── Left: database tab strip ──────────────────────── */}
+      <div className="flex flex-col w-[90px] shrink-0 border-r border-border bg-bg-primary overflow-y-auto">
+        {openDbs.map((db) => (
+          <DbTab
+            key={db}
+            db={db}
+            active={db === activeDb}
+            isDefault={db === connectionDatabase}
+            onClick={() => setActiveDb(db)}
+            onRemove={db !== connectionDatabase ? () => removeDb(db) : undefined}
+          />
+        ))}
+
+        {/* Add database button — right after last db tab */}
+        {!isSqlite && (
+          <button
+            ref={addBtnRef}
+            onClick={handleAddDb}
+            disabled={loadingDbs}
+            title="Add database"
+            className="flex flex-col items-center gap-0.5 w-full px-1.5 py-4 text-text-muted hover:text-text-secondary hover:bg-bg-hover transition-colors cursor-pointer border-b border-border"
+          >
+            {loadingDbs
+              ? <Loader2 size={13} className="animate-spin" />
+              : <Plus size={13} />
+            }
+            <span className="text-[11px] font-medium leading-tight">Add Database</span>
+          </button>
+        )}
+      </div>
+
+      {/* ── Popover — portaled to the sidebar root so it's not clipped ── */}
+      {showDbPicker && allDatabases && (
+        <div
+          ref={popoverRef}
+          className="fixed z-[9999] w-[220px] rounded-md border border-border bg-bg-primary shadow-xl overflow-hidden"
+          style={{
+            left: 56 + 240 + 8, // db strip width is inside the 240px aside, but we need absolute screen pos
+            ...(addBtnRef.current ? (() => {
+              const rect = addBtnRef.current.getBoundingClientRect();
+              return { top: Math.max(8, rect.top - 200), left: rect.right + 4 };
+            })() : {}),
+          }}
+        >
+          <div className="flex items-center justify-between px-3 py-1.5 border-b border-border">
+            <span className="text-[10px] font-semibold text-text-muted uppercase tracking-wider">Select database</span>
+            <button
+              onClick={() => setShowDbPicker(false)}
+              className="text-text-muted hover:text-text-primary cursor-pointer"
+            >
+              <X size={12} />
+            </button>
+          </div>
+          <div className="max-h-[200px] overflow-y-auto py-1">
+            {allDatabases
+              .filter((d) => !openDbs.includes(d))
+              .map((d) => (
+                <div
+                  key={d}
+                  onClick={() => selectDb(d)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] text-text-secondary hover:bg-bg-hover cursor-pointer transition-colors"
+                >
+                  <Database size={11} className="text-text-muted shrink-0" />
+                  <span className="truncate">{d}</span>
+                </div>
+              ))}
+            {allDatabases.filter((d) => !openDbs.includes(d)).length === 0 && (
+              <div className="px-3 py-2 text-[11px] text-text-muted">All databases added.</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Right: table list for active database ─────────── */}
+      <div className="flex-1 flex flex-col min-h-0 min-w-0">
+        <TableList
+          db={activeDb}
+          schema={schema}
+          connectionId={connectionId}
+          connectionType={connectionType}
+          cacheRef={cacheRef}
+          onTableSelect={onTableSelect}
+        />
+      </div>
+    </div>
+  );
+}
+
+/* ── Database tab ───────────────────────────────────────── */
+
+function DbTab({
+  db,
+  active,
+  isDefault,
+  onClick,
+  onRemove,
+}: {
+  db: string;
+  active: boolean;
+  isDefault: boolean;
+  onClick: () => void;
+  onRemove?: () => void;
+}) {
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setCtxMenu(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [ctxMenu]);
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setCtxMenu({ x: e.clientX, y: e.clientY });
+  };
+
+  return (
+    <>
+      <div
+        onClick={onClick}
+        onContextMenu={handleContextMenu}
+        title={db + (isDefault ? " (default)" : "")}
+        className={`relative flex flex-col items-center gap-0.5 px-1.5 py-4 cursor-pointer transition-colors border-b border-border ${
+          active
+            ? "bg-bg-secondary text-text-primary"
+            : "text-text-muted hover:text-text-secondary hover:bg-bg-hover"
+        }`}
+      >
+        {active && (
+          <div className="absolute left-0 top-0 bottom-0 w-[2px] bg-accent" />
+        )}
+        <Database size={13} className={`shrink-0 ${active ? "text-accent" : ""}`} />
+        <span className="text-[11px] font-medium leading-tight truncate w-full text-center">
+          {db}
+        </span>
+      </div>
+
+      {ctxMenu && (
+        <div
+          ref={menuRef}
+          className="fixed z-[9999] min-w-[140px] rounded-md border border-border bg-bg-primary shadow-xl overflow-hidden py-1"
+          style={{ top: ctxMenu.y, left: ctxMenu.x }}
+        >
+          <div className="px-3 py-1 text-[10px] text-text-muted font-semibold uppercase tracking-wider border-b border-border mb-1">
+            {db}
+          </div>
+          {onRemove && (
+            <button
+              onClick={() => { setCtxMenu(null); onRemove(); }}
+              className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-error hover:bg-error/10 transition-colors cursor-pointer"
+            >
+              <X size={11} />
+              Remove database
+            </button>
+          )}
+          {!onRemove && (
+            <div className="px-3 py-1.5 text-[12px] text-text-muted">Default database</div>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ── Table list for a single database ───────────────────── */
+
+function TableList({
+  db,
+  schema,
+  connectionId,
+  connectionType,
+  cacheRef,
+  onTableSelect,
+}: {
+  db: string;
+  schema: string;
+  connectionId: string;
+  connectionType: "postgres" | "mysql" | "sqlite";
+  cacheRef: React.RefObject<SchemaCache>;
+  onTableSelect?: (db: string, schema: string, table: string) => void;
+}) {
+  const [tables, setTables] = useState<TableInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -56,8 +314,22 @@ export function SchemaTree({
 
     (async () => {
       try {
-        const nodes = await loadRootNodes(connectionId, connectionType, connectionDatabase);
-        if (!cancelled) setRootNodes(nodes);
+        const cached = cacheRef.current?.get(db)?.get(schema);
+        if (cached) {
+          if (!cancelled) { setTables(cached); setLoading(false); }
+          return;
+        }
+
+        const result = await fetchTables(connectionId, db, schema);
+
+        if (cacheRef.current) {
+          if (!cacheRef.current.has(db)) {
+            cacheRef.current.set(db, new Map());
+          }
+          cacheRef.current.get(db)!.set(schema, result);
+        }
+
+        if (!cancelled) setTables(result);
       } catch (err: unknown) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -66,35 +338,32 @@ export function SchemaTree({
     })();
 
     return () => { cancelled = true; };
-  }, [connectionId, connectionType, connectionDatabase]);
-
-  if (loading) {
-    return (
-      <div className="flex items-center gap-2 px-3 py-4 text-xs text-text-muted">
-        <Loader2 size={12} className="animate-spin" />
-        Loading schema...
-      </div>
-    );
-  }
-
-  if (error) {
-    return <div className="px-3 py-4 text-xs text-error">{error}</div>;
-  }
-
-  if (rootNodes.length === 0) {
-    return <div className="px-3 py-4 text-xs text-text-muted">No objects found.</div>;
-  }
+  }, [connectionId, connectionType, db, schema, cacheRef]);
 
   return (
-    <div className="py-1 text-sm select-none overflow-y-auto h-full">
-      {rootNodes.map((node) => (
-        <LazyNode
-          key={nodeKey(node)}
-          node={node}
-          depth={0}
+    <div className="flex-1 overflow-y-auto min-h-0 py-1">
+      {loading && (
+        <div className="flex items-center gap-2 px-3 py-4 text-xs text-text-muted">
+          <Loader2 size={12} className="animate-spin" />
+          Loading tables...
+        </div>
+      )}
+
+      {error && (
+        <div className="px-3 py-4 text-xs text-error">{error}</div>
+      )}
+
+      {!loading && !error && tables.length === 0 && (
+        <div className="px-3 py-4 text-xs text-text-muted">No tables found.</div>
+      )}
+
+      {!loading && !error && tables.map((t) => (
+        <TableNode
+          key={`${t.type}:${t.name}`}
+          table={t}
+          db={db}
+          schema={schema}
           connectionId={connectionId}
-          connectionType={connectionType}
-          connectionDatabase={connectionDatabase}
           onTableSelect={onTableSelect}
         />
       ))}
@@ -102,125 +371,88 @@ export function SchemaTree({
   );
 }
 
-interface LazyNodeProps {
-  node: TreeNode;
-  depth: number;
-  connectionId: string;
-  connectionType: "postgres" | "mysql" | "sqlite";
-  connectionDatabase: string;
-  onTableSelect?: (db: string, schema: string, table: string) => void;
-}
+/* ── Table node (expandable to show columns) ────────────── */
 
-function LazyNode({ node, depth, connectionId, connectionType, connectionDatabase, onTableSelect }: LazyNodeProps) {
+function TableNode({
+  table,
+  db,
+  schema,
+  connectionId,
+  onTableSelect,
+}: {
+  table: TableInfo;
+  db: string;
+  schema: string;
+  connectionId: string;
+  onTableSelect?: (db: string, schema: string, table: string) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
-  const [children, setChildren] = useState<TreeNode[] | null>(null);
+  const [columns, setColumns] = useState<ColumnInfo[] | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const isLeaf = node.kind === "column";
-
   const toggle = useCallback(async () => {
-    if (isLeaf) return;
-
     if (expanded) { setExpanded(false); return; }
 
     setExpanded(true);
-    if (children !== null) return;
+    if (columns !== null) return;
 
     setLoading(true);
     try {
-      const loaded = await loadChildren(connectionId, connectionType, connectionDatabase, node);
-      setChildren(loaded);
+      const cols = await fetchColumns(connectionId, db, schema, table.name);
+      setColumns(cols.sort((a, b) => a.position - b.position));
     } catch {
-      setChildren([]);
+      setColumns([]);
     } finally {
       setLoading(false);
     }
-  }, [expanded, children, isLeaf, connectionId, connectionType, connectionDatabase, node]);
+  }, [expanded, columns, connectionId, db, schema, table.name]);
 
   const handleClick = () => {
-    if (isLeaf) return;
-    if (node.kind === "table" || node.kind === "view") {
-      onTableSelect?.(node.db, node.schema, node.label);
-    }
+    onTableSelect?.(db, schema, table.name);
     toggle();
   };
+
+  const isView = table.type === "view";
 
   return (
     <>
       <div
-        className={`flex items-center gap-1.5 py-[3px] pr-2 transition-colors group
-          ${isLeaf ? "cursor-default" : "cursor-pointer hover:bg-bg-hover"}`}
-        style={{ paddingLeft: `${depth * 14 + 6}px` }}
+        className="flex items-center gap-1.5 py-[3px] pr-2 pl-2 cursor-pointer hover:bg-bg-hover transition-colors"
         onClick={handleClick}
       >
-        {/* Disclosure chevron */}
         <span className="w-4 shrink-0 flex items-center justify-center text-text-muted">
-          {!isLeaf && (
-            expanded
-              ? <ChevronDown size={11} />
-              : <ChevronRight size={11} />
-          )}
+          {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
         </span>
-
-        {/* Icon */}
-        <NodeIcon node={node} />
-
-        {/* Label */}
-        <span className={`truncate text-[13px] ${
-          node.kind === "column" ? "text-text-secondary" : "text-text-primary"
-        }`}>
-          {node.label}
-        </span>
-
-        {/* Column: type + badges */}
-        {node.kind === "column" && node.columnInfo && (
-          <ColumnBadges column={node.columnInfo} />
-        )}
+        {isView
+          ? <Eye size={14} className="shrink-0 text-purple-400" />
+          : <Table2 size={14} className="shrink-0 text-accent" />
+        }
+        <span className="truncate text-[13px] text-text-primary">{table.name}</span>
       </div>
 
-      {/* Loading children */}
       {expanded && loading && (
-        <div
-          className="flex items-center gap-1.5 py-[3px] text-xs text-text-muted"
-          style={{ paddingLeft: `${(depth + 1) * 14 + 6 + 20}px` }}
-        >
+        <div className="flex items-center gap-1.5 py-[3px] text-xs text-text-muted" style={{ paddingLeft: 34 }}>
           <Loader2 size={10} className="animate-spin" />
           Loading...
         </div>
       )}
 
-      {expanded && children?.map((child) => (
-        <LazyNode
-          key={nodeKey(child)}
-          node={child}
-          depth={depth + 1}
-          connectionId={connectionId}
-          connectionType={connectionType}
-          connectionDatabase={connectionDatabase}
-          onTableSelect={onTableSelect}
-        />
+      {expanded && columns?.map((col) => (
+        <div
+          key={col.name}
+          className="flex items-center gap-1.5 py-[3px] pr-2"
+          style={{ paddingLeft: 34 }}
+        >
+          <Columns2 size={13} className="shrink-0 text-text-muted" />
+          <span className="truncate text-[13px] text-text-secondary">{col.name}</span>
+          <ColumnBadges column={col} />
+        </div>
       ))}
     </>
   );
 }
 
-function NodeIcon({ node }: { node: TreeNode }) {
-  const cls = "shrink-0";
-  switch (node.kind) {
-    case "database":
-      return <Database size={14} className={`${cls} text-text-muted`} />;
-    case "schema":
-      return <Layers size={14} className={`${cls} text-text-muted`} />;
-    case "table":
-      return <Table2 size={14} className={`${cls} text-accent`} />;
-    case "view":
-      return <Eye size={14} className={`${cls} text-purple-400`} />;
-    case "column":
-      return <Columns2 size={13} className={`${cls} text-text-muted`} />;
-    default:
-      return null;
-  }
-}
+/* ── Column badges ──────────────────────────────────────── */
 
 function ColumnBadges({ column }: { column: ColumnInfo }) {
   return (
@@ -240,78 +472,4 @@ function ColumnBadges({ column }: { column: ColumnInfo }) {
       )}
     </span>
   );
-}
-
-async function loadRootNodes(
-  connectionId: string,
-  connectionType: "postgres" | "mysql" | "sqlite",
-  connectionDatabase: string,
-): Promise<TreeNode[]> {
-  switch (connectionType) {
-    case "sqlite": {
-      const tables = await fetchTables(connectionId, connectionDatabase, "main");
-      return tablesToNodes(tables, connectionDatabase, "main");
-    }
-    case "mysql": {
-      const dbs = await fetchDatabases(connectionId);
-      return dbs.map((db) => ({ kind: "database" as const, label: db, db, schema: "", table: "" }));
-    }
-    case "postgres": {
-      const schemas = await fetchSchemas(connectionId, connectionDatabase);
-      return schemas.map((s) => ({ kind: "schema" as const, label: s, db: connectionDatabase, schema: s, table: "" }));
-    }
-  }
-}
-
-async function loadChildren(
-  connectionId: string,
-  connectionType: "postgres" | "mysql" | "sqlite",
-  _connectionDatabase: string,
-  parent: TreeNode,
-): Promise<TreeNode[]> {
-  switch (parent.kind) {
-    case "database": {
-      if (connectionType === "mysql") {
-        const tables = await fetchTables(connectionId, parent.db, "");
-        return tablesToNodes(tables, parent.db, "");
-      }
-      const schemas = await fetchSchemas(connectionId, parent.db);
-      return schemas.map((s) => ({ kind: "schema" as const, label: s, db: parent.db, schema: s, table: "" }));
-    }
-    case "schema": {
-      const tables = await fetchTables(connectionId, parent.db, parent.schema);
-      return tablesToNodes(tables, parent.db, parent.schema);
-    }
-    case "table":
-    case "view": {
-      const columns = await fetchColumns(connectionId, parent.db, parent.schema, parent.label);
-      return columns
-        .sort((a, b) => a.position - b.position)
-        .map((col) => ({
-          kind: "column" as const,
-          label: col.name,
-          db: parent.db,
-          schema: parent.schema,
-          table: parent.label,
-          columnInfo: col,
-        }));
-    }
-    default:
-      return [];
-  }
-}
-
-function tablesToNodes(tables: TableInfo[], db: string, schema: string): TreeNode[] {
-  return tables.map((t) => ({
-    kind: (t.type === "view" ? "view" : "table") as NodeKind,
-    label: t.name,
-    db,
-    schema,
-    table: t.name,
-    tableType: t.type,
-  }));
-}
-
-function nodeKey(node: TreeNode): string {
-  return `${node.kind}:${node.db}:${node.schema}:${node.label}`;
 }

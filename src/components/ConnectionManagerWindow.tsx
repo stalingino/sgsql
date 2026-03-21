@@ -166,9 +166,11 @@ export function ConnectionManagerWindow() {
     setConnecting(true);
     setStatusMsg(null);
     let connectionId: string;
+    let serverVersion = "";
     try {
       const result = await openConnection(profile);
       connectionId = result.connectionId;
+      serverVersion = result.serverVersion || "";
     } catch (e: unknown) {
       setStatusMsg({ type: "error", text: e instanceof Error ? e.message : "Connection failed" });
       setConnecting(false);
@@ -180,9 +182,8 @@ export function ConnectionManagerWindow() {
     const mainWin = await WebviewWindow.getByLabel("main");
     if (mainWin) await mainWin.show();
 
-    // Pass both the profile (with password, in-memory only) and the
-    // already-open connectionId so the main window skips re-connecting.
-    await emit("connection-selected", { profile, connectionId });
+    // Pass the profile, connectionId, and server version to the main window.
+    await emit("connection-selected", { profile, connectionId, serverVersion });
     getCurrentWindow().close();
   }
 

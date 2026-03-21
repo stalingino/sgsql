@@ -26,6 +26,7 @@ interface Tab {
   profile: ConnectionProfile;
   connectionId: string | null;
   connectingError: string | null;
+  serverVersion: string;
 }
 
 let tabCounter = 0;
@@ -56,10 +57,10 @@ function App() {
   /* ── Listen for connection-selected events ────────────── */
 
   useEffect(() => {
-    const unlisten = listen<{ profile: ConnectionProfile; connectionId: string }>(
+    const unlisten = listen<{ profile: ConnectionProfile; connectionId: string; serverVersion?: string }>(
       "connection-selected",
       async (event) => {
-        const { profile, connectionId: preOpenedId } = event.payload;
+        const { profile, connectionId: preOpenedId, serverVersion } = event.payload;
 
         const tabId = nextTabId();
         const newTab: Tab = {
@@ -67,6 +68,7 @@ function App() {
           profile,
           connectionId: preOpenedId,
           connectingError: null,
+          serverVersion: serverVersion || "",
         };
 
         setTabs((prev) => [...prev, newTab]);
@@ -202,35 +204,27 @@ function App() {
       ) : (
         <div className="flex-1 flex min-h-0">
           {/* Left sidebar */}
-          <aside className="w-[240px] shrink-0 border-r border-border bg-bg-secondary flex flex-col min-h-0">
-            <div className="flex items-center gap-1.5 px-3 py-2 border-b border-border shrink-0">
-              <Database size={12} className="text-text-muted" />
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
-                Schema
-              </span>
-            </div>
-            <div className="flex-1 overflow-y-auto min-h-0">
-              {activeTab.connectingError && (
-                <div className="flex items-start gap-2 px-3 py-4 text-xs text-error">
-                  <ServerCrash size={14} className="shrink-0 mt-0.5" />
-                  {activeTab.connectingError}
-                </div>
-              )}
-              {!activeTab.connectionId && !activeTab.connectingError && (
-                <div className="flex items-center gap-2 px-3 py-4 text-xs text-text-muted">
-                  <Loader2 size={12} className="animate-spin" />
-                  Connecting...
-                </div>
-              )}
-              {activeTab.connectionId && (
-                <SchemaTree
-                  connectionId={activeTab.connectionId}
-                  connectionType={activeTab.profile.type}
-                  connectionDatabase={activeTab.profile.database}
-                  onTableSelect={handleTableSelect}
-                />
-              )}
-            </div>
+          <aside className="w-[280px] shrink-0 border-r border-border bg-bg-secondary flex flex-col min-h-0">
+            {activeTab.connectingError && (
+              <div className="flex items-start gap-2 px-3 py-4 text-xs text-error">
+                <ServerCrash size={14} className="shrink-0 mt-0.5" />
+                {activeTab.connectingError}
+              </div>
+            )}
+            {!activeTab.connectionId && !activeTab.connectingError && (
+              <div className="flex items-center gap-2 px-3 py-4 text-xs text-text-muted">
+                <Loader2 size={12} className="animate-spin" />
+                Connecting...
+              </div>
+            )}
+            {activeTab.connectionId && (
+              <SchemaTree
+                connectionId={activeTab.connectionId}
+                connectionType={activeTab.profile.type}
+                connectionDatabase={activeTab.profile.database}
+                onTableSelect={handleTableSelect}
+              />
+            )}
           </aside>
 
           {/* Main content */}
@@ -339,13 +333,16 @@ function StatusBar({ activeTab }: { activeTab: Tab | null }) {
   const { mode, setMode } = useThemeStore();
 
   return (
-    <div className="flex items-center justify-between h-6 px-3 border-t border-border bg-bg-secondary shrink-0 text-[11px] text-text-muted">
+    <div className="flex items-center justify-between h-7 px-3 border-t border-border bg-bg-secondary shrink-0 text-xs text-text-secondary">
       {/* Left: connection status */}
       <div className="flex items-center gap-2">
         {activeTab?.connectionId && (
           <>
             <span className="w-1.5 h-1.5 rounded-full bg-success" />
-            <span>Connected · {activeTab.profile.type}</span>
+            <span>
+              Connected · {activeTab.profile.type}
+              {activeTab.serverVersion && ` ${activeTab.serverVersion}`}
+            </span>
           </>
         )}
         {activeTab && !activeTab.connectionId && !activeTab.connectingError && (
@@ -355,7 +352,7 @@ function StatusBar({ activeTab }: { activeTab: Tab | null }) {
           </>
         )}
         {activeTab?.connectingError && (
-          <span className="text-error">Connection failed</span>
+          <span>Connection failed</span>
         )}
         {!activeTab && <span>Not connected</span>}
       </div>

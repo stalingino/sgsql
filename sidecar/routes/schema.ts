@@ -66,6 +66,8 @@ export async function handleOpenConnection(
   }
 
   try {
+    let serverVersion = "";
+
     if (profile.type === "postgres") {
       const postgres = (await import("postgres")).default;
       const sql = postgres({
@@ -78,7 +80,8 @@ export async function handleOpenConnection(
         connect_timeout: 5,
         max: 4,
       });
-      await sql`SELECT 1`;
+      const [row] = await sql`SHOW server_version`;
+      serverVersion = row?.server_version ?? "";
       setConnection(profile.id, { type: "postgres", client: sql });
     } else if (profile.type === "mysql") {
       const mysql = await import("mysql2/promise");
@@ -91,18 +94,20 @@ export async function handleOpenConnection(
         ssl: profile.ssl ? {} : undefined,
         connectTimeout: 5000,
       });
-      await conn.query("SELECT 1");
+      const [rows] = await conn.query("SELECT version() AS v");
+      serverVersion = (rows as any)?.[0]?.v ?? "";
       setConnection(profile.id, { type: "mysql", client: conn });
     } else if (profile.type === "sqlite") {
       const { Database } = await import("bun:sqlite");
       const db = new Database(profile.database, { readonly: false });
-      db.query("SELECT 1").get();
+      const row = db.query("SELECT sqlite_version() AS v").get() as any;
+      serverVersion = row?.v ?? "";
       setConnection(profile.id, { type: "sqlite", client: db });
     } else {
       return errorResponse(`Unsupported connection type: ${(profile as any).type}`, headers, 400);
     }
 
-    return json({ connectionId: profile.id }, headers);
+    return json({ connectionId: profile.id, serverVersion }, headers);
   } catch (e: unknown) {
     const message = friendlyError(e);
     console.error(`[sidecar] open connection failed: ${message}`);

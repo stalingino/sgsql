@@ -23,8 +23,8 @@ export interface ColumnInfo {
 
 export async function openConnection(
   profile: ConnectionProfile,
-): Promise<{ connectionId: string }> {
-  return sidecarFetch<{ connectionId: string }>("/connections/open", {
+): Promise<{ connectionId: string; serverVersion: string }> {
+  return sidecarFetch<{ connectionId: string; serverVersion: string }>("/connections/open", {
     method: "POST",
     body: JSON.stringify(profile),
   });
