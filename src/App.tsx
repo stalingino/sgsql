@@ -19,8 +19,9 @@ import {
 import { waitForSidecar } from "./lib/sidecar";
 import { openConnectionManager } from "./lib/openConnectionManager";
 import { closeConnection } from "./lib/schema";
-import { useThemeStore, type ThemeMode } from "./lib/theme";
+import { useThemeStore, type ThemeMode, initTheme } from "./lib/theme";
 import { useWindowPersist } from "./lib/useWindowPersist";
+import { loadConfig, getConfig, saveConfig, queryStackPop, queryStackPush } from "./lib/config";
 import { useQueryLog } from "./lib/queryLog";
 import { SchemaTree } from "./components/SchemaTree";
 import { DataTable } from "./components/DataTable";
@@ -37,6 +38,7 @@ interface ContentTab {
   schema: string;
   table: string;
   type: "table" | "view" | "query";
+  sql?: string; // live SQL for query tabs (not stored by ID)
 }
 
 interface Tab {
@@ -54,47 +56,41 @@ function nextTabId() {
   return `tab-${++tabCounter}`;
 }
 
-let contentTabCounter = 0;
 function nextContentTabId() {
-  return `ct-${++contentTabCounter}`;
-}
-
-/* ── Panel state persistence keys ────────────────────────── */
-
-const SIDEBAR_VISIBLE_KEY = "sgsql-sidebar-visible";
-const CONSOLE_VISIBLE_KEY = "sgsql-console-visible";
-const CONSOLE_HEIGHT_KEY = "sgsql-console-height";
-const SIDEBAR_WIDTH_KEY = "sgsql-sidebar-width";
-
-function readBool(key: string, fallback: boolean): boolean {
-  const v = localStorage.getItem(key);
-  if (v === null) return fallback;
-  return v === "true";
+  return `ct-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
 /* ── App ────────────────────────────────────────────────── */
 
 function App() {
   useWindowPersist();
+  const [configReady, setConfigReady] = useState(false);
   const [sidecarReady, setSidecarReady] = useState(false);
   const [sidecarError, setSidecarError] = useState(false);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
 
-  // Panel visibility (persisted)
-  const [sidebarVisible, setSidebarVisible] = useState(() => readBool(SIDEBAR_VISIBLE_KEY, true));
-  const [consoleVisible, setConsoleVisible] = useState(() => readBool(CONSOLE_VISIBLE_KEY, false));
+  // Panel visibility — initialized from config after load
+  const [sidebarVisible, setSidebarVisible] = useState(true);
+  const [consoleVisible, setConsoleVisible] = useState(false);
+
+  // Load config on mount — sets theme, panel states
+  const { setMode: setThemeMode } = useThemeStore();
+  useEffect(() => {
+    loadConfig().then((cfg) => {
+      const mode = initTheme();
+      setThemeMode(cfg.theme || mode);
+      if (cfg.sidebar?.visible !== undefined) setSidebarVisible(cfg.sidebar.visible);
+      if (cfg.console?.visible !== undefined) setConsoleVisible(cfg.console.visible);
+      setConfigReady(true);
+    });
+  }, []);
 
   // Enable/disable query logging when console visibility changes
   const setLogEnabled = useQueryLog((s) => s.setEnabled);
   useEffect(() => {
     setLogEnabled(consoleVisible);
-    localStorage.setItem(CONSOLE_VISIBLE_KEY, String(consoleVisible));
   }, [consoleVisible, setLogEnabled]);
-
-  useEffect(() => {
-    localStorage.setItem(SIDEBAR_VISIBLE_KEY, String(sidebarVisible));
-  }, [sidebarVisible]);
 
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
@@ -201,16 +197,16 @@ function App() {
   const closeContentTab = useCallback((contentTabId: string) => {
     setTabs((prev) => prev.map((tab) => {
       if (tab.id !== activeTabId) return tab;
+      const closing = tab.contentTabs.find((ct) => ct.id === contentTabId);
+      // Push query SQL to stack on close
+      if (closing?.type === "query" && closing.sql) {
+        queryStackPush(closing.sql);
+      }
       const idx = tab.contentTabs.findIndex((ct) => ct.id === contentTabId);
       const next = tab.contentTabs.filter((ct) => ct.id !== contentTabId);
       let newActiveId = tab.activeContentTabId;
       if (tab.activeContentTabId === contentTabId) {
-        if (next.length === 0) {
-          newActiveId = null;
-        } else {
-          const newIdx = Math.min(idx, next.length - 1);
-          newActiveId = next[newIdx].id;
-        }
+        newActiveId = next.length === 0 ? null : next[Math.min(idx, next.length - 1)].id;
       }
       return { ...tab, contentTabs: next, activeContentTabId: newActiveId };
     }));
@@ -224,6 +220,7 @@ function App() {
   }, [activeTabId]);
 
   const addQueryTab = useCallback(() => {
+    const restoredSql = queryStackPop();
     setTabs((prev) => prev.map((tab) => {
       if (tab.id !== activeTabId) return tab;
       const queryCount = tab.contentTabs.filter((ct) => ct.type === "query").length;
@@ -233,6 +230,7 @@ function App() {
         schema: "",
         table: `Query ${queryCount + 1}`,
         type: "query",
+        sql: restoredSql || "",
       };
       return {
         ...tab,
@@ -244,7 +242,7 @@ function App() {
 
   /* ── Loading ──────────────────────────────────────────── */
 
-  if (!sidecarReady && !sidecarError) {
+  if (!configReady || (!sidecarReady && !sidecarError)) {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-bg-primary">
         <Database size={40} className="text-accent mb-4" />
@@ -312,7 +310,11 @@ function App() {
         <div className="flex items-center gap-0.5 mx-1 shrink-0">
           {/* Toggle sidebar */}
           <button
-            onClick={() => setSidebarVisible((v) => !v)}
+            onClick={() => setSidebarVisible((v) => {
+              const next = !v;
+              saveConfig({ sidebar: { ...getConfig().sidebar, visible: next, width: getConfig().sidebar?.width ?? 280 } });
+              return next;
+            })}
             title={sidebarVisible ? "Hide sidebar" : "Show sidebar"}
             className={`flex items-center p-1.5 rounded-md transition-colors cursor-pointer ${
               sidebarVisible
@@ -325,7 +327,11 @@ function App() {
 
           {/* Toggle console */}
           <button
-            onClick={() => setConsoleVisible((v) => !v)}
+            onClick={() => setConsoleVisible((v) => {
+              const next = !v;
+              saveConfig({ console: { ...getConfig().console, visible: next, height: getConfig().console?.height ?? 180 } });
+              return next;
+            })}
             title={consoleVisible ? "Hide console" : "Show console"}
             className={`flex items-center p-1.5 rounded-md transition-colors cursor-pointer ${
               consoleVisible
@@ -388,32 +394,30 @@ function App() {
 
             {/* Main content */}
             <main className="flex-1 flex flex-col min-h-0 min-w-0 bg-bg-primary">
-              {/* Content tab bar */}
-              {activeTab.contentTabs.length > 0 && (
-                <div className="flex items-center h-8 border-b border-border bg-bg-secondary shrink-0">
-                  <div className="flex-1 flex items-center h-full overflow-x-auto no-scrollbar">
-                    {activeTab.contentTabs.map((ct) => (
-                      <ContentTabItem
-                        key={ct.id}
-                        ct={ct}
-                        active={ct.id === activeTab.activeContentTabId}
-                        onActivate={() => setActiveContentTab(ct.id)}
-                        onClose={() => closeContentTab(ct.id)}
-                      />
-                    ))}
-                  </div>
-                  <div className="flex items-center px-1.5 shrink-0 border-l border-border">
-                    <button
-                      onClick={addQueryTab}
-                      title="New SQL query tab"
-                      className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold tracking-wide text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer border border-border"
-                    >
-                      <Plus size={10} />
-                      SQL
-                    </button>
-                  </div>
+              {/* Content tab bar — always visible */}
+              <div className="flex items-center h-8 border-b border-border bg-bg-secondary shrink-0">
+                <div className="flex-1 flex items-center h-full overflow-x-auto no-scrollbar">
+                  {activeTab.contentTabs.map((ct) => (
+                    <ContentTabItem
+                      key={ct.id}
+                      ct={ct}
+                      active={ct.id === activeTab.activeContentTabId}
+                      onActivate={() => setActiveContentTab(ct.id)}
+                      onClose={() => closeContentTab(ct.id)}
+                    />
+                  ))}
                 </div>
-              )}
+                <div className="flex items-center px-1.5 shrink-0 border-l border-border">
+                  <button
+                    onClick={addQueryTab}
+                    title="New SQL query tab"
+                    className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold tracking-wide text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer border border-border"
+                  >
+                    <Plus size={10} />
+                    SQL
+                  </button>
+                </div>
+              </div>
 
               {/* Content area */}
               {activeTab.activeContentTabId && activeTab.connectionId ? (
@@ -427,7 +431,17 @@ function App() {
                       {ct.type === "query" ? (
                         <QueryEditor
                           connectionId={activeTab.connectionId!}
-                          storageKey={`${activeTab.id}-${ct.id}`}
+                          initialSql={ct.sql || ""}
+                          onSqlChange={(sql) => {
+                            setTabs((prev) => prev.map((tab) =>
+                              tab.id !== activeTab.id ? tab : {
+                                ...tab,
+                                contentTabs: tab.contentTabs.map((c) =>
+                                  c.id !== ct.id ? c : { ...c, sql }
+                                ),
+                              }
+                            ));
+                          }}
                         />
                       ) : (
                         <DataTable
@@ -592,8 +606,8 @@ function ContentTabItem({
 
 function ResizableSidebar({ children }: { children: React.ReactNode }) {
   const [width, setWidth] = useState(() => {
-    const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
-    return saved ? Math.min(480, Math.max(180, Number(saved))) : 280;
+    const saved = getConfig().sidebar?.width;
+    return saved ? Math.min(480, Math.max(180, saved)) : 280;
   });
   const dragging = useRef(false);
   const startX = useRef(0);
@@ -622,7 +636,7 @@ function ResizableSidebar({ children }: { children: React.ReactNode }) {
       const finalWidth = Math.min(480, Math.max(180, startW.current + e.clientX - startX.current));
       clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
-        localStorage.setItem(SIDEBAR_WIDTH_KEY, String(finalWidth));
+        saveConfig({ sidebar: { visible: getConfig().sidebar?.visible ?? true, width: finalWidth } });
       }, 100);
     };
     window.addEventListener("mousemove", onMouseMove);
@@ -649,8 +663,8 @@ function ResizableSidebar({ children }: { children: React.ReactNode }) {
 
 function ResizableConsole({ children }: { children: React.ReactNode }) {
   const [height, setHeight] = useState(() => {
-    const saved = localStorage.getItem(CONSOLE_HEIGHT_KEY);
-    return saved ? Math.min(500, Math.max(80, Number(saved))) : 180;
+    const saved = getConfig().console?.height;
+    return saved ? Math.min(500, Math.max(80, saved)) : 180;
   });
   const dragging = useRef(false);
   const startY = useRef(0);
@@ -682,7 +696,7 @@ function ResizableConsole({ children }: { children: React.ReactNode }) {
       const finalHeight = Math.min(500, Math.max(80, startH.current + delta));
       clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
-        localStorage.setItem(CONSOLE_HEIGHT_KEY, String(finalHeight));
+        saveConfig({ console: { visible: getConfig().console?.visible ?? false, height: finalHeight } });
       }, 100);
     };
     window.addEventListener("mousemove", onMouseMove);

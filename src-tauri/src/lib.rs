@@ -5,6 +5,7 @@ use std::sync::Mutex;
 
 mod keychain;
 mod encrypted_store;
+mod config;
 
 struct SidecarChild(Mutex<Option<CommandChild>>);
 
@@ -19,6 +20,8 @@ pub fn run() {
             keychain::keychain_delete,
             encrypted_store::encrypted_store_save,
             encrypted_store::encrypted_store_load,
+            config::config_load,
+            config::config_save,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

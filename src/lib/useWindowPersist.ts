@@ -1,9 +1,6 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-
-function storageKey(label: string, field: "pos" | "size") {
-  return `sgsql-win-${label}-${field}`;
-}
+import { getConfig, saveConfig } from "./config";
 
 export interface SavedWindowState {
   x?: number;
@@ -12,23 +9,14 @@ export interface SavedWindowState {
   height?: number;
 }
 
-/** Read saved position/size for a window label (without restoring). */
+/** Read saved state for a window label from the config cache. */
 export function getSavedWindowState(label: string): SavedWindowState {
-  try {
-    const pos = localStorage.getItem(storageKey(label, "pos"));
-    const size = localStorage.getItem(storageKey(label, "size"));
-    return {
-      ...(pos ? JSON.parse(pos) : {}),
-      ...(size ? JSON.parse(size) : {}),
-    };
-  } catch {
-    return {};
-  }
+  return getConfig().windows?.[label] ?? {};
 }
 
 /**
- * Hook — call once inside the window's root component.
- * Restores saved position/size on mount, then saves on every move/resize.
+ * Hook — call once inside a window's root component.
+ * Restores saved position/size on mount, then saves on move/resize stop.
  */
 export function useWindowPersist() {
   useEffect(() => {
@@ -38,25 +26,28 @@ export function useWindowPersist() {
     let unlistenMoved: (() => void) | undefined;
     let unlistenResized: (() => void) | undefined;
 
-    const save = async () => {
+    const save = () => {
       clearTimeout(saveTimer);
       saveTimer = setTimeout(async () => {
         try {
           const sf = await win.scaleFactor();
           const pos = await win.outerPosition();
           const size = await win.outerSize();
-          localStorage.setItem(
-            storageKey(label, "pos"),
-            JSON.stringify({ x: pos.x / sf, y: pos.y / sf }),
-          );
-          localStorage.setItem(
-            storageKey(label, "size"),
-            JSON.stringify({ width: size.width / sf, height: size.height / sf }),
-          );
+          saveConfig({
+            windows: {
+              ...getConfig().windows,
+              [label]: {
+                x: pos.x / sf,
+                y: pos.y / sf,
+                width: size.width / sf,
+                height: size.height / sf,
+              },
+            },
+          });
         } catch {
           // window may be closing
         }
-      }, 300);
+      }, 500);
     };
 
     (async () => {
@@ -75,7 +66,6 @@ export function useWindowPersist() {
         // first run — no saved state
       }
 
-      // Start listening
       unlistenMoved = await win.onMoved(() => save());
       unlistenResized = await win.onResized(() => save());
     })();

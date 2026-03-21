@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Trash2 } from "lucide-react";
 import { useQueryLog, type QueryLogEntry } from "../lib/queryLog";
+import { HighlightedSQL } from "../lib/highlightSQL";
 
 export function QueryConsole() {
   const entries = useQueryLog((s) => s.entries);
@@ -20,14 +21,14 @@ export function QueryConsole() {
           Query Log
         </span>
         <div className="flex items-center gap-1">
-          <span className="text-[10px] text-text-muted tabular-nums mr-1">
+          <span className="text-[10px] text-text-secondary tabular-nums mr-1">
             {entries.length} {entries.length === 1 ? "query" : "queries"}
           </span>
           {entries.length > 0 && (
             <button
               onClick={clear}
               title="Clear log"
-              className="p-0.5 rounded text-text-muted hover:text-error hover:bg-error/10 transition-colors cursor-pointer"
+              className="p-0.5 rounded text-text-secondary hover:text-error hover:bg-error/10 transition-colors cursor-pointer"
             >
               <Trash2 size={12} />
             </button>
@@ -103,66 +104,3 @@ function LogEntry({ entry }: { entry: QueryLogEntry }) {
   );
 }
 
-/* ── Basic SQL syntax highlighter ──────────────────────── */
-
-const SQL_KEYWORDS = new Set([
-  "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL",
-  "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE",
-  "TABLE", "ALTER", "DROP", "INDEX", "JOIN", "LEFT", "RIGHT", "INNER",
-  "OUTER", "ON", "AS", "ORDER", "BY", "GROUP", "HAVING", "LIMIT",
-  "OFFSET", "DISTINCT", "UNION", "ALL", "EXISTS", "BETWEEN", "LIKE",
-  "CASE", "WHEN", "THEN", "ELSE", "END", "COUNT", "SUM", "AVG",
-  "MIN", "MAX", "ASC", "DESC", "CASCADE", "CONSTRAINT", "PRIMARY",
-  "KEY", "FOREIGN", "REFERENCES", "DEFAULT", "CHECK", "UNIQUE",
-  "VIEW", "TRIGGER", "PROCEDURE", "FUNCTION", "BEGIN", "COMMIT",
-  "ROLLBACK", "GRANT", "REVOKE", "SHOW", "USE", "DESCRIBE",
-  "EXPLAIN", "ANALYZE", "SCHEMA", "DATABASE", "IF", "REPLACE",
-]);
-
-function HighlightedSQL({ sql }: { sql: string }) {
-  // Split into tokens preserving whitespace
-  const tokens = sql.split(/(\s+|,|\(|\)|;|'[^']*'|"[^"]*"|`[^`]*`|\*)/g);
-
-  return (
-    <span className="text-text-primary">
-      {tokens.map((token, i) => {
-        if (!token) return null;
-
-        // String literals
-        if (
-          (token.startsWith("'") && token.endsWith("'")) ||
-          (token.startsWith('"') && token.endsWith('"'))
-        ) {
-          return <span key={i} className="text-green-400">{token}</span>;
-        }
-
-        // Backtick-quoted identifiers
-        if (token.startsWith("`") && token.endsWith("`")) {
-          return <span key={i} className="text-sky-400">{token}</span>;
-        }
-
-        // Keywords
-        if (SQL_KEYWORDS.has(token.toUpperCase())) {
-          return <span key={i} className="text-purple-400 font-semibold">{token}</span>;
-        }
-
-        // Numbers
-        if (/^\d+$/.test(token)) {
-          return <span key={i} className="text-accent">{token}</span>;
-        }
-
-        // Asterisk
-        if (token === "*") {
-          return <span key={i} className="text-accent font-bold">{token}</span>;
-        }
-
-        // Comments
-        if (token.startsWith("--")) {
-          return <span key={i} className="text-text-muted italic">{token}</span>;
-        }
-
-        return <span key={i}>{token}</span>;
-      })}
-    </span>
-  );
-}

@@ -1,67 +1,29 @@
-import { useCallback, useEffect, useRef, useState, useMemo } from "react";
+import { useCallback, useRef, useState, useMemo } from "react";
 import { Loader2, Play, ChevronLeft, ChevronRight } from "lucide-react";
 import { executeQuery, type QueryResult } from "../lib/schema";
 import { useQueryLog } from "../lib/queryLog";
+import { HighlightedSQL } from "../lib/highlightSQL";
 
 interface QueryEditorProps {
   connectionId: string;
-  /** Unique key for persisting query history per connection tab */
-  storageKey: string;
+  initialSql?: string;
+  onSqlChange?: (sql: string) => void;
 }
 
-const STORAGE_PREFIX = "sgsql-queries-";
 const PAGE_SIZE = 100;
 
-interface SavedState {
-  queries: string[];
-  activeIndex: number;
-}
-
-function loadSaved(storageKey: string): SavedState {
-  try {
-    const raw = localStorage.getItem(STORAGE_PREFIX + storageKey);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed.queries) && parsed.queries.length > 0) {
-        return parsed;
-      }
-    }
-  } catch { /* ignore */ }
-  return { queries: [""], activeIndex: 0 };
-}
-
-function saveToDisk(storageKey: string, state: SavedState) {
-  try {
-    localStorage.setItem(STORAGE_PREFIX + storageKey, JSON.stringify(state));
-  } catch { /* ignore */ }
-}
-
-export function QueryEditor({ connectionId, storageKey }: QueryEditorProps) {
-  const [savedState, setSavedState] = useState<SavedState>(() => loadSaved(storageKey));
-  const [sql, setSql] = useState(() => savedState.queries[savedState.activeIndex] || "");
+export function QueryEditor({ connectionId, initialSql = "", onSqlChange }: QueryEditorProps) {
+  const [sql, setSql] = useState(initialSql);
   const [result, setResult] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const onSqlChangeRef = useRef(onSqlChange);
+  onSqlChangeRef.current = onSqlChange;
 
   const addLogEntryRef = useRef(useQueryLog.getState().addEntry);
   addLogEntryRef.current = useQueryLog.getState().addEntry;
-
-  // Auto-save on sql change (debounced)
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  useEffect(() => {
-    clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      setSavedState((prev) => {
-        const next = { ...prev, queries: [...prev.queries] };
-        next.queries[next.activeIndex] = sql;
-        saveToDisk(storageKey, next);
-        return next;
-      });
-    }, 500);
-    return () => clearTimeout(saveTimerRef.current);
-  }, [sql, storageKey]);
 
   const runQuery = useCallback(async () => {
     const trimmed = sql.trim();
@@ -125,20 +87,40 @@ export function QueryEditor({ connectionId, storageKey }: QueryEditorProps) {
       {/* SQL Editor area */}
       <div className="flex flex-col shrink-0 border-b border-border">
         <div className="relative">
+          {/* Syntax-highlighted layer behind the textarea */}
+          <pre
+            aria-hidden
+            className="pointer-events-none absolute inset-0 p-3 pr-16 text-[13px] font-mono whitespace-pre-wrap break-words overflow-hidden"
+            style={{ color: "transparent" }}
+          >
+            <HighlightedSQL sql={sql || " "} />
+          </pre>
           <textarea
             ref={textareaRef}
             value={sql}
-            onChange={(e) => setSql(e.target.value)}
+            onChange={(e) => {
+              const val = e.target.value;
+              setSql(val);
+              onSqlChangeRef.current?.(val);
+              // Keep highlight layer scroll in sync
+              const pre = e.target.previousElementSibling as HTMLPreElement | null;
+              if (pre) pre.scrollTop = e.target.scrollTop;
+            }}
+            onScroll={(e) => {
+              const pre = (e.target as HTMLTextAreaElement).previousElementSibling as HTMLPreElement | null;
+              if (pre) pre.scrollTop = (e.target as HTMLTextAreaElement).scrollTop;
+            }}
             onKeyDown={handleKeyDown}
             placeholder="Enter SQL query... (Ctrl+Enter to run)"
             spellCheck={false}
-            className="w-full min-h-[80px] max-h-[200px] resize-y bg-bg-primary text-text-primary text-[13px] font-mono p-3 pr-16 outline-none placeholder-text-muted"
+            className="relative w-full min-h-[80px] max-h-[200px] resize-y bg-transparent text-text-primary caret-text-primary text-[13px] font-mono p-3 pr-16 outline-none placeholder-text-muted z-10"
+            style={{ caretColor: "var(--color-text-primary)", color: "transparent" }}
           />
           <button
             onClick={runQuery}
             disabled={loading || !sql.trim()}
             title="Run query (Ctrl+Enter)"
-            className="absolute top-2 right-2 flex items-center gap-1 px-2.5 py-1 rounded-md bg-accent hover:bg-accent-hover text-white text-[11px] font-medium disabled:opacity-40 disabled:cursor-default cursor-pointer transition-colors"
+            className="absolute top-2 right-2 flex items-center gap-1 px-2.5 py-1 rounded-md bg-accent hover:bg-accent-hover text-white text-[11px] font-medium disabled:opacity-40 disabled:cursor-default cursor-pointer transition-colors z-20"
           >
             {loading ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
             Run
