@@ -15,16 +15,18 @@ import {
   type ColumnInfo,
 } from "../lib/schema";
 import { useQueryLog } from "../lib/queryLog";
-import { ResultGrid } from "./ResultGrid";
+import { ResultGrid, type SortState, type CellSelection } from "./ResultGrid";
+import { getConfig } from "../lib/config";
 
 interface DataTableProps {
   connectionId: string;
   db: string;
   schema: string;
   table: string;
+  onCellSelect?: (selection: CellSelection | null) => void;
 }
 
-const PAGE_SIZE = 100;
+const PAGE_SIZE = 50;
 
 type ViewMode = "data" | "structure";
 
@@ -214,7 +216,7 @@ function ResizableTh({
 
 /* ── Main component ────────────────────────────────────── */
 
-export function DataTable({ connectionId, db, schema, table }: DataTableProps) {
+export function DataTable({ connectionId, db, schema, table, onCellSelect }: DataTableProps) {
   const [mode, setMode] = useState<ViewMode>("data");
   const [data, setData] = useState<TableRowsResult | null>(null);
   const [columns, setColumns] = useState<ColumnInfo[] | null>(null);
@@ -222,14 +224,31 @@ export function DataTable({ connectionId, db, schema, table }: DataTableProps) {
   const [structLoading, setStructLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
+  const [sort, setSort] = useState<SortState | null>(() => {
+    // Initialize from settings default
+    const defaultOrder = getConfig().settings?.defaultOrderBy?.trim();
+    if (!defaultOrder) return null;
+    const parts = defaultOrder.split(/\s+/);
+    const col = parts[0];
+    const dir = (parts[1] || "DESC").toUpperCase();
+    return { column: col, dir: dir === "ASC" ? "ASC" : "DESC" };
+  });
 
   const addLogEntryRef = useRef(useQueryLog.getState().addEntry);
   addLogEntryRef.current = useQueryLog.getState().addEntry;
 
-  // Reset offset when table changes
+  // Reset offset and sort when table changes
   useEffect(() => {
     setOffset(0);
     setMode("data");
+    // Re-apply default sort from settings
+    const defaultOrder = getConfig().settings?.defaultOrderBy?.trim();
+    if (defaultOrder) {
+      const parts = defaultOrder.split(/\s+/);
+      setSort({ column: parts[0], dir: (parts[1] || "DESC").toUpperCase() === "ASC" ? "ASC" : "DESC" });
+    } else {
+      setSort(null);
+    }
   }, [connectionId, db, schema, table]);
 
   // Fetch structure (columns) on mount / table change
@@ -257,8 +276,9 @@ export function DataTable({ connectionId, db, schema, table }: DataTableProps) {
     setLoading(true);
     setError(null);
 
+    const orderBy = sort ? `${sort.column} ${sort.dir}` : undefined;
     const start = performance.now();
-    fetchTableRows(connectionId, db, schema, table, PAGE_SIZE, offset)
+    fetchTableRows(connectionId, db, schema, table, PAGE_SIZE, offset, orderBy)
       .then((result) => {
         if (!cancelled) {
           setData(result);
@@ -292,7 +312,7 @@ export function DataTable({ connectionId, db, schema, table }: DataTableProps) {
       });
 
     return () => { cancelled = true; };
-  }, [connectionId, db, schema, table, offset]);
+  }, [connectionId, db, schema, table, offset, sort]);
 
   // Use columns from structure for the header when data has no rows
   const headerColumns = (data?.columns?.length ? data.columns : null) ?? columns?.map((c) => c.name) ?? [];
@@ -304,9 +324,9 @@ export function DataTable({ connectionId, db, schema, table }: DataTableProps) {
   const hasNext = (data?.rows.length ?? 0) === PAGE_SIZE;
 
   return (
-    <div className="flex flex-col h-full min-h-0 selectable">
+    <div className="flex flex-col h-full min-h-0">
       {/* Content area */}
-      <div className="flex-1 overflow-auto min-h-0">
+      <div className="flex-1 min-h-0">
         {mode === "data" ? (
           <DataView
             headerColumns={headerColumns}
@@ -314,6 +334,9 @@ export function DataTable({ connectionId, db, schema, table }: DataTableProps) {
             loading={loading}
             error={error}
             offset={offset}
+            sort={sort}
+            onSortChange={(s) => { setSort(s); setOffset(0); }}
+            onCellSelect={onCellSelect}
           />
         ) : (
           <StructureView
@@ -403,12 +426,18 @@ function DataView({
   loading,
   error,
   offset,
+  sort,
+  onSortChange,
+  onCellSelect,
 }: {
   headerColumns: string[];
   data: TableRowsResult | null;
   loading: boolean;
   error: string | null;
   offset: number;
+  sort: SortState | null;
+  onSortChange: (s: SortState | null) => void;
+  onCellSelect?: (selection: CellSelection | null) => void;
 }) {
   if (loading && !data) {
     return (
@@ -433,6 +462,9 @@ function DataView({
       rows={data?.rows ?? []}
       offset={offset}
       emptyMessage="No rows in this table."
+      sort={sort}
+      onSortChange={onSortChange}
+      onCellSelect={onCellSelect}
     />
   );
 }

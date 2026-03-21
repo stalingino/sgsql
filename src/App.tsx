@@ -14,7 +14,9 @@ import {
   Eye,
   PanelLeft,
   PanelBottom,
+  PanelRight,
   Plus,
+  Settings,
 } from "lucide-react";
 import { waitForSidecar } from "./lib/sidecar";
 import { openConnectionManager } from "./lib/openConnectionManager";
@@ -27,6 +29,9 @@ import { SchemaTree } from "./components/SchemaTree";
 import { DataTable } from "./components/DataTable";
 import { QueryEditor } from "./components/QueryEditor";
 import { QueryConsole } from "./components/QueryConsole";
+import { DetailPanel } from "./components/DetailPanel";
+import { SettingsModal } from "./components/SettingsModal";
+import type { CellSelection } from "./components/ResultGrid";
 import type { ConnectionProfile } from "./lib/types";
 import { envBadgeStyle } from "./lib/types";
 
@@ -73,6 +78,9 @@ function App() {
   // Panel visibility — initialized from config after load
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [consoleVisible, setConsoleVisible] = useState(false);
+  const [detailPanelVisible, setDetailPanelVisible] = useState(false);
+  const [cellSelection, setCellSelection] = useState<CellSelection | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Load config on mount — sets theme, panel states
   const { setMode: setThemeMode } = useThemeStore();
@@ -82,6 +90,7 @@ function App() {
       setThemeMode(cfg.theme || mode);
       if (cfg.sidebar?.visible !== undefined) setSidebarVisible(cfg.sidebar.visible);
       if (cfg.console?.visible !== undefined) setConsoleVisible(cfg.console.visible);
+      if (cfg.detailPanel?.visible !== undefined) setDetailPanelVisible(cfg.detailPanel.visible);
       setConfigReady(true);
     });
   }, []);
@@ -341,8 +350,37 @@ function App() {
           >
             <PanelBottom size={14} />
           </button>
+
+          {/* Toggle detail panel */}
+          <button
+            onClick={() => setDetailPanelVisible((v) => {
+              const next = !v;
+              saveConfig({ detailPanel: { ...getConfig().detailPanel, visible: next, width: getConfig().detailPanel?.width ?? 300 } });
+              return next;
+            })}
+            title={detailPanelVisible ? "Hide detail panel" : "Show detail panel"}
+            className={`flex items-center p-1.5 rounded-md transition-colors cursor-pointer ${
+              detailPanelVisible
+                ? "text-text-primary bg-bg-active"
+                : "text-text-muted hover:text-text-secondary hover:bg-bg-hover"
+            }`}
+          >
+            <PanelRight size={14} />
+          </button>
+
+          {/* Settings */}
+          <button
+            onClick={() => setSettingsOpen(true)}
+            title="Settings"
+            className="flex items-center p-1.5 rounded-md transition-colors cursor-pointer text-text-muted hover:text-text-secondary hover:bg-bg-hover"
+          >
+            <Settings size={14} />
+          </button>
         </div>
       </div>
+
+      {/* Settings modal */}
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
 
       {/* ── Body ────────────────────────────────────────────── */}
       {!activeTab ? (
@@ -432,6 +470,7 @@ function App() {
                         <QueryEditor
                           connectionId={activeTab.connectionId!}
                           initialSql={ct.sql || ""}
+                          onCellSelect={setCellSelection}
                           onSqlChange={(sql) => {
                             setTabs((prev) => prev.map((tab) =>
                               tab.id !== activeTab.id ? tab : {
@@ -449,6 +488,7 @@ function App() {
                           db={ct.db}
                           schema={ct.schema}
                           table={ct.table}
+                          onCellSelect={setCellSelection}
                         />
                       )}
                     </div>
@@ -465,6 +505,15 @@ function App() {
                 </div>
               )}
             </main>
+
+            {/* Right detail panel */}
+            {detailPanelVisible && (
+              <ResizableDetailPanel>
+                <aside className="h-full border-l border-border bg-bg-primary">
+                  <DetailPanel selection={cellSelection} />
+                </aside>
+              </ResizableDetailPanel>
+            )}
           </div>
 
           {/* Bottom console panel */}
@@ -715,6 +764,66 @@ function ResizableConsole({ children }: { children: React.ReactNode }) {
         className="h-[3px] shrink-0 cursor-row-resize hover:bg-accent/50 active:bg-accent transition-colors w-full"
       />
       <div className="flex-1 min-h-0">{children}</div>
+    </div>
+  );
+}
+
+/* ── Resizable detail panel (right) ─────────────────────── */
+
+function ResizableDetailPanel({ children }: { children: React.ReactNode }) {
+  const [width, setWidth] = useState(() => {
+    const saved = getConfig().detailPanel?.width;
+    return saved ? Math.min(600, Math.max(200, saved)) : 300;
+  });
+  const dragging = useRef(false);
+  const startX = useRef(0);
+  const startW = useRef(0);
+  const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    dragging.current = true;
+    startX.current = e.clientX;
+    startW.current = width;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      // Dragging left should increase width (panel is on right)
+      const delta = startX.current - e.clientX;
+      const next = Math.min(600, Math.max(200, startW.current + delta));
+      setWidth(next);
+    };
+    const onMouseUp = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      dragging.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      const delta = startX.current - e.clientX;
+      const finalWidth = Math.min(600, Math.max(200, startW.current + delta));
+      clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        saveConfig({ detailPanel: { visible: getConfig().detailPanel?.visible ?? true, width: finalWidth } });
+      }, 100);
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, []);
+
+  return (
+    <div className="flex shrink-0 h-full" style={{ width }}>
+      {/* Drag handle on left side */}
+      <div
+        onMouseDown={onMouseDown}
+        className="w-[3px] shrink-0 cursor-col-resize hover:bg-accent/50 active:bg-accent transition-colors h-full"
+      />
+      <div className="flex-1 min-w-0 h-full">{children}</div>
     </div>
   );
 }

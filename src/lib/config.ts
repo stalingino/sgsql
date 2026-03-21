@@ -14,7 +14,14 @@ export interface AppConfig {
   windows?: Record<string, WindowState>;
   sidebar?: { visible: boolean; width: number };
   console?: { visible: boolean; height: number };
+  detailPanel?: { visible: boolean; width: number };
   queryStack?: string[]; // LIFO — last closed query on top
+  settings?: AppSettings;
+}
+
+export interface AppSettings {
+  /** Default ORDER BY for data table loads. e.g. "id DESC" or "" for none */
+  defaultOrderBy?: string;
 }
 
 /* ── In-memory cache ────────────────────────────────────── */

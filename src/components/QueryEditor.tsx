@@ -3,12 +3,13 @@ import { Loader2, Play, Sparkles, ChevronLeft, ChevronRight, ChevronDown } from 
 import { executeQuery, type QueryResult } from "../lib/schema";
 import { useQueryLog } from "../lib/queryLog";
 import { HighlightedSQL } from "../lib/highlightSQL";
-import { ResultGrid } from "./ResultGrid";
+import { ResultGrid, type CellSelection } from "./ResultGrid";
 
 interface QueryEditorProps {
   connectionId: string;
   initialSql?: string;
   onSqlChange?: (sql: string) => void;
+  onCellSelect?: (selection: CellSelection | null) => void;
 }
 
 const PAGE_SIZE = 100;
@@ -134,7 +135,7 @@ function beautifySql(sql: string): string {
 
 /* ── Component ──────────────────────────────────────────── */
 
-export function QueryEditor({ connectionId, initialSql = "", onSqlChange }: QueryEditorProps) {
+export function QueryEditor({ connectionId, initialSql = "", onSqlChange, onCellSelect }: QueryEditorProps) {
   const [sql, setSql] = useState(initialSql);
   const [result, setResult] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -288,7 +289,7 @@ export function QueryEditor({ connectionId, initialSql = "", onSqlChange }: Quer
   const limitLabel = ROW_LIMITS.find((l) => l.value === rowLimit)?.label ?? `${rowLimit} rows`;
 
   return (
-    <div className="flex flex-col h-full min-h-0 selectable">
+    <div className="flex flex-col h-full min-h-0">
       {/* SQL Editor area — resizable */}
       <div className="flex flex-col shrink-0" style={{ height: editorHeight }}>
         <div className="relative flex-1 min-h-0">
@@ -405,12 +406,14 @@ export function QueryEditor({ connectionId, initialSql = "", onSqlChange }: Quer
         {/* Result grid — shared component */}
         {result && result.columns?.length > 0 && (
           <>
-            <div className="flex-1 overflow-auto min-h-0">
+            <div className="flex-1 min-h-0">
               <ResultGrid
                 columns={result.columns}
                 rows={pageRows}
                 offset={offset}
                 emptyMessage="Query returned no rows."
+                clientSort
+                onCellSelect={onCellSelect}
               />
             </div>
 

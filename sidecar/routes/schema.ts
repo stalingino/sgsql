@@ -154,8 +154,9 @@ async function dispatchSchemaAction(
   db?: string,
   schema?: string,
   table?: string,
-  limit = 100,
+  limit = 50,
   offset = 0,
+  orderBy?: string,
 ): Promise<unknown> {
   switch (action) {
     case "databases": return getDatabases(entry);
@@ -172,7 +173,7 @@ async function dispatchSchemaAction(
       return getForeignKeys(entry, db, schema, table);
     case "rows":
       if (!table) throw new Error("Missing ?table= param");
-      return getRows(entry, db, schema, table, limit, offset);
+      return getRows(entry, db, schema, table, limit, offset, orderBy);
     default:
       throw new Error(`Unknown schema action: ${action}`);
   }
@@ -199,11 +200,12 @@ export async function handleSchemaRequest(
   const db = url.searchParams.get("db") ?? undefined;
   const schema = url.searchParams.get("schema") ?? undefined;
   const table = url.searchParams.get("table") ?? undefined;
-  const limit = parseInt(url.searchParams.get("limit") ?? "100", 10);
+  const limit = parseInt(url.searchParams.get("limit") ?? "50", 10);
   const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
+  const orderBy = url.searchParams.get("orderBy") ?? undefined;
 
   try {
-    const result = await dispatchSchemaAction(entry, action, db, schema, table, limit, offset);
+    const result = await dispatchSchemaAction(entry, action, db, schema, table, limit, offset, orderBy);
     return json(result, headers);
   } catch (e: unknown) {
     // Auto-reconnect once on connection errors
@@ -211,7 +213,7 @@ export async function handleSchemaRequest(
       console.log(`[sidecar] connection error in schema/${action}, attempting reconnect for ${connId}...`);
       try {
         entry = await reconnect(connId);
-        const result = await dispatchSchemaAction(entry, action, db, schema, table, limit, offset);
+        const result = await dispatchSchemaAction(entry, action, db, schema, table, limit, offset, orderBy);
         return json(result, headers);
       } catch (retryErr: unknown) {
         const message = friendlyError(retryErr);
@@ -620,16 +622,35 @@ async function getRows(
   db?: string,
   schema?: string,
   table?: string,
-  limit = 100,
+  limit = 50,
   offset = 0,
+  orderBy?: string,
 ): Promise<{ columns: string[]; rows: any[][]; totalEstimate: number; query: string }> {
   const safeLimit = Math.min(Math.max(limit, 1), 1000);
+
+  // Build ORDER BY clause — validate column exists to avoid SQL injection
+  const buildOrderClause = (columns: string[], orderStr?: string): string => {
+    if (!orderStr?.trim()) return "";
+    // Parse "col DIR" format
+    const parts = orderStr.trim().split(/\s+/);
+    const col = parts[0];
+    const dir = (parts[1] || "").toUpperCase();
+    const safeDir = dir === "DESC" ? "DESC" : dir === "ASC" ? "ASC" : "";
+    // Check if column exists (case-insensitive)
+    const found = columns.find((c) => c.toLowerCase() === col.toLowerCase());
+    if (!found) return "";
+    return ` ORDER BY ${quoteIdent(entry.type, found)}${safeDir ? " " + safeDir : ""}`;
+  };
 
   switch (entry.type) {
     case "postgres": {
       const s = schema || "public";
       const qualified = `"${s}"."${table}"`;
-      const query = `SELECT * FROM ${qualified} LIMIT ${safeLimit} OFFSET ${offset}`;
+      // First get columns to validate orderBy
+      const colQuery = await entry.client.unsafe(`SELECT * FROM ${qualified} LIMIT 0`);
+      const allCols = colQuery.columns?.map((c: any) => c.name) ?? [];
+      const orderClause = buildOrderClause(allCols.length > 0 ? allCols : [], orderBy);
+      const query = `SELECT * FROM ${qualified}${orderClause} LIMIT ${safeLimit} OFFSET ${offset}`;
       // Get estimated row count
       const [countRow] = await entry.client`
         SELECT reltuples::bigint AS estimate
@@ -638,7 +659,7 @@ async function getRows(
       `;
       const totalEstimate = Number(countRow?.estimate ?? 0);
       const rows = await entry.client.unsafe(query);
-      const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+      const columns = rows.length > 0 ? Object.keys(rows[0]) : allCols;
       return {
         columns,
         rows: rows.map((r: any) => columns.map((c) => r[c])),
@@ -648,7 +669,14 @@ async function getRows(
     }
     case "mysql": {
       const d = db || "information_schema";
-      const query = `SELECT * FROM \`${d}\`.\`${table}\` LIMIT ${safeLimit} OFFSET ${offset}`;
+      // Get columns first to validate orderBy
+      const [colRows] = await entry.client.query(
+        `SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`,
+        [d, table],
+      );
+      const allCols = (colRows as any[]).map((r: any) => r.COLUMN_NAME);
+      const orderClause = buildOrderClause(allCols, orderBy);
+      const query = `SELECT * FROM \`${d}\`.\`${table}\`${orderClause} LIMIT ${safeLimit} OFFSET ${offset}`;
       // Get estimated row count
       const [countRows] = await entry.client.query(
         `SELECT TABLE_ROWS AS estimate FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
@@ -657,7 +685,7 @@ async function getRows(
       const totalEstimate = Number((countRows as any[])?.[0]?.estimate ?? 0);
       const [dataRows] = await entry.client.query(query);
       const arr = dataRows as any[];
-      const columns = arr.length > 0 ? Object.keys(arr[0]) : [];
+      const columns = arr.length > 0 ? Object.keys(arr[0]) : allCols;
       return {
         columns,
         rows: arr.map((r: any) => columns.map((c) => r[c])),
@@ -666,7 +694,11 @@ async function getRows(
       };
     }
     case "sqlite": {
-      const query = `SELECT * FROM "${table}" LIMIT ${safeLimit} OFFSET ${offset}`;
+      // Get columns first
+      const pragmaRows = entry.client.query(`PRAGMA table_info("${table}")`).all() as any[];
+      const allCols = pragmaRows.map((r: any) => r.name);
+      const orderClause = buildOrderClause(allCols, orderBy);
+      const query = `SELECT * FROM "${table}"${orderClause} LIMIT ${safeLimit} OFFSET ${offset}`;
       // Get row count
       const countRow = entry.client
         .query(`SELECT COUNT(*) AS cnt FROM "${table}"`)
@@ -675,7 +707,7 @@ async function getRows(
       const dataRows = entry.client
         .query(query)
         .all() as any[];
-      const columns = dataRows.length > 0 ? Object.keys(dataRows[0]) : [];
+      const columns = dataRows.length > 0 ? Object.keys(dataRows[0]) : allCols;
       return {
         columns,
         rows: dataRows.map((r: any) => columns.map((c) => r[c])),
@@ -684,4 +716,10 @@ async function getRows(
       };
     }
   }
+}
+
+/** Quote an identifier per dialect */
+function quoteIdent(type: "postgres" | "mysql" | "sqlite", name: string): string {
+  if (type === "mysql") return `\`${name}\``;
+  return `"${name}"`;
 }

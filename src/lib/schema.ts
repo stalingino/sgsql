@@ -77,12 +77,13 @@ export async function fetchTableRows(
   db: string,
   schema: string,
   table: string,
-  limit = 100,
+  limit = 50,
   offset = 0,
+  orderBy?: string,
 ): Promise<TableRowsResult> {
-  return sidecarFetch<TableRowsResult>(
-    `/schema/${connId}/rows?db=${encodeURIComponent(db)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}&limit=${limit}&offset=${offset}`,
-  );
+  let url = `/schema/${connId}/rows?db=${encodeURIComponent(db)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}&limit=${limit}&offset=${offset}`;
+  if (orderBy) url += `&orderBy=${encodeURIComponent(orderBy)}`;
+  return sidecarFetch<TableRowsResult>(url);
 }
 
 export interface QueryResult {
