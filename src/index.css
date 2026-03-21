@@ -81,3 +81,12 @@ body {
 .input-field::placeholder {
   color: var(--color-text-muted);
 }
+
+/* Hide scrollbar on tab bar */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

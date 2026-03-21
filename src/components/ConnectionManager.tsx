@@ -7,6 +7,8 @@ import {
   DB_TYPE_PORTS,
   CONNECTION_COLORS,
   ENV_LABELS,
+  envBadgeStyle,
+  envColor,
 } from "../lib/types";
 import { isConnectionUrl, parseConnectionUrl } from "../lib/parseConnectionUrl";
 
@@ -189,7 +191,7 @@ export function ConnectionManager({
                       {pEnv.label && (
                         <span
                           className="shrink-0 text-[10px] px-1 py-0.5 rounded font-medium"
-                          style={{ backgroundColor: `${pEnv.color}22`, color: pEnv.color }}
+                          style={envBadgeStyle(p.env)}
                         >
                           {pEnv.label}
                         </span>
@@ -221,7 +223,7 @@ export function ConnectionManager({
               {envMeta.label && (
                 <span
                   className="shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium"
-                  style={{ backgroundColor: `${envMeta.color}22`, color: envMeta.color }}
+                  style={envBadgeStyle(draft.env)}
                 >
                   {envMeta.label}
                 </span>
@@ -334,7 +336,7 @@ export function ConnectionManager({
                       value={draft.env}
                       onChange={(e) => updateDraft({ env: e.target.value as ConnectionEnv })}
                       className="input-field"
-                      style={envMeta.color ? { color: envMeta.color } : undefined}
+                      style={envColor(draft.env) ? { color: envColor(draft.env) } : undefined}
                     >
                       <option value="">— none —</option>
                       <option value="local">Local</option>
