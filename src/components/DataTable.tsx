@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, ChevronLeft, ChevronRight } from "lucide-react";
 import { fetchTableRows, type TableRowsResult } from "../lib/schema";
+import { useQueryLog } from "../lib/queryLog";
 
 interface DataTableProps {
   connectionId: string;
@@ -16,6 +17,8 @@ export function DataTable({ connectionId, db, schema, table }: DataTableProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
+  const addLogEntryRef = useRef(useQueryLog.getState().addEntry);
+  addLogEntryRef.current = useQueryLog.getState().addEntry;
 
   useEffect(() => {
     setOffset(0);
@@ -26,12 +29,35 @@ export function DataTable({ connectionId, db, schema, table }: DataTableProps) {
     setLoading(true);
     setError(null);
 
+    const start = performance.now();
     fetchTableRows(connectionId, db, schema, table, PAGE_SIZE, offset)
       .then((result) => {
-        if (!cancelled) setData(result);
+        if (!cancelled) {
+          setData(result);
+          addLogEntryRef.current({
+            timestamp: new Date(),
+            query: result.query || `SELECT * FROM ${table}`,
+            db,
+            schema,
+            table,
+            duration: Math.round(performance.now() - start),
+            rowCount: result.rows.length,
+          });
+        }
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+          addLogEntryRef.current({
+            timestamp: new Date(),
+            query: `-- Failed: SELECT * FROM ${db}.${table}`,
+            db,
+            schema,
+            table,
+            duration: Math.round(performance.now() - start),
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

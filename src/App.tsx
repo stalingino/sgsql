@@ -12,14 +12,18 @@ import {
   X,
   Table2,
   Eye,
+  PanelLeft,
+  PanelBottom,
 } from "lucide-react";
 import { waitForSidecar } from "./lib/sidecar";
 import { openConnectionManager } from "./lib/openConnectionManager";
 import { closeConnection } from "./lib/schema";
 import { useThemeStore, type ThemeMode } from "./lib/theme";
 import { useWindowPersist } from "./lib/useWindowPersist";
+import { useQueryLog } from "./lib/queryLog";
 import { SchemaTree } from "./components/SchemaTree";
 import { DataTable } from "./components/DataTable";
+import { QueryConsole } from "./components/QueryConsole";
 import type { ConnectionProfile } from "./lib/types";
 import { envBadgeStyle } from "./lib/types";
 
@@ -53,6 +57,19 @@ function nextContentTabId() {
   return `ct-${++contentTabCounter}`;
 }
 
+/* ── Panel state persistence keys ────────────────────────── */
+
+const SIDEBAR_VISIBLE_KEY = "sgsql-sidebar-visible";
+const CONSOLE_VISIBLE_KEY = "sgsql-console-visible";
+const CONSOLE_HEIGHT_KEY = "sgsql-console-height";
+const SIDEBAR_WIDTH_KEY = "sgsql-sidebar-width";
+
+function readBool(key: string, fallback: boolean): boolean {
+  const v = localStorage.getItem(key);
+  if (v === null) return fallback;
+  return v === "true";
+}
+
 /* ── App ────────────────────────────────────────────────── */
 
 function App() {
@@ -61,6 +78,21 @@ function App() {
   const [sidecarError, setSidecarError] = useState(false);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+
+  // Panel visibility (persisted)
+  const [sidebarVisible, setSidebarVisible] = useState(() => readBool(SIDEBAR_VISIBLE_KEY, true));
+  const [consoleVisible, setConsoleVisible] = useState(() => readBool(CONSOLE_VISIBLE_KEY, false));
+
+  // Enable/disable query logging when console visibility changes
+  const setLogEnabled = useQueryLog((s) => s.setEnabled);
+  useEffect(() => {
+    setLogEnabled(consoleVisible);
+    localStorage.setItem(CONSOLE_VISIBLE_KEY, String(consoleVisible));
+  }, [consoleVisible, setLogEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_VISIBLE_KEY, String(sidebarVisible));
+  }, [sidebarVisible]);
 
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
@@ -119,7 +151,6 @@ function App() {
 
     setActiveTabId((prevActive) => {
       if (prevActive !== tabId) return prevActive;
-      // Switch to the nearest remaining tab
       const current = tabsRef.current;
       const idx = current.findIndex((t) => t.id === tabId);
       const remaining = current.filter((t) => t.id !== tabId);
@@ -143,7 +174,6 @@ function App() {
     setTabs((prev) => prev.map((tab) => {
       if (tab.id !== activeTabId) return tab;
 
-      // If already open, just activate it
       const existing = tab.contentTabs.find(
         (ct) => ct.db === db && ct.schema === schema && ct.table === table,
       );
@@ -151,7 +181,6 @@ function App() {
         return { ...tab, activeContentTabId: existing.id };
       }
 
-      // Open new content tab
       const ct: ContentTab = {
         id: nextContentTabId(),
         db,
@@ -246,14 +275,43 @@ function App() {
           ))}
         </div>
 
-        {/* New connection button */}
-        <button
-          onClick={() => openConnectionManager()}
-          title="New Connection"
-          className="flex items-center p-1.5 mx-1 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer shrink-0"
-        >
-          <PlugZap size={14} />
-        </button>
+        {/* Right side buttons */}
+        <div className="flex items-center gap-0.5 mx-1 shrink-0">
+          {/* Toggle sidebar */}
+          <button
+            onClick={() => setSidebarVisible((v) => !v)}
+            title={sidebarVisible ? "Hide sidebar" : "Show sidebar"}
+            className={`flex items-center p-1.5 rounded-md transition-colors cursor-pointer ${
+              sidebarVisible
+                ? "text-text-primary bg-bg-active"
+                : "text-text-muted hover:text-text-secondary hover:bg-bg-hover"
+            }`}
+          >
+            <PanelLeft size={14} />
+          </button>
+
+          {/* Toggle console */}
+          <button
+            onClick={() => setConsoleVisible((v) => !v)}
+            title={consoleVisible ? "Hide console" : "Show console"}
+            className={`flex items-center p-1.5 rounded-md transition-colors cursor-pointer ${
+              consoleVisible
+                ? "text-text-primary bg-bg-active"
+                : "text-text-muted hover:text-text-secondary hover:bg-bg-hover"
+            }`}
+          >
+            <PanelBottom size={14} />
+          </button>
+
+          {/* New connection button */}
+          <button
+            onClick={() => openConnectionManager()}
+            title="New Connection"
+            className="flex items-center p-1.5 rounded-md border border-border text-text-secondary hover:text-text-primary hover:bg-bg-hover hover:border-text-muted transition-colors cursor-pointer shrink-0"
+          >
+            <PlugZap size={14} />
+          </button>
+        </div>
       </div>
 
       {/* ── Body ────────────────────────────────────────────── */}
@@ -273,77 +331,90 @@ function App() {
           </div>
         </div>
       ) : (
-        <div className="flex-1 flex min-h-0">
-          <ResizableSidebar>
-            <aside className="h-full border-r border-border bg-bg-secondary flex flex-col min-h-0">
-              {activeTab.connectingError && (
-                <div className="flex items-start gap-2 px-3 py-4 text-xs text-error">
-                  <ServerCrash size={14} className="shrink-0 mt-0.5" />
-                  {activeTab.connectingError}
-                </div>
-              )}
-              {!activeTab.connectionId && !activeTab.connectingError && (
-                <div className="flex items-center gap-2 px-3 py-4 text-xs text-text-muted">
-                  <Loader2 size={12} className="animate-spin" />
-                  Connecting...
-                </div>
-              )}
-              {activeTab.connectionId && (
-                <SchemaTree
-                  connectionId={activeTab.connectionId}
-                  connectionType={activeTab.profile.type}
-                  connectionDatabase={activeTab.profile.database}
-                  onTableSelect={handleTableSelect}
-                />
-              )}
-            </aside>
-          </ResizableSidebar>
-
-          {/* Main content */}
-          <main className="flex-1 flex flex-col min-h-0 min-w-0 bg-bg-primary">
-            {/* Content tab bar */}
-            {activeTab.contentTabs.length > 0 && (
-              <div className="flex items-center h-8 border-b border-border bg-bg-secondary shrink-0 overflow-x-auto no-scrollbar">
-                {activeTab.contentTabs.map((ct) => (
-                  <ContentTabItem
-                    key={ct.id}
-                    ct={ct}
-                    active={ct.id === activeTab.activeContentTabId}
-                    onActivate={() => setActiveContentTab(ct.id)}
-                    onClose={() => closeContentTab(ct.id)}
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* Content area */}
-            {activeTab.activeContentTabId && activeTab.connectionId ? (
-              <div className="flex-1 min-h-0">
-                {activeTab.contentTabs.map((ct) => (
-                  <div
-                    key={ct.id}
-                    className={ct.id === activeTab.activeContentTabId ? "h-full" : "hidden"}
-                  >
-                    <DataTable
-                      connectionId={activeTab.connectionId!}
-                      db={ct.db}
-                      schema={ct.schema}
-                      table={ct.table}
+        <div className="flex-1 flex flex-col min-h-0">
+          {/* Top section: sidebar + content */}
+          <div className="flex-1 flex min-h-0">
+            {/* Left sidebar */}
+            {sidebarVisible && (
+              <ResizableSidebar>
+                <aside className="h-full border-r border-border bg-bg-secondary flex flex-col min-h-0">
+                  {activeTab.connectingError && (
+                    <div className="flex items-start gap-2 px-3 py-4 text-xs text-error">
+                      <ServerCrash size={14} className="shrink-0 mt-0.5" />
+                      {activeTab.connectingError}
+                    </div>
+                  )}
+                  {!activeTab.connectionId && !activeTab.connectingError && (
+                    <div className="flex items-center gap-2 px-3 py-4 text-xs text-text-muted">
+                      <Loader2 size={12} className="animate-spin" />
+                      Connecting...
+                    </div>
+                  )}
+                  {activeTab.connectionId && (
+                    <SchemaTree
+                      connectionId={activeTab.connectionId}
+                      connectionType={activeTab.profile.type}
+                      connectionDatabase={activeTab.profile.database}
+                      onTableSelect={handleTableSelect}
                     />
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="flex-1 flex flex-col items-center justify-center min-h-0 gap-4">
-                <img
-                  src="/schema-background.png"
-                  alt=""
-                  className="w-96 h-96 opacity-[0.12] pointer-events-none select-none [html[data-theme=dark]_&]:invert"
-                />
-                <p className="text-text-muted text-sm">Select a table to get started</p>
-              </div>
+                  )}
+                </aside>
+              </ResizableSidebar>
             )}
-          </main>
+
+            {/* Main content */}
+            <main className="flex-1 flex flex-col min-h-0 min-w-0 bg-bg-primary">
+              {/* Content tab bar */}
+              {activeTab.contentTabs.length > 0 && (
+                <div className="flex items-center h-8 border-b border-border bg-bg-secondary shrink-0 overflow-x-auto no-scrollbar">
+                  {activeTab.contentTabs.map((ct) => (
+                    <ContentTabItem
+                      key={ct.id}
+                      ct={ct}
+                      active={ct.id === activeTab.activeContentTabId}
+                      onActivate={() => setActiveContentTab(ct.id)}
+                      onClose={() => closeContentTab(ct.id)}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {/* Content area */}
+              {activeTab.activeContentTabId && activeTab.connectionId ? (
+                <div className="flex-1 min-h-0">
+                  {activeTab.contentTabs.map((ct) => (
+                    <div
+                      key={ct.id}
+                      className={ct.id === activeTab.activeContentTabId ? "h-full" : "hidden"}
+                    >
+                      <DataTable
+                        connectionId={activeTab.connectionId!}
+                        db={ct.db}
+                        schema={ct.schema}
+                        table={ct.table}
+                      />
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex-1 flex flex-col items-center justify-center min-h-0 gap-4">
+                  <img
+                    src="/schema-background.png"
+                    alt=""
+                    className="w-96 h-96 opacity-[0.12] pointer-events-none select-none [html[data-theme=dark]_&]:invert"
+                  />
+                  <p className="text-text-muted text-sm">Select a table to get started</p>
+                </div>
+              )}
+            </main>
+          </div>
+
+          {/* Bottom console panel */}
+          {consoleVisible && (
+            <ResizableConsole>
+              <QueryConsole />
+            </ResizableConsole>
+          )}
         </div>
       )}
 
@@ -473,8 +544,6 @@ function ContentTabItem({
 
 /* ── Resizable sidebar ──────────────────────────────────── */
 
-const SIDEBAR_WIDTH_KEY = "sgsql-sidebar-width";
-
 function ResizableSidebar({ children }: { children: React.ReactNode }) {
   const [width, setWidth] = useState(() => {
     const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
@@ -504,7 +573,6 @@ function ResizableSidebar({ children }: { children: React.ReactNode }) {
       dragging.current = false;
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
-      // Save final width after drag ends
       const finalWidth = Math.min(480, Math.max(180, startW.current + e.clientX - startX.current));
       clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
@@ -527,6 +595,66 @@ function ResizableSidebar({ children }: { children: React.ReactNode }) {
         onMouseDown={onMouseDown}
         className="w-[3px] shrink-0 cursor-col-resize hover:bg-accent/50 active:bg-accent transition-colors h-full"
       />
+    </div>
+  );
+}
+
+/* ── Resizable console (bottom panel) ──────────────────── */
+
+function ResizableConsole({ children }: { children: React.ReactNode }) {
+  const [height, setHeight] = useState(() => {
+    const saved = localStorage.getItem(CONSOLE_HEIGHT_KEY);
+    return saved ? Math.min(500, Math.max(80, Number(saved))) : 180;
+  });
+  const dragging = useRef(false);
+  const startY = useRef(0);
+  const startH = useRef(0);
+  const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    dragging.current = true;
+    startY.current = e.clientY;
+    startH.current = height;
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+  };
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      // Dragging up should increase height
+      const delta = startY.current - e.clientY;
+      const next = Math.min(500, Math.max(80, startH.current + delta));
+      setHeight(next);
+    };
+    const onMouseUp = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      dragging.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      const delta = startY.current - e.clientY;
+      const finalHeight = Math.min(500, Math.max(80, startH.current + delta));
+      clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        localStorage.setItem(CONSOLE_HEIGHT_KEY, String(finalHeight));
+      }, 100);
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, []);
+
+  return (
+    <div className="flex flex-col shrink-0 border-t border-border" style={{ height }}>
+      {/* Drag handle */}
+      <div
+        onMouseDown={onMouseDown}
+        className="h-[3px] shrink-0 cursor-row-resize hover:bg-accent/50 active:bg-accent transition-colors w-full"
+      />
+      <div className="flex-1 min-h-0">{children}</div>
     </div>
   );
 }

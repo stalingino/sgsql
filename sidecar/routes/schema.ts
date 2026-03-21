@@ -497,13 +497,14 @@ async function getRows(
   table?: string,
   limit = 100,
   offset = 0,
-): Promise<{ columns: string[]; rows: any[][]; totalEstimate: number }> {
+): Promise<{ columns: string[]; rows: any[][]; totalEstimate: number; query: string }> {
   const safeLimit = Math.min(Math.max(limit, 1), 1000);
 
   switch (entry.type) {
     case "postgres": {
       const s = schema || "public";
       const qualified = `"${s}"."${table}"`;
+      const query = `SELECT * FROM ${qualified} LIMIT ${safeLimit} OFFSET ${offset}`;
       // Get estimated row count
       const [countRow] = await entry.client`
         SELECT reltuples::bigint AS estimate
@@ -511,50 +512,50 @@ async function getRows(
         WHERE oid = ${`${s}.${table}`}::regclass
       `;
       const totalEstimate = Number(countRow?.estimate ?? 0);
-      const rows = await entry.client.unsafe(
-        `SELECT * FROM ${qualified} LIMIT ${safeLimit} OFFSET ${offset}`,
-      );
+      const rows = await entry.client.unsafe(query);
       const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
       return {
         columns,
         rows: rows.map((r: any) => columns.map((c) => r[c])),
         totalEstimate,
+        query,
       };
     }
     case "mysql": {
       const d = db || "information_schema";
+      const query = `SELECT * FROM \`${d}\`.\`${table}\` LIMIT ${safeLimit} OFFSET ${offset}`;
       // Get estimated row count
       const [countRows] = await entry.client.query(
         `SELECT TABLE_ROWS AS estimate FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
         [d, table],
       );
       const totalEstimate = Number((countRows as any[])?.[0]?.estimate ?? 0);
-      const [dataRows] = await entry.client.query(
-        `SELECT * FROM \`${d}\`.\`${table}\` LIMIT ? OFFSET ?`,
-        [safeLimit, offset],
-      );
+      const [dataRows] = await entry.client.query(query);
       const arr = dataRows as any[];
       const columns = arr.length > 0 ? Object.keys(arr[0]) : [];
       return {
         columns,
         rows: arr.map((r: any) => columns.map((c) => r[c])),
         totalEstimate,
+        query,
       };
     }
     case "sqlite": {
+      const query = `SELECT * FROM "${table}" LIMIT ${safeLimit} OFFSET ${offset}`;
       // Get row count
       const countRow = entry.client
         .query(`SELECT COUNT(*) AS cnt FROM "${table}"`)
         .get() as any;
       const totalEstimate = Number(countRow?.cnt ?? 0);
       const dataRows = entry.client
-        .query(`SELECT * FROM "${table}" LIMIT ? OFFSET ?`)
-        .all(safeLimit, offset) as any[];
+        .query(query)
+        .all() as any[];
       const columns = dataRows.length > 0 ? Object.keys(dataRows[0]) : [];
       return {
         columns,
         rows: dataRows.map((r: any) => columns.map((c) => r[c])),
         totalEstimate,
+        query,
       };
     }
   }

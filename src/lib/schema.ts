@@ -69,6 +69,7 @@ export interface TableRowsResult {
   columns: string[];
   rows: unknown[][];
   totalEstimate: number;
+  query: string;
 }
 
 export async function fetchTableRows(
