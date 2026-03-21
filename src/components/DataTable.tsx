@@ -514,7 +514,7 @@ function StructureView({
   return (
     <table
       ref={tableRef}
-      className="text-[12px] border-collapse"
+      className="text-[12px] font-mono border-collapse"
       style={{ tableLayout: "fixed", width: tableW }}
     >
       <colgroup>

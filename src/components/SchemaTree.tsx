@@ -247,7 +247,7 @@ function DbTab({
           <div className="absolute left-0 top-0 bottom-0 w-[2px] bg-accent" />
         )}
         <Database size={13} className={`shrink-0 ${active ? "text-accent" : ""}`} />
-        <span className="text-[11px] font-medium leading-tight truncate w-full text-center">
+        <span className="text-[10px] font-mono leading-tight truncate w-full text-center">
           {db}
         </span>
       </div>
@@ -380,7 +380,7 @@ function TableList({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Filter tables..."
-          className="w-full bg-bg-hover text-text-primary text-[12px] placeholder-text-muted px-2 py-1 rounded outline-none focus:ring-1 focus:ring-accent/50"
+          className="w-full bg-bg-hover text-text-primary text-[12px] font-mono placeholder-text-muted px-2 py-1 rounded outline-none focus:ring-1 focus:ring-accent/50"
         />
       </div>
 
@@ -472,7 +472,7 @@ function TableNode({
         ? <Eye size={14} className="shrink-0 text-purple-400" />
         : <Table2 size={14} className="shrink-0 text-accent" />
       }
-      <span className="truncate text-[13px] text-text-primary">{highlightMatch(table.name, query)}</span>
+      <span className="truncate text-[12px] font-mono text-text-primary">{highlightMatch(table.name, query)}</span>
     </div>
   );
 }
