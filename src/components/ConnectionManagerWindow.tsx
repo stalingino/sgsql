@@ -23,8 +23,10 @@ import {
 import { isConnectionUrl, parseConnectionUrl } from "../lib/parseConnectionUrl";
 import { keychainGet } from "../lib/keychain";
 import { openConnection } from "../lib/schema";
+import { useWindowPersist } from "../lib/useWindowPersist";
 
 export function ConnectionManagerWindow() {
+  useWindowPersist();
   const { profiles, loaded, loadProfiles, addProfile, updateProfile, deleteProfile, testConnection } =
     useConnectionsStore();
 

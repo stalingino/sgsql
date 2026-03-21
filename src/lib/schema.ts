@@ -65,6 +65,25 @@ export async function fetchTables(
   return res.tables;
 }
 
+export interface TableRowsResult {
+  columns: string[];
+  rows: unknown[][];
+  totalEstimate: number;
+}
+
+export async function fetchTableRows(
+  connId: string,
+  db: string,
+  schema: string,
+  table: string,
+  limit = 100,
+  offset = 0,
+): Promise<TableRowsResult> {
+  return sidecarFetch<TableRowsResult>(
+    `/schema/${connId}/rows?db=${encodeURIComponent(db)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}&limit=${limit}&offset=${offset}`,
+  );
+}
+
 export async function fetchColumns(
   connId: string,
   db: string,

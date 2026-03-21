@@ -1,13 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ChevronRight,
-  ChevronDown,
   Database,
   Table2,
   Eye,
-  Columns2,
-  KeyRound,
-  Link2,
   Loader2,
   Plus,
   X,
@@ -15,9 +10,7 @@ import {
 import {
   fetchDatabases,
   fetchTables,
-  fetchColumns,
   type TableInfo,
-  type ColumnInfo,
 } from "../lib/schema";
 
 /* ── Props ──────────────────────────────────────────────── */
@@ -26,7 +19,7 @@ interface SchemaTreeProps {
   connectionId: string;
   connectionType: "postgres" | "mysql" | "sqlite";
   connectionDatabase: string;
-  onTableSelect?: (db: string, schema: string, table: string) => void;
+  onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view") => void;
 }
 
 /* ── Layered cache ──────────────────────────────────────── */
@@ -327,7 +320,7 @@ function TableList({
   connectionId: string;
   connectionType: "postgres" | "mysql" | "sqlite";
   cacheRef: React.RefObject<SchemaCache>;
-  onTableSelect?: (db: string, schema: string, table: string) => void;
+  onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view") => void;
 }) {
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -416,7 +409,6 @@ function TableList({
             query={query}
             db={db}
             schema={schema}
-            connectionId={connectionId}
             onTableSelect={onTableSelect}
           />
         ))}
@@ -461,100 +453,26 @@ function TableNode({
   query = "",
   db,
   schema,
-  connectionId,
   onTableSelect,
 }: {
   table: TableInfo;
   query?: string;
   db: string;
   schema: string;
-  connectionId: string;
-  onTableSelect?: (db: string, schema: string, table: string) => void;
+  onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view") => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const [columns, setColumns] = useState<ColumnInfo[] | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const toggle = useCallback(async () => {
-    if (expanded) { setExpanded(false); return; }
-
-    setExpanded(true);
-    if (columns !== null) return;
-
-    setLoading(true);
-    try {
-      const cols = await fetchColumns(connectionId, db, schema, table.name);
-      setColumns(cols.sort((a, b) => a.position - b.position));
-    } catch {
-      setColumns([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [expanded, columns, connectionId, db, schema, table.name]);
-
-  const handleClick = () => {
-    onTableSelect?.(db, schema, table.name);
-    toggle();
-  };
-
   const isView = table.type === "view";
 
   return (
-    <>
-      <div
-        className="flex items-center gap-1.5 py-[3px] pr-2 pl-2 cursor-pointer hover:bg-bg-hover transition-colors"
-        onClick={handleClick}
-      >
-        <span className="w-4 shrink-0 flex items-center justify-center text-text-muted">
-          {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-        </span>
-        {isView
-          ? <Eye size={14} className="shrink-0 text-purple-400" />
-          : <Table2 size={14} className="shrink-0 text-accent" />
-        }
-        <span className="truncate text-[13px] text-text-primary">{highlightMatch(table.name, query)}</span>
-      </div>
-
-      {expanded && loading && (
-        <div className="flex items-center gap-1.5 py-[3px] text-xs text-text-muted" style={{ paddingLeft: 34 }}>
-          <Loader2 size={10} className="animate-spin" />
-          Loading...
-        </div>
-      )}
-
-      {expanded && columns?.map((col) => (
-        <div
-          key={col.name}
-          className="flex items-center gap-1.5 py-[3px] pr-2"
-          style={{ paddingLeft: 34 }}
-        >
-          <Columns2 size={13} className="shrink-0 text-text-muted" />
-          <span className="truncate text-[13px] text-text-secondary">{col.name}</span>
-          <ColumnBadges column={col} />
-        </div>
-      ))}
-    </>
-  );
-}
-
-/* ── Column badges ──────────────────────────────────────── */
-
-function ColumnBadges({ column }: { column: ColumnInfo }) {
-  return (
-    <span className="ml-auto flex items-center gap-1 shrink-0">
-      <span className="text-[10px] text-text-muted font-mono leading-none">
-        {column.udtName || column.dataType}
-      </span>
-      {column.isPk && (
-        <span className="flex items-center gap-0.5 text-[9px] font-semibold text-warning px-1 rounded bg-warning/10">
-          <KeyRound size={8} />PK
-        </span>
-      )}
-      {column.isFk && (
-        <span className="flex items-center gap-0.5 text-[9px] font-semibold text-accent px-1 rounded bg-accent/10">
-          <Link2 size={8} />FK
-        </span>
-      )}
-    </span>
+    <div
+      className="flex items-center gap-1.5 py-[3px] pr-2 pl-3 cursor-pointer hover:bg-bg-hover transition-colors"
+      onClick={() => onTableSelect?.(db, schema, table.name, isView ? "view" : "table")}
+    >
+      {isView
+        ? <Eye size={14} className="shrink-0 text-purple-400" />
+        : <Table2 size={14} className="shrink-0 text-accent" />
+      }
+      <span className="truncate text-[13px] text-text-primary">{highlightMatch(table.name, query)}</span>
+    </div>
   );
 }

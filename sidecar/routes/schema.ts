@@ -185,6 +185,12 @@ export async function handleSchemaRequest(
       case "fks":
         if (!table) return errorResponse("Missing ?table= param", headers, 400);
         return json(await getForeignKeys(entry, db, schema, table), headers);
+      case "rows": {
+        if (!table) return errorResponse("Missing ?table= param", headers, 400);
+        const limit = parseInt(url.searchParams.get("limit") ?? "100", 10);
+        const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
+        return json(await getRows(entry, db, schema, table, limit, offset), headers);
+      }
       default:
         return errorResponse(`Unknown schema action: ${action}`, headers, 404);
     }
@@ -475,6 +481,80 @@ async function getForeignKeys(
           on_update: r.on_update,
           on_delete: r.on_delete,
         })),
+      };
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Query: Table rows
+// ---------------------------------------------------------------------------
+
+async function getRows(
+  entry: PoolEntry,
+  db?: string,
+  schema?: string,
+  table?: string,
+  limit = 100,
+  offset = 0,
+): Promise<{ columns: string[]; rows: any[][]; totalEstimate: number }> {
+  const safeLimit = Math.min(Math.max(limit, 1), 1000);
+
+  switch (entry.type) {
+    case "postgres": {
+      const s = schema || "public";
+      const qualified = `"${s}"."${table}"`;
+      // Get estimated row count
+      const [countRow] = await entry.client`
+        SELECT reltuples::bigint AS estimate
+        FROM pg_class
+        WHERE oid = ${`${s}.${table}`}::regclass
+      `;
+      const totalEstimate = Number(countRow?.estimate ?? 0);
+      const rows = await entry.client.unsafe(
+        `SELECT * FROM ${qualified} LIMIT ${safeLimit} OFFSET ${offset}`,
+      );
+      const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+      return {
+        columns,
+        rows: rows.map((r: any) => columns.map((c) => r[c])),
+        totalEstimate,
+      };
+    }
+    case "mysql": {
+      const d = db || "information_schema";
+      // Get estimated row count
+      const [countRows] = await entry.client.query(
+        `SELECT TABLE_ROWS AS estimate FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
+        [d, table],
+      );
+      const totalEstimate = Number((countRows as any[])?.[0]?.estimate ?? 0);
+      const [dataRows] = await entry.client.query(
+        `SELECT * FROM \`${d}\`.\`${table}\` LIMIT ? OFFSET ?`,
+        [safeLimit, offset],
+      );
+      const arr = dataRows as any[];
+      const columns = arr.length > 0 ? Object.keys(arr[0]) : [];
+      return {
+        columns,
+        rows: arr.map((r: any) => columns.map((c) => r[c])),
+        totalEstimate,
+      };
+    }
+    case "sqlite": {
+      // Get row count
+      const countRow = entry.client
+        .query(`SELECT COUNT(*) AS cnt FROM "${table}"`)
+        .get() as any;
+      const totalEstimate = Number(countRow?.cnt ?? 0);
+      const dataRows = entry.client
+        .query(`SELECT * FROM "${table}" LIMIT ? OFFSET ?`)
+        .all(safeLimit, offset) as any[];
+      const columns = dataRows.length > 0 ? Object.keys(dataRows[0]) : [];
+      return {
+        columns,
+        rows: dataRows.map((r: any) => columns.map((c) => r[c])),
+        totalEstimate,
       };
     }
   }

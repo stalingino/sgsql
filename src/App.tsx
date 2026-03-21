@@ -10,16 +10,28 @@ import {
   Moon,
   Monitor,
   X,
+  Table2,
+  Eye,
 } from "lucide-react";
 import { waitForSidecar } from "./lib/sidecar";
 import { openConnectionManager } from "./lib/openConnectionManager";
 import { closeConnection } from "./lib/schema";
 import { useThemeStore, type ThemeMode } from "./lib/theme";
+import { useWindowPersist } from "./lib/useWindowPersist";
 import { SchemaTree } from "./components/SchemaTree";
+import { DataTable } from "./components/DataTable";
 import type { ConnectionProfile } from "./lib/types";
 import { envBadgeStyle } from "./lib/types";
 
 /* ── Tab types ──────────────────────────────────────────── */
+
+interface ContentTab {
+  id: string;
+  db: string;
+  schema: string;
+  table: string;
+  type: "table" | "view";
+}
 
 interface Tab {
   id: string;
@@ -27,6 +39,8 @@ interface Tab {
   connectionId: string | null;
   connectingError: string | null;
   serverVersion: string;
+  contentTabs: ContentTab[];
+  activeContentTabId: string | null;
 }
 
 let tabCounter = 0;
@@ -34,9 +48,15 @@ function nextTabId() {
   return `tab-${++tabCounter}`;
 }
 
+let contentTabCounter = 0;
+function nextContentTabId() {
+  return `ct-${++contentTabCounter}`;
+}
+
 /* ── App ────────────────────────────────────────────────── */
 
 function App() {
+  useWindowPersist();
   const [sidecarReady, setSidecarReady] = useState(false);
   const [sidecarError, setSidecarError] = useState(false);
   const [tabs, setTabs] = useState<Tab[]>([]);
@@ -69,6 +89,8 @@ function App() {
           connectionId: preOpenedId,
           connectingError: null,
           serverVersion: serverVersion || "",
+          contentTabs: [],
+          activeContentTabId: null,
         };
 
         setTabs((prev) => [...prev, newTab]);
@@ -117,9 +139,58 @@ function App() {
     };
   }, []);
 
-  const handleTableSelect = useCallback((db: string, schema: string, table: string) => {
-    console.log("[schema] table selected:", { db, schema, table });
-  }, []);
+  const handleTableSelect = useCallback((db: string, schema: string, table: string, type: "table" | "view" = "table") => {
+    setTabs((prev) => prev.map((tab) => {
+      if (tab.id !== activeTabId) return tab;
+
+      // If already open, just activate it
+      const existing = tab.contentTabs.find(
+        (ct) => ct.db === db && ct.schema === schema && ct.table === table,
+      );
+      if (existing) {
+        return { ...tab, activeContentTabId: existing.id };
+      }
+
+      // Open new content tab
+      const ct: ContentTab = {
+        id: nextContentTabId(),
+        db,
+        schema,
+        table,
+        type,
+      };
+      return {
+        ...tab,
+        contentTabs: [...tab.contentTabs, ct],
+        activeContentTabId: ct.id,
+      };
+    }));
+  }, [activeTabId]);
+
+  const closeContentTab = useCallback((contentTabId: string) => {
+    setTabs((prev) => prev.map((tab) => {
+      if (tab.id !== activeTabId) return tab;
+      const idx = tab.contentTabs.findIndex((ct) => ct.id === contentTabId);
+      const next = tab.contentTabs.filter((ct) => ct.id !== contentTabId);
+      let newActiveId = tab.activeContentTabId;
+      if (tab.activeContentTabId === contentTabId) {
+        if (next.length === 0) {
+          newActiveId = null;
+        } else {
+          const newIdx = Math.min(idx, next.length - 1);
+          newActiveId = next[newIdx].id;
+        }
+      }
+      return { ...tab, contentTabs: next, activeContentTabId: newActiveId };
+    }));
+  }, [activeTabId]);
+
+  const setActiveContentTab = useCallback((contentTabId: string) => {
+    setTabs((prev) => prev.map((tab) => {
+      if (tab.id !== activeTabId) return tab;
+      return { ...tab, activeContentTabId: contentTabId };
+    }));
+  }, [activeTabId]);
 
   /* ── Loading ──────────────────────────────────────────── */
 
@@ -203,36 +274,75 @@ function App() {
         </div>
       ) : (
         <div className="flex-1 flex min-h-0">
-          {/* Left sidebar */}
-          <aside className="w-[280px] shrink-0 border-r border-border bg-bg-secondary flex flex-col min-h-0">
-            {activeTab.connectingError && (
-              <div className="flex items-start gap-2 px-3 py-4 text-xs text-error">
-                <ServerCrash size={14} className="shrink-0 mt-0.5" />
-                {activeTab.connectingError}
-              </div>
-            )}
-            {!activeTab.connectionId && !activeTab.connectingError && (
-              <div className="flex items-center gap-2 px-3 py-4 text-xs text-text-muted">
-                <Loader2 size={12} className="animate-spin" />
-                Connecting...
-              </div>
-            )}
-            {activeTab.connectionId && (
-              <SchemaTree
-                connectionId={activeTab.connectionId}
-                connectionType={activeTab.profile.type}
-                connectionDatabase={activeTab.profile.database}
-                onTableSelect={handleTableSelect}
-              />
-            )}
-          </aside>
+          <ResizableSidebar>
+            <aside className="h-full border-r border-border bg-bg-secondary flex flex-col min-h-0">
+              {activeTab.connectingError && (
+                <div className="flex items-start gap-2 px-3 py-4 text-xs text-error">
+                  <ServerCrash size={14} className="shrink-0 mt-0.5" />
+                  {activeTab.connectingError}
+                </div>
+              )}
+              {!activeTab.connectionId && !activeTab.connectingError && (
+                <div className="flex items-center gap-2 px-3 py-4 text-xs text-text-muted">
+                  <Loader2 size={12} className="animate-spin" />
+                  Connecting...
+                </div>
+              )}
+              {activeTab.connectionId && (
+                <SchemaTree
+                  connectionId={activeTab.connectionId}
+                  connectionType={activeTab.profile.type}
+                  connectionDatabase={activeTab.profile.database}
+                  onTableSelect={handleTableSelect}
+                />
+              )}
+            </aside>
+          </ResizableSidebar>
 
           {/* Main content */}
-          <main className="flex-1 flex items-center justify-center min-h-0 bg-bg-primary">
-            <div className="text-center text-text-muted text-sm">
-              <Table2Icon />
-              <p className="mt-3">Select a table to get started</p>
-            </div>
+          <main className="flex-1 flex flex-col min-h-0 min-w-0 bg-bg-primary">
+            {/* Content tab bar */}
+            {activeTab.contentTabs.length > 0 && (
+              <div className="flex items-center h-8 border-b border-border bg-bg-secondary shrink-0 overflow-x-auto no-scrollbar">
+                {activeTab.contentTabs.map((ct) => (
+                  <ContentTabItem
+                    key={ct.id}
+                    ct={ct}
+                    active={ct.id === activeTab.activeContentTabId}
+                    onActivate={() => setActiveContentTab(ct.id)}
+                    onClose={() => closeContentTab(ct.id)}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Content area */}
+            {activeTab.activeContentTabId && activeTab.connectionId ? (
+              <div className="flex-1 min-h-0">
+                {activeTab.contentTabs.map((ct) => (
+                  <div
+                    key={ct.id}
+                    className={ct.id === activeTab.activeContentTabId ? "h-full" : "hidden"}
+                  >
+                    <DataTable
+                      connectionId={activeTab.connectionId!}
+                      db={ct.db}
+                      schema={ct.schema}
+                      table={ct.table}
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center min-h-0 gap-4">
+                <img
+                  src="/schema-background.png"
+                  alt=""
+                  className="w-96 h-96 opacity-[0.12] pointer-events-none select-none [html[data-theme=dark]_&]:invert"
+                />
+                <p className="text-text-muted text-sm">Select a table to get started</p>
+              </div>
+            )}
           </main>
         </div>
       )}
@@ -316,14 +426,108 @@ function TabItem({
   );
 }
 
-/* ── Table icon placeholder ─────────────────────────────── */
+/* ── Content tab item ──────────────────────────────────── */
 
-function Table2Icon() {
+function ContentTabItem({
+  ct,
+  active,
+  onActivate,
+  onClose,
+}: {
+  ct: ContentTab;
+  active: boolean;
+  onActivate: () => void;
+  onClose: () => void;
+}) {
   return (
-    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto text-text-muted opacity-30">
-      <rect x="3" y="3" width="18" height="18" rx="2" />
-      <path d="M3 9h18M3 15h18M9 3v18" />
-    </svg>
+    <div
+      onClick={onActivate}
+      className={`group relative flex items-center gap-1.5 h-full px-3 text-[11px] cursor-pointer select-none border-r border-border min-w-0 max-w-[160px] transition-colors ${
+        active
+          ? "bg-bg-primary text-text-primary"
+          : "bg-bg-secondary text-text-muted hover:text-text-secondary hover:bg-bg-hover"
+      }`}
+    >
+      {ct.type === "view"
+        ? <Eye size={12} className="shrink-0 text-purple-400" />
+        : <Table2 size={12} className="shrink-0 text-accent" />
+      }
+      <span className="truncate font-medium">{ct.table}</span>
+      <button
+        onClick={(e) => { e.stopPropagation(); onClose(); }}
+        title="Close"
+        className={`shrink-0 ml-auto rounded-sm transition-colors cursor-pointer ${
+          active
+            ? "text-text-muted hover:text-text-primary"
+            : "text-transparent group-hover:text-text-muted hover:!text-text-primary"
+        }`}
+      >
+        <X size={12} />
+      </button>
+      {active && (
+        <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-accent" />
+      )}
+    </div>
+  );
+}
+
+/* ── Resizable sidebar ──────────────────────────────────── */
+
+const SIDEBAR_WIDTH_KEY = "sgsql-sidebar-width";
+
+function ResizableSidebar({ children }: { children: React.ReactNode }) {
+  const [width, setWidth] = useState(() => {
+    const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    return saved ? Math.min(480, Math.max(180, Number(saved))) : 280;
+  });
+  const dragging = useRef(false);
+  const startX = useRef(0);
+  const startW = useRef(0);
+  const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    dragging.current = true;
+    startX.current = e.clientX;
+    startW.current = width;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      const next = Math.min(480, Math.max(180, startW.current + e.clientX - startX.current));
+      setWidth(next);
+    };
+    const onMouseUp = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      dragging.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      // Save final width after drag ends
+      const finalWidth = Math.min(480, Math.max(180, startW.current + e.clientX - startX.current));
+      clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        localStorage.setItem(SIDEBAR_WIDTH_KEY, String(finalWidth));
+      }, 100);
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, []);
+
+  return (
+    <div className="flex shrink-0 h-full" style={{ width }}>
+      <div className="flex-1 min-w-0 h-full">{children}</div>
+      {/* Drag handle */}
+      <div
+        onMouseDown={onMouseDown}
+        className="w-[3px] shrink-0 cursor-col-resize hover:bg-accent/50 active:bg-accent transition-colors h-full"
+      />
+    </div>
   );
 }
 

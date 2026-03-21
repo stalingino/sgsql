@@ -70,6 +70,20 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // If main window is being closed while connection-manager is open,
+            // hide it instead of destroying — so user can reconnect from conn manager.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    let app = window.app_handle();
+                    if app.webview_windows().contains_key("connection-manager") {
+                        log::info!("Main window close requested while conn-manager open — hiding");
+                        api.prevent_close();
+                        let _ = window.hide();
+                        return;
+                    }
+                }
+            }
+
             if let tauri::WindowEvent::Destroyed = event {
                 let app = window.app_handle();
                 let windows = app.webview_windows();

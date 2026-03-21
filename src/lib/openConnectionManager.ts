@@ -1,4 +1,5 @@
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getSavedWindowState } from "./useWindowPersist";
 
 export async function openConnectionManager(): Promise<void> {
   const existing = await WebviewWindow.getByLabel("connection-manager");
@@ -7,13 +8,17 @@ export async function openConnectionManager(): Promise<void> {
     return;
   }
 
+  const saved = getSavedWindowState("connection-manager");
+
   new WebviewWindow("connection-manager", {
     url: "/connection-manager.html",
     title: "SG SQL Connections",
-    width: 740,
-    height: 540,
-    resizable: false,
-    center: true,
+    width: saved.width ?? 740,
+    height: saved.height ?? 560,
+    x: saved.x,
+    y: saved.y,
+    center: saved.x === undefined, // only center if no saved position
+    resizable: true,
     decorations: true,
   });
 }
