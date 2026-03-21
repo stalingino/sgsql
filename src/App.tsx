@@ -263,7 +263,6 @@ function TabItem({
   onClose: () => void;
 }) {
   const envStyle = envBadgeStyle(tab.profile.env);
-  const connected = !!tab.connectionId;
   const connecting = !tab.connectionId && !tab.connectingError;
   const hasError = !!tab.connectingError;
 
@@ -277,17 +276,6 @@ function TabItem({
       }`}
       style={{ paddingTop: 6, paddingBottom: 6 }}
     >
-      {/* Connection status dot */}
-      <span
-        className={`w-2 h-2 rounded-full shrink-0 ${
-          hasError ? "bg-error" : connecting ? "bg-warning animate-pulse" : "bg-success"
-        }`}
-        style={connected ? { backgroundColor: tab.profile.color || undefined } : undefined}
-      />
-
-      {/* Name */}
-      <span className="truncate font-medium">{tab.profile.name || "Untitled"}</span>
-
       {/* Env badge */}
       {envStyle && (
         <span
@@ -298,12 +286,32 @@ function TabItem({
         </span>
       )}
 
-      {/* Close button */}
+      {/* Name */}
+      <span className="truncate font-medium">{tab.profile.name || "Untitled"}</span>
+
+      {/* Color dot / close button combo */}
       <button
         onClick={(e) => { e.stopPropagation(); onClose(); }}
-        className="shrink-0 ml-auto p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-bg-active transition-all cursor-pointer text-text-muted hover:text-text-primary"
+        title="Close tab"
+        className="close-dot relative w-3.5 h-3.5 shrink-0 ml-auto flex items-center justify-center rounded-full cursor-pointer transition-all"
       >
-        <X size={10} />
+        {/* Color dot — hidden on hover */}
+        <span className="close-dot-color absolute inset-0 flex items-center justify-center">
+          <span
+            className="w-2 h-2 rounded-full"
+            style={{ backgroundColor: tab.profile.color || "#888" }}
+          />
+          {connecting && (
+            <span className="absolute inset-[-1px] rounded-full border-[1.5px] border-warning animate-pulse" />
+          )}
+          {hasError && (
+            <span className="absolute inset-[-1px] rounded-full border-[1.5px] border-error" />
+          )}
+        </span>
+        {/* X icon — shown on hover */}
+        <span className="close-dot-x hidden text-text-muted">
+          <X size={14} />
+        </span>
       </button>
 
       {/* Active indicator line */}

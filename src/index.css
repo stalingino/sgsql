@@ -82,6 +82,10 @@ body {
   color: var(--color-text-muted);
 }
 
+/* Tab close-dot: swap color dot for X on tab hover */
+.group:hover .close-dot-color { display: none; }
+.group:hover .close-dot-x { display: flex; }
+
 /* Hide scrollbar on tab bar */
 .no-scrollbar::-webkit-scrollbar {
   display: none;

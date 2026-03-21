@@ -54,6 +54,8 @@ export async function handleOpenConnection(
     return errorResponse("Invalid JSON body", headers, 400);
   }
 
+  console.log(`[sidecar] opening connection: id=${profile.id}, type=${profile.type}, user=${profile.username}, hasPassword=${!!profile.password}, host=${profile.host}:${profile.port}/${profile.database}`);
+
   if (!profile.id || !profile.type) {
     return errorResponse("Missing id or type in profile", headers, 400);
   }

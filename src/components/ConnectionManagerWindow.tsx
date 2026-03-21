@@ -394,19 +394,30 @@ export function ConnectionManagerWindow() {
 
           {/* Color picker */}
           <Field label="Color Tag">
-            <div className="flex gap-1.5">
-              {CONNECTION_COLORS.map((c) => (
-                <button
-                  key={c}
-                  onClick={() => updateDraft({ color: c })}
-                  className={`w-6 h-6 rounded-full transition-all cursor-pointer ${
-                    draft.color === c
-                      ? "ring-2 ring-white ring-offset-2 ring-offset-bg-secondary scale-110"
-                      : "hover:scale-110"
-                  }`}
-                  style={{ backgroundColor: c }}
-                />
-              ))}
+            <div className="flex gap-2">
+              {CONNECTION_COLORS.map((c) => {
+                const selected = draft.color === c;
+                return (
+                  <button
+                    key={c}
+                    onClick={() => updateDraft({ color: c })}
+                    className="relative w-6 h-6 rounded-full cursor-pointer transition-transform hover:scale-110"
+                    style={{ backgroundColor: c }}
+                  >
+                    {selected && (
+                      <span
+                        className="absolute inset-[-4px] rounded-full border-[2px] pointer-events-none"
+                        style={{
+                          borderColor: isDark ? "#ffffff" : "#18181b",
+                          boxShadow: isDark
+                            ? "0 0 0 1px rgba(0,0,0,0.3)"
+                            : "0 0 0 1px rgba(255,255,255,0.5)",
+                        }}
+                      />
+                    )}
+                  </button>
+                );
+              })}
             </div>
           </Field>
         </div>
