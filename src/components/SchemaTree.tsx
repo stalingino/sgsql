@@ -12,6 +12,7 @@ import {
   fetchTables,
   type TableInfo,
 } from "../lib/schema";
+import { getConfig, saveConfig } from "../lib/config";
 
 /* ── Props ──────────────────────────────────────────────── */
 
@@ -20,6 +21,7 @@ interface SchemaTreeProps {
   connectionType: "postgres" | "mysql" | "sqlite";
   connectionDatabase: string;
   onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view") => void;
+  tableListVisible?: boolean;
 }
 
 /* ── Layered cache ──────────────────────────────────────── */
@@ -38,6 +40,7 @@ export function SchemaTree({
   connectionType,
   connectionDatabase,
   onTableSelect,
+  tableListVisible = true,
 }: SchemaTreeProps) {
   const [openDbs, setOpenDbs] = useState<string[]>([connectionDatabase]);
   const [activeDb, setActiveDb] = useState(connectionDatabase);
@@ -182,17 +185,19 @@ export function SchemaTree({
         </div>
       )}
 
-      {/* ── Right: table list for active database ─────────── */}
-      <div className="flex-1 flex flex-col min-h-0 min-w-0">
-        <TableList
-          db={activeDb}
-          schema={schema}
-          connectionId={connectionId}
-          connectionType={connectionType}
-          cacheRef={cacheRef}
-          onTableSelect={onTableSelect}
-        />
-      </div>
+      {/* ── Right: table list for active database (toggleable + resizable) ── */}
+      {tableListVisible && (
+        <ResizableTableList>
+          <TableList
+            db={activeDb}
+            schema={schema}
+            connectionId={connectionId}
+            connectionType={connectionType}
+            cacheRef={cacheRef}
+            onTableSelect={onTableSelect}
+          />
+        </ResizableTableList>
+      )}
     </div>
   );
 }
@@ -473,6 +478,62 @@ function TableNode({
         : <Table2 size={14} className="shrink-0 text-accent" />
       }
       <span className="truncate text-[12px] font-mono text-text-primary">{highlightMatch(table.name, query)}</span>
+    </div>
+  );
+}
+
+/* ── Resizable table list wrapper ──────────────────────── */
+
+function ResizableTableList({ children }: { children: React.ReactNode }) {
+  const [width, setWidth] = useState(() => {
+    const saved = getConfig().sidebar?.width;
+    return saved ? Math.min(400, Math.max(120, saved)) : 200;
+  });
+  const dragging = useRef(false);
+  const startX = useRef(0);
+  const startW = useRef(0);
+  const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    dragging.current = true;
+    startX.current = e.clientX;
+    startW.current = width;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      const next = Math.min(400, Math.max(120, startW.current + e.clientX - startX.current));
+      setWidth(next);
+    };
+    const onMouseUp = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      dragging.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      const finalWidth = Math.min(400, Math.max(120, startW.current + e.clientX - startX.current));
+      clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        saveConfig({ sidebar: { visible: getConfig().sidebar?.visible ?? true, width: finalWidth } });
+      }, 100);
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, []);
+
+  return (
+    <div className="flex shrink-0 h-full" style={{ width }}>
+      <div className="flex-1 min-w-0 h-full flex flex-col min-h-0 border-r border-border">{children}</div>
+      <div
+        onMouseDown={onMouseDown}
+        className="w-[3px] shrink-0 cursor-col-resize hover:bg-accent/50 active:bg-accent transition-colors h-full"
+      />
     </div>
   );
 }

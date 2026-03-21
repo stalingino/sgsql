@@ -402,32 +402,28 @@ function App() {
         <div className="flex-1 flex flex-col min-h-0">
           {/* Top section: sidebar + content */}
           <div className="flex-1 flex min-h-0">
-            {/* Left sidebar */}
-            {sidebarVisible && (
-              <ResizableSidebar>
-                <aside className="h-full border-r border-border bg-bg-secondary flex flex-col min-h-0">
-                  {activeTab.connectingError && (
-                    <div className="flex items-start gap-2 px-3 py-4 text-xs text-error">
-                      <ServerCrash size={14} className="shrink-0 mt-0.5" />
-                      {activeTab.connectingError}
-                    </div>
-                  )}
-                  {!activeTab.connectionId && !activeTab.connectingError && (
-                    <div className="flex items-center gap-2 px-3 py-4 text-xs text-text-muted">
-                      <Loader2 size={12} className="animate-spin" />
-                      Connecting...
-                    </div>
-                  )}
-                  {activeTab.connectionId && (
-                    <SchemaTree
-                      connectionId={activeTab.connectionId}
-                      connectionType={activeTab.profile.type}
-                      connectionDatabase={activeTab.profile.database}
-                      onTableSelect={handleTableSelect}
-                    />
-                  )}
-                </aside>
-              </ResizableSidebar>
+            {/* Left sidebar: db tabs always visible, table list toggleable */}
+            {activeTab.connectionId && (
+              <SchemaTree
+                connectionId={activeTab.connectionId}
+                connectionType={activeTab.profile.type}
+                connectionDatabase={activeTab.profile.database}
+                onTableSelect={handleTableSelect}
+                tableListVisible={sidebarVisible}
+              />
+            )}
+            {!activeTab.connectionId && (
+              <aside className="shrink-0 border-r border-border bg-bg-secondary flex flex-col min-h-0">
+                {activeTab.connectingError ? (
+                  <div className="flex items-start gap-2 px-3 py-4 text-xs text-error w-[90px]">
+                    <ServerCrash size={14} className="shrink-0 mt-0.5" />
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 px-3 py-4 text-xs text-text-muted w-[90px]">
+                    <Loader2 size={12} className="animate-spin" />
+                  </div>
+                )}
+              </aside>
             )}
 
             {/* Main content */}
@@ -504,6 +500,12 @@ function App() {
                   <p className="text-text-muted text-sm">Select a table to get started</p>
                 </div>
               )}
+              {/* Bottom console panel */}
+              {consoleVisible && (
+                <ResizableConsole>
+                  <QueryConsole />
+                </ResizableConsole>
+              )}
             </main>
 
             {/* Right detail panel */}
@@ -515,13 +517,6 @@ function App() {
               </ResizableDetailPanel>
             )}
           </div>
-
-          {/* Bottom console panel */}
-          {consoleVisible && (
-            <ResizableConsole>
-              <QueryConsole />
-            </ResizableConsole>
-          )}
         </div>
       )}
 
@@ -647,63 +642,6 @@ function ContentTabItem({
       {active && (
         <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-accent" />
       )}
-    </div>
-  );
-}
-
-/* ── Resizable sidebar ──────────────────────────────────── */
-
-function ResizableSidebar({ children }: { children: React.ReactNode }) {
-  const [width, setWidth] = useState(() => {
-    const saved = getConfig().sidebar?.width;
-    return saved ? Math.min(480, Math.max(180, saved)) : 280;
-  });
-  const dragging = useRef(false);
-  const startX = useRef(0);
-  const startW = useRef(0);
-  const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
-
-  const onMouseDown = (e: React.MouseEvent) => {
-    dragging.current = true;
-    startX.current = e.clientX;
-    startW.current = width;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-  };
-
-  useEffect(() => {
-    const onMouseMove = (e: MouseEvent) => {
-      if (!dragging.current) return;
-      const next = Math.min(480, Math.max(180, startW.current + e.clientX - startX.current));
-      setWidth(next);
-    };
-    const onMouseUp = (e: MouseEvent) => {
-      if (!dragging.current) return;
-      dragging.current = false;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      const finalWidth = Math.min(480, Math.max(180, startW.current + e.clientX - startX.current));
-      clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => {
-        saveConfig({ sidebar: { visible: getConfig().sidebar?.visible ?? true, width: finalWidth } });
-      }, 100);
-    };
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-    return () => {
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-    };
-  }, []);
-
-  return (
-    <div className="flex shrink-0 h-full" style={{ width }}>
-      <div className="flex-1 min-w-0 h-full">{children}</div>
-      {/* Drag handle */}
-      <div
-        onMouseDown={onMouseDown}
-        className="w-[3px] shrink-0 cursor-col-resize hover:bg-accent/50 active:bg-accent transition-colors h-full"
-      />
     </div>
   );
 }
