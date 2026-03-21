@@ -417,11 +417,12 @@ function App() {
 
               {/* Content area */}
               {activeTab.activeContentTabId && activeTab.connectionId ? (
-                <div className="flex-1 min-h-0">
+                <div className="flex-1 relative min-h-0 overflow-hidden z-0">
                   {activeTab.contentTabs.map((ct) => (
                     <div
                       key={ct.id}
-                      className={ct.id === activeTab.activeContentTabId ? "h-full" : "hidden"}
+                      className="absolute inset-0"
+                      style={{ display: ct.id === activeTab.activeContentTabId ? "block" : "none" }}
                     >
                       {ct.type === "query" ? (
                         <QueryEditor
