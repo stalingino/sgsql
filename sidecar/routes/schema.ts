@@ -320,10 +320,27 @@ async function getColumns(
     case "postgres": {
       const s = schema || "public";
       const rows = await entry.client`
-        SELECT column_name, data_type, udt_name, is_nullable, column_default, ordinal_position
-        FROM information_schema.columns
-        WHERE table_schema = ${s} AND table_name = ${table!}
-        ORDER BY ordinal_position
+        SELECT
+          c.column_name,
+          c.data_type,
+          c.udt_name,
+          c.is_nullable,
+          c.column_default,
+          c.ordinal_position,
+          CASE WHEN pk.column_name IS NOT NULL THEN 'PRI' ELSE '' END AS column_key
+        FROM information_schema.columns c
+        LEFT JOIN (
+          SELECT kcu.column_name
+          FROM information_schema.table_constraints tc
+          JOIN information_schema.key_column_usage kcu
+            ON tc.constraint_name = kcu.constraint_name
+            AND tc.table_schema = kcu.table_schema
+          WHERE tc.constraint_type = 'PRIMARY KEY'
+            AND tc.table_schema = ${s}
+            AND tc.table_name = ${table!}
+        ) pk ON pk.column_name = c.column_name
+        WHERE c.table_schema = ${s} AND c.table_name = ${table!}
+        ORDER BY c.ordinal_position
       `;
       return { columns: rows.map((r: any) => ({ ...r })) };
     }

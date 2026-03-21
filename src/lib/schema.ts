@@ -91,8 +91,17 @@ export async function fetchColumns(
   schema: string,
   table: string,
 ): Promise<ColumnInfo[]> {
-  const res = await sidecarFetch<{ columns: ColumnInfo[] }>(
+  const res = await sidecarFetch<{ columns: any[] }>(
     `/schema/${connId}/columns?db=${encodeURIComponent(db)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`,
   );
-  return res.columns;
+  return res.columns.map((c: any) => ({
+    name: c.column_name ?? c.name ?? "",
+    dataType: c.data_type ?? c.dataType ?? "",
+    udtName: c.udt_name ?? c.udtName ?? c.column_type ?? "",
+    nullable: (c.is_nullable ?? c.nullable ?? "YES") === "YES",
+    defaultValue: c.column_default ?? c.defaultValue ?? null,
+    isPk: c.column_key === "PRI" || c.isPk === true,
+    isFk: c.column_key === "MUL" || c.isFk === true,
+    position: c.ordinal_position ?? c.position ?? 0,
+  }));
 }
