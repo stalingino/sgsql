@@ -124,14 +124,19 @@ function App() {
 
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+  const addQueryTabRef = useRef<(() => void) | null>(null);
 
-  /* ── Cmd/Ctrl+P → Command Palette ─────────────────────── */
+  /* ── Global keyboard shortcuts ────────────────────────── */
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "p") {
         e.preventDefault();
         setCommandPaletteOpen((prev) => !prev);
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "e") {
+        e.preventDefault();
+        addQueryTabRef.current?.();
       }
     };
     document.addEventListener("keydown", handler);
@@ -354,6 +359,7 @@ function App() {
       return { ...tab, workspaces: { ...tab.workspaces, [tab.activeDbName]: updatedWs } };
     }));
   }, [activeTabId]);
+  addQueryTabRef.current = addQueryTab;
 
   /* ── Loading ──────────────────────────────────────────── */
 
@@ -515,7 +521,6 @@ function App() {
           connectionType={activeTab.profile.type}
           connectionDatabase={activeTab.profile.database}
           onSelectDb={(db) => {
-            setSidebarVisible(true);
             openDb(db);
           }}
           onSelectTable={(db, schema, table, type) => {
