@@ -17,6 +17,7 @@ import {
   PanelRight,
   Plus,
   Settings,
+  StopCircle,
 } from "lucide-react";
 import { waitForSidecar } from "./lib/sidecar";
 import { openConnectionManager } from "./lib/openConnectionManager";
@@ -25,6 +26,7 @@ import { useThemeStore, type ThemeMode, initTheme } from "./lib/theme";
 import { useWindowPersist } from "./lib/useWindowPersist";
 import { loadConfig, getConfig, saveConfig, queryStackPop, queryStackPush } from "./lib/config";
 import { useQueryLog } from "./lib/queryLog";
+import { useExecutionQueue } from "./lib/executionQueue";
 import { SchemaTree } from "./components/SchemaTree";
 import { DataTable } from "./components/DataTable";
 import { QueryEditor } from "./components/QueryEditor";
@@ -44,7 +46,13 @@ interface ContentTab {
   schema: string;
   table: string;
   type: "table" | "view" | "query";
-  sql?: string; // live SQL for query tabs (not stored by ID)
+  sql?: string;
+}
+
+interface DbWorkspace {
+  db: string;
+  contentTabs: ContentTab[];
+  activeContentTabId: string | null;
 }
 
 interface Tab {
@@ -53,8 +61,9 @@ interface Tab {
   connectionId: string | null;
   connectingError: string | null;
   serverVersion: string;
-  contentTabs: ContentTab[];
-  activeContentTabId: string | null;
+  openDbs: string[];
+  activeDbName: string | null;
+  workspaces: Record<string, DbWorkspace>;
 }
 
 let tabCounter = 0;
@@ -64,6 +73,12 @@ function nextTabId() {
 
 function nextContentTabId() {
   return `ct-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function defaultSchema(type: "postgres" | "mysql" | "sqlite"): string {
+  if (type === "postgres") return "public";
+  if (type === "sqlite") return "main";
+  return "";
 }
 
 /* ── App ────────────────────────────────────────────────── */
@@ -83,6 +98,10 @@ function App() {
   const [cellSelection, setCellSelection] = useState<CellSelection | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+
+  // Execution queue — subscribe to the connections map for reactivity
+  const execConnections = useExecutionQueue((s) => s.connections);
+  const execCancel = useExecutionQueue((s) => s.cancel);
 
   // Load config on mount — sets theme, panel states
   const { setMode: setThemeMode } = useThemeStore();
@@ -132,7 +151,6 @@ function App() {
 
   useEffect(() => {
     const unlisten = getCurrentWindow().onCloseRequested(async () => {
-      // Close all connections and clear tabs before the window hides
       for (const tab of tabsRef.current) {
         if (tab.connectionId) {
           await closeConnection(tab.connectionId).catch(() => {});
@@ -153,20 +171,30 @@ function App() {
         const { profile, connectionId: preOpenedId, serverVersion } = event.payload;
 
         const tabId = nextTabId();
+        const initialDbs = profile.database ? [profile.database] : [];
+        const initialWorkspaces: Record<string, DbWorkspace> = {};
+        if (profile.database) {
+          initialWorkspaces[profile.database] = {
+            db: profile.database,
+            contentTabs: [],
+            activeContentTabId: null,
+          };
+        }
+
         const newTab: Tab = {
           id: tabId,
           profile,
           connectionId: preOpenedId,
           connectingError: null,
           serverVersion: serverVersion || "",
-          contentTabs: [],
-          activeContentTabId: null,
+          openDbs: initialDbs,
+          activeDbName: profile.database || null,
+          workspaces: initialWorkspaces,
         };
 
         setTabs((prev) => [...prev, newTab]);
         setActiveTabId(tabId);
 
-        // Main window starts hidden; reveal it when a connection is picked.
         await getCurrentWindow().show();
         await getCurrentWindow().setFocus();
       },
@@ -174,7 +202,7 @@ function App() {
     return () => { unlisten.then((fn) => fn()); };
   }, []);
 
-  /* ── Close a tab ──────────────────────────────────────── */
+  /* ── Close a connection tab ────────────────────────────── */
 
   const closeTab = useCallback((tabId: string) => {
     const tab = tabsRef.current.find((t) => t.id === tabId);
@@ -182,10 +210,7 @@ function App() {
       closeConnection(tab.connectionId).catch(() => {});
     }
 
-    setTabs((prev) => {
-      const next = prev.filter((t) => t.id !== tabId);
-      return next;
-    });
+    setTabs((prev) => prev.filter((t) => t.id !== tabId));
 
     setActiveTabId((prevActive) => {
       if (prevActive !== tabId) return prevActive;
@@ -208,75 +233,125 @@ function App() {
     };
   }, []);
 
+  /* ── DB workspace helpers ──────────────────────────────── */
+
+  const openDb = useCallback((db: string) => {
+    setTabs((prev) => prev.map((t) => {
+      if (t.id !== activeTabId) return t;
+      const newDbs = t.openDbs.includes(db) ? t.openDbs : [...t.openDbs, db];
+      const newWorkspaces = { ...t.workspaces };
+      if (!newWorkspaces[db]) {
+        newWorkspaces[db] = { db, contentTabs: [], activeContentTabId: null };
+      }
+      return { ...t, openDbs: newDbs, activeDbName: db, workspaces: newWorkspaces };
+    }));
+  }, [activeTabId]);
+
+  const closeDb = useCallback((db: string) => {
+    setTabs((prev) => prev.map((t) => {
+      if (t.id !== activeTabId) return t;
+      const newDbs = t.openDbs.filter((d) => d !== db);
+      const newWorkspaces = { ...t.workspaces };
+      // Save query SQL before removing
+      const ws = newWorkspaces[db];
+      if (ws) {
+        for (const ct of ws.contentTabs) {
+          if (ct.type === "query" && ct.sql) queryStackPush(ct.sql);
+        }
+      }
+      delete newWorkspaces[db];
+      const newActive = t.activeDbName === db
+        ? (newDbs.length > 0 ? newDbs[newDbs.length - 1] : null)
+        : t.activeDbName;
+      return { ...t, openDbs: newDbs, activeDbName: newActive, workspaces: newWorkspaces };
+    }));
+  }, [activeTabId]);
+
+  const setActiveDb = useCallback((db: string) => {
+    setTabs((prev) => prev.map((t) =>
+      t.id !== activeTabId ? t : { ...t, activeDbName: db }
+    ));
+  }, [activeTabId]);
+
+  /* ── Content tab helpers (now workspace-scoped) ────────── */
+
   const handleTableSelect = useCallback((db: string, schema: string, table: string, type: "table" | "view" = "table") => {
     setTabs((prev) => prev.map((tab) => {
       if (tab.id !== activeTabId) return tab;
+      const ws = tab.workspaces[db];
+      if (!ws) return tab;
 
-      const existing = tab.contentTabs.find(
+      const existing = ws.contentTabs.find(
         (ct) => ct.db === db && ct.schema === schema && ct.table === table,
       );
       if (existing) {
-        return { ...tab, activeContentTabId: existing.id };
+        const updatedWs = { ...ws, activeContentTabId: existing.id };
+        return { ...tab, activeDbName: db, workspaces: { ...tab.workspaces, [db]: updatedWs } };
       }
 
-      const ct: ContentTab = {
-        id: nextContentTabId(),
-        db,
-        schema,
-        table,
-        type,
-      };
-      return {
-        ...tab,
-        contentTabs: [...tab.contentTabs, ct],
+      const ct: ContentTab = { id: nextContentTabId(), db, schema, table, type };
+      const updatedWs = {
+        ...ws,
+        contentTabs: [...ws.contentTabs, ct],
         activeContentTabId: ct.id,
       };
+      return { ...tab, activeDbName: db, workspaces: { ...tab.workspaces, [db]: updatedWs } };
     }));
   }, [activeTabId]);
 
   const closeContentTab = useCallback((contentTabId: string) => {
     setTabs((prev) => prev.map((tab) => {
-      if (tab.id !== activeTabId) return tab;
-      const closing = tab.contentTabs.find((ct) => ct.id === contentTabId);
-      // Push query SQL to stack on close
+      if (tab.id !== activeTabId || !tab.activeDbName) return tab;
+      const ws = tab.workspaces[tab.activeDbName];
+      if (!ws) return tab;
+
+      const closing = ws.contentTabs.find((ct) => ct.id === contentTabId);
       if (closing?.type === "query" && closing.sql) {
         queryStackPush(closing.sql);
       }
-      const idx = tab.contentTabs.findIndex((ct) => ct.id === contentTabId);
-      const next = tab.contentTabs.filter((ct) => ct.id !== contentTabId);
-      let newActiveId = tab.activeContentTabId;
-      if (tab.activeContentTabId === contentTabId) {
+      const idx = ws.contentTabs.findIndex((ct) => ct.id === contentTabId);
+      const next = ws.contentTabs.filter((ct) => ct.id !== contentTabId);
+      let newActiveId = ws.activeContentTabId;
+      if (ws.activeContentTabId === contentTabId) {
         newActiveId = next.length === 0 ? null : next[Math.min(idx, next.length - 1)].id;
       }
-      return { ...tab, contentTabs: next, activeContentTabId: newActiveId };
+      const updatedWs = { ...ws, contentTabs: next, activeContentTabId: newActiveId };
+      return { ...tab, workspaces: { ...tab.workspaces, [tab.activeDbName]: updatedWs } };
     }));
   }, [activeTabId]);
 
   const setActiveContentTab = useCallback((contentTabId: string) => {
     setTabs((prev) => prev.map((tab) => {
-      if (tab.id !== activeTabId) return tab;
-      return { ...tab, activeContentTabId: contentTabId };
+      if (tab.id !== activeTabId || !tab.activeDbName) return tab;
+      const ws = tab.workspaces[tab.activeDbName];
+      if (!ws) return tab;
+      const updatedWs = { ...ws, activeContentTabId: contentTabId };
+      return { ...tab, workspaces: { ...tab.workspaces, [tab.activeDbName]: updatedWs } };
     }));
   }, [activeTabId]);
 
   const addQueryTab = useCallback(() => {
-    const restoredSql = queryStackPop();
     setTabs((prev) => prev.map((tab) => {
-      if (tab.id !== activeTabId) return tab;
-      const queryCount = tab.contentTabs.filter((ct) => ct.type === "query").length;
+      if (tab.id !== activeTabId || !tab.activeDbName) return tab;
+      const ws = tab.workspaces[tab.activeDbName];
+      if (!ws) return tab;
+
+      const restoredSql = queryStackPop();
+      const queryCount = ws.contentTabs.filter((ct) => ct.type === "query").length;
       const ct: ContentTab = {
         id: nextContentTabId(),
-        db: "",
-        schema: "",
+        db: tab.activeDbName,
+        schema: defaultSchema(tab.profile.type),
         table: `Query ${queryCount + 1}`,
         type: "query",
         sql: restoredSql || "",
       };
-      return {
-        ...tab,
-        contentTabs: [...tab.contentTabs, ct],
+      const updatedWs = {
+        ...ws,
+        contentTabs: [...ws.contentTabs, ct],
         activeContentTabId: ct.id,
       };
+      return { ...tab, workspaces: { ...tab.workspaces, [tab.activeDbName]: updatedWs } };
     }));
   }, [activeTabId]);
 
@@ -313,6 +388,12 @@ function App() {
   }
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+  const activeWorkspace = activeTab?.activeDbName
+    ? activeTab.workspaces[activeTab.activeDbName] ?? null
+    : null;
+  const isRunning = activeTab?.connectionId
+    ? (execConnections.get(activeTab.connectionId)?.running ?? false)
+    : false;
 
   return (
     <div className="flex flex-col h-screen bg-bg-primary no-select">
@@ -323,7 +404,6 @@ function App() {
       >
         {/* Left toolbar */}
         <div className="flex items-center gap-0.5 mx-1 shrink-0">
-          {/* New connection button */}
           <button
             onClick={() => openConnectionManager()}
             title="New Connection"
@@ -348,6 +428,21 @@ function App() {
 
         {/* Right toolbar */}
         <div className="flex items-center gap-0.5 mx-1 shrink-0">
+          {/* Kill running query */}
+          {isRunning && activeTab?.connectionId && (
+            <button
+              onClick={() => execCancel(activeTab.connectionId!)}
+              title="Kill running query"
+              className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-error hover:bg-error/10 transition-colors cursor-pointer border border-error/30"
+            >
+              <StopCircle size={12} />
+              Kill
+            </button>
+          )}
+
+          {/* Spacer */}
+          <div className="w-px h-4 bg-border mx-1" />
+
           {/* Toggle sidebar */}
           <button
             onClick={() => setSidebarVisible((v) => {
@@ -421,10 +516,13 @@ function App() {
           connectionDatabase={activeTab.profile.database}
           onSelectDb={(db) => {
             setSidebarVisible(true);
-            window.dispatchEvent(new CustomEvent("sgsql:open-db", { detail: db }));
+            openDb(db);
           }}
           onSelectTable={(db, schema, table, type) => {
-            handleTableSelect(db, schema, table, type);
+            // Ensure db is open first
+            openDb(db);
+            // Use setTimeout to let state settle before opening the table
+            setTimeout(() => handleTableSelect(db, schema, table, type), 0);
           }}
           onClose={() => setCommandPaletteOpen(false)}
         />
@@ -448,14 +546,17 @@ function App() {
         </div>
       ) : (
         <div className="flex-1 flex flex-col min-h-0">
-          {/* Top section: sidebar + content */}
           <div className="flex-1 flex min-h-0">
             {/* Left sidebar: db tabs always visible, table list toggleable */}
             {activeTab.connectionId && (
               <SchemaTree
                 connectionId={activeTab.connectionId}
                 connectionType={activeTab.profile.type}
-                connectionDatabase={activeTab.profile.database}
+                openDbs={activeTab.openDbs}
+                activeDb={activeTab.activeDbName}
+                onActiveDbChange={setActiveDb}
+                onOpenDb={openDb}
+                onCloseDb={closeDb}
                 onTableSelect={handleTableSelect}
                 tableListVisible={sidebarVisible}
               />
@@ -479,11 +580,11 @@ function App() {
               {/* Content tab bar — always visible */}
               <div className="flex items-center h-8 border-b border-border bg-bg-secondary shrink-0">
                 <div className="flex-1 flex items-center h-full overflow-x-auto no-scrollbar">
-                  {activeTab.contentTabs.map((ct) => (
+                  {activeWorkspace?.contentTabs.map((ct) => (
                     <ContentTabItem
                       key={ct.id}
                       ct={ct}
-                      active={ct.id === activeTab.activeContentTabId}
+                      active={ct.id === activeWorkspace.activeContentTabId}
                       onActivate={() => setActiveContentTab(ct.id)}
                       onClose={() => closeContentTab(ct.id)}
                     />
@@ -492,8 +593,9 @@ function App() {
                 <div className="flex items-center px-1.5 shrink-0 border-l border-border">
                   <button
                     onClick={addQueryTab}
+                    disabled={!activeTab.activeDbName}
                     title="New SQL query tab"
-                    className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold tracking-wide text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer border border-border"
+                    className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold tracking-wide text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer border border-border disabled:opacity-30 disabled:cursor-not-allowed"
                   >
                     <Plus size={10} />
                     SQL
@@ -502,28 +604,33 @@ function App() {
               </div>
 
               {/* Content area */}
-              {activeTab.activeContentTabId && activeTab.connectionId ? (
+              {activeWorkspace?.activeContentTabId && activeTab.connectionId ? (
                 <div className="flex-1 relative min-h-0 overflow-hidden z-0">
-                  {activeTab.contentTabs.map((ct) => (
+                  {activeWorkspace.contentTabs.map((ct) => (
                     <div
                       key={ct.id}
                       className="absolute inset-0"
-                      style={{ display: ct.id === activeTab.activeContentTabId ? "block" : "none" }}
+                      style={{ display: ct.id === activeWorkspace.activeContentTabId ? "block" : "none" }}
                     >
                       {ct.type === "query" ? (
                         <QueryEditor
                           connectionId={activeTab.connectionId!}
+                          activeDb={activeTab.activeDbName || ""}
                           initialSql={ct.sql || ""}
                           onCellSelect={setCellSelection}
                           onSqlChange={(sql) => {
-                            setTabs((prev) => prev.map((tab) =>
-                              tab.id !== activeTab.id ? tab : {
-                                ...tab,
-                                contentTabs: tab.contentTabs.map((c) =>
+                            setTabs((prev) => prev.map((tab) => {
+                              if (tab.id !== activeTab.id || !tab.activeDbName) return tab;
+                              const ws = tab.workspaces[tab.activeDbName];
+                              if (!ws) return tab;
+                              const updatedWs = {
+                                ...ws,
+                                contentTabs: ws.contentTabs.map((c) =>
                                   c.id !== ct.id ? c : { ...c, sql }
                                 ),
-                              }
-                            ));
+                              };
+                              return { ...tab, workspaces: { ...tab.workspaces, [tab.activeDbName]: updatedWs } };
+                            }));
                           }}
                         />
                       ) : (
@@ -545,7 +652,9 @@ function App() {
                     alt=""
                     className="w-96 h-96 opacity-[0.12] pointer-events-none select-none [html[data-theme=dark]_&]:invert"
                   />
-                  <p className="text-text-muted text-sm">Select a table to get started</p>
+                  <p className="text-text-muted text-sm">
+                    {activeTab.activeDbName ? "Select a table to get started" : "Add a database to get started"}
+                  </p>
                 </div>
               )}
               {/* Bottom console panel */}
@@ -601,7 +710,6 @@ function TabItem({
       }`}
       style={{ paddingTop: 6, paddingBottom: 6 }}
     >
-      {/* Env badge */}
       {envStyle && (
         <span
           className="text-[9px] px-1 py-px rounded font-medium shrink-0 leading-tight"
@@ -610,17 +718,12 @@ function TabItem({
           {tab.profile.env.slice(0, 4)}
         </span>
       )}
-
-      {/* Name */}
       <span className="truncate font-medium">{tab.profile.name || "Untitled"}</span>
-
-      {/* Color dot / close button combo */}
       <button
         onClick={(e) => { e.stopPropagation(); onClose(); }}
         title="Close tab"
         className="close-dot relative w-3.5 h-3.5 shrink-0 ml-auto flex items-center justify-center rounded-full cursor-pointer transition-all"
       >
-        {/* Color dot — hidden on hover */}
         <span className="close-dot-color absolute inset-0 flex items-center justify-center">
           <span
             className="w-2 h-2 rounded-full"
@@ -633,13 +736,10 @@ function TabItem({
             <span className="absolute inset-[-1px] rounded-full border-[1.5px] border-error" />
           )}
         </span>
-        {/* X icon — shown on hover */}
         <span className="close-dot-x hidden text-text-muted">
           <X size={14} />
         </span>
       </button>
-
-      {/* Active indicator line */}
       {active && (
         <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-accent" />
       )}
@@ -717,7 +817,6 @@ function ResizableConsole({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
       if (!dragging.current) return;
-      // Dragging up should increase height
       const delta = startY.current - e.clientY;
       const next = Math.min(500, Math.max(80, startH.current + delta));
       setHeight(next);
@@ -744,7 +843,6 @@ function ResizableConsole({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex flex-col shrink-0 border-t border-border" style={{ height }}>
-      {/* Drag handle */}
       <div
         onMouseDown={onMouseDown}
         className="h-[3px] shrink-0 cursor-row-resize hover:bg-accent/50 active:bg-accent transition-colors w-full"
@@ -777,7 +875,6 @@ function ResizableDetailPanel({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
       if (!dragging.current) return;
-      // Dragging left should increase width (panel is on right)
       const delta = startX.current - e.clientX;
       const next = Math.min(600, Math.max(200, startW.current + delta));
       setWidth(next);
@@ -804,7 +901,6 @@ function ResizableDetailPanel({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex shrink-0 h-full" style={{ width }}>
-      {/* Drag handle on left side */}
       <div
         onMouseDown={onMouseDown}
         className="w-[3px] shrink-0 cursor-col-resize hover:bg-accent/50 active:bg-accent transition-colors h-full"
@@ -821,7 +917,6 @@ function StatusBar({ activeTab }: { activeTab: Tab | null }) {
 
   return (
     <div className="flex items-center justify-between h-7 px-3 border-t border-border bg-bg-secondary shrink-0 text-xs text-text-secondary">
-      {/* Left: connection status */}
       <div className="flex items-center gap-2">
         {activeTab?.connectionId && (
           <>
@@ -829,6 +924,7 @@ function StatusBar({ activeTab }: { activeTab: Tab | null }) {
             <span>
               Connected · {activeTab.profile.type}
               {activeTab.serverVersion && ` ${activeTab.serverVersion}`}
+              {activeTab.activeDbName && ` · ${activeTab.activeDbName}`}
             </span>
           </>
         )}
@@ -843,8 +939,6 @@ function StatusBar({ activeTab }: { activeTab: Tab | null }) {
         )}
         {!activeTab && <span>Not connected</span>}
       </div>
-
-      {/* Right: theme toggle */}
       <div className="flex items-center gap-0.5">
         <ThemeButton current={mode} value="light" setMode={setMode} icon={<Sun size={11} />} label="Light" />
         <ThemeButton current={mode} value="dark" setMode={setMode} icon={<Moon size={11} />} label="Dark" />

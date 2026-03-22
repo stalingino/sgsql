@@ -61,10 +61,11 @@ function LogEntry({ entry }: { entry: QueryLogEntry }) {
   });
 
   const hasError = !!entry.error;
+  const isCancelled = !!entry.cancelled;
 
   return (
     <div className={`px-3 py-1.5 border-b border-border/50 hover:bg-bg-hover/50 transition-colors ${
-      hasError ? "bg-error/5" : ""
+      isCancelled ? "bg-warning/5" : hasError ? "bg-error/5" : ""
     }`}>
       {/* Comment line: metadata */}
       <div className="text-text-muted">
@@ -76,7 +77,9 @@ function LogEntry({ entry }: { entry: QueryLogEntry }) {
           <><span className="text-text-muted/50">.</span><span>{entry.schema}</span></>
         )}
         <span className="text-text-muted/50"> | </span>
-        {hasError ? (
+        {isCancelled ? (
+          <span className="text-warning">KILLED</span>
+        ) : hasError ? (
           <span className="text-error">{Math.round(entry.duration * 100) / 100}ms ERROR</span>
         ) : (
           <>
@@ -93,8 +96,14 @@ function LogEntry({ entry }: { entry: QueryLogEntry }) {
         <HighlightedSQL sql={entry.query} />
       </div>
 
-      {/* Error message */}
-      {hasError && (
+      {/* Cancelled / Error message */}
+      {isCancelled && (
+        <div className="mt-0.5 text-warning">
+          <span className="text-warning/60">-- </span>
+          {entry.cancelDetail || "Killed"}
+        </div>
+      )}
+      {hasError && !isCancelled && (
         <div className="mt-0.5 text-error">
           <span className="text-error/60">-- </span>
           {entry.error}

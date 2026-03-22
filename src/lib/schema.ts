@@ -37,6 +37,13 @@ export async function closeConnection(connectionId: string): Promise<void> {
   });
 }
 
+export async function cancelQuery(connectionId: string): Promise<{ ok: boolean; detail?: string }> {
+  return sidecarFetch<{ ok: boolean; detail?: string }>("/cancel", {
+    method: "POST",
+    body: JSON.stringify({ connectionId }),
+  });
+}
+
 export async function fetchDatabases(connId: string): Promise<string[]> {
   const res = await sidecarFetch<{ databases: string[] }>(
     `/schema/${connId}/databases`,
@@ -98,10 +105,13 @@ export interface QueryResult {
 export async function executeQuery(
   connId: string,
   sql: string,
+  db?: string,
+  signal?: AbortSignal,
 ): Promise<QueryResult> {
   return sidecarFetch<QueryResult>("/query", {
     method: "POST",
-    body: JSON.stringify({ connectionId: connId, sql }),
+    body: JSON.stringify({ connectionId: connId, sql, db: db || undefined }),
+    signal,
   });
 }
 

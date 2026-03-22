@@ -19,7 +19,11 @@ import { getConfig, saveConfig } from "../lib/config";
 interface SchemaTreeProps {
   connectionId: string;
   connectionType: "postgres" | "mysql" | "sqlite";
-  connectionDatabase: string;
+  openDbs: string[];
+  activeDb: string | null;
+  onActiveDbChange: (db: string) => void;
+  onOpenDb: (db: string) => void;
+  onCloseDb: (db: string) => void;
   onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view") => void;
   tableListVisible?: boolean;
 }
@@ -38,12 +42,14 @@ function defaultSchema(type: "postgres" | "mysql" | "sqlite"): string {
 export function SchemaTree({
   connectionId,
   connectionType,
-  connectionDatabase,
+  openDbs,
+  activeDb,
+  onActiveDbChange,
+  onOpenDb,
+  onCloseDb,
   onTableSelect,
   tableListVisible = true,
 }: SchemaTreeProps) {
-  const [openDbs, setOpenDbs] = useState<string[]>([connectionDatabase]);
-  const [activeDb, setActiveDb] = useState(connectionDatabase);
   const [allDatabases, setAllDatabases] = useState<string[] | null>(null);
   const [showDbPicker, setShowDbPicker] = useState(false);
   const [loadingDbs, setLoadingDbs] = useState(false);
@@ -53,14 +59,12 @@ export function SchemaTree({
   const popoverRef = useRef<HTMLDivElement>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
 
-  // Reset when connection changes
+  // Reset cache when connection changes
   useEffect(() => {
-    setOpenDbs([connectionDatabase]);
-    setActiveDb(connectionDatabase);
     setAllDatabases(null);
     setShowDbPicker(false);
     cacheRef.current = new Map();
-  }, [connectionId, connectionDatabase]);
+  }, [connectionId]);
 
   // Close popover on outside click
   useEffect(() => {
@@ -94,29 +98,10 @@ export function SchemaTree({
     }
   }, [connectionId, allDatabases]);
 
-  const selectDb = useCallback((db: string) => {
-    setOpenDbs((prev) => prev.includes(db) ? prev : [...prev, db]);
-    setActiveDb(db);
+  const handleSelectDb = useCallback((db: string) => {
+    onOpenDb(db);
     setShowDbPicker(false);
-  }, []);
-
-  // Listen for external db open requests (e.g. from command palette)
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const db = (e as CustomEvent<string>).detail;
-      if (db) selectDb(db);
-    };
-    window.addEventListener("sgsql:open-db", handler);
-    return () => window.removeEventListener("sgsql:open-db", handler);
-  }, [selectDb]);
-
-  const removeDb = useCallback((db: string) => {
-    setOpenDbs((prev) => {
-      const next = prev.filter((d) => d !== db);
-      return next;
-    });
-    setActiveDb((prev) => prev === db ? connectionDatabase : prev);
-  }, [connectionDatabase]);
+  }, [onOpenDb]);
 
   const isSqlite = connectionType === "sqlite";
 
@@ -129,13 +114,12 @@ export function SchemaTree({
             key={db}
             db={db}
             active={db === activeDb}
-            isDefault={db === connectionDatabase}
-            onClick={() => setActiveDb(db)}
-            onRemove={db !== connectionDatabase ? () => removeDb(db) : undefined}
+            onClick={() => onActiveDbChange(db)}
+            onRemove={() => onCloseDb(db)}
           />
         ))}
 
-        {/* Add database button — right after last db tab */}
+        {/* Add database button */}
         {!isSqlite && (
           <button
             ref={addBtnRef}
@@ -153,13 +137,12 @@ export function SchemaTree({
         )}
       </div>
 
-      {/* ── Popover — portaled to the sidebar root so it's not clipped ── */}
+      {/* ── Popover ── */}
       {showDbPicker && allDatabases && (
         <div
           ref={popoverRef}
           className="fixed z-[9999] w-[220px] rounded-md border border-border bg-bg-primary shadow-xl overflow-hidden"
           style={{
-            left: 56 + 240 + 8, // db strip width is inside the 240px aside, but we need absolute screen pos
             ...(addBtnRef.current ? (() => {
               const rect = addBtnRef.current.getBoundingClientRect();
               return { top: Math.max(8, rect.top - 200), left: rect.right + 4 };
@@ -181,7 +164,7 @@ export function SchemaTree({
               .map((d) => (
                 <div
                   key={d}
-                  onClick={() => selectDb(d)}
+                  onClick={() => handleSelectDb(d)}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] text-text-secondary hover:bg-bg-hover cursor-pointer transition-colors"
                 >
                   <Database size={11} className="text-text-muted shrink-0" />
@@ -196,7 +179,7 @@ export function SchemaTree({
       )}
 
       {/* ── Right: table list for active database (toggleable + resizable) ── */}
-      {tableListVisible && (
+      {tableListVisible && activeDb && (
         <ResizableTableList>
           <TableList
             db={activeDb}
@@ -217,15 +200,13 @@ export function SchemaTree({
 function DbTab({
   db,
   active,
-  isDefault,
   onClick,
   onRemove,
 }: {
   db: string;
   active: boolean;
-  isDefault: boolean;
   onClick: () => void;
-  onRemove?: () => void;
+  onRemove: () => void;
 }) {
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -251,7 +232,7 @@ function DbTab({
       <div
         onClick={onClick}
         onContextMenu={handleContextMenu}
-        title={db + (isDefault ? " (default)" : "")}
+        title={db}
         className={`relative flex flex-col items-center gap-0.5 px-1.5 py-4 cursor-pointer transition-colors border-b border-border ${
           active
             ? "bg-bg-secondary text-text-primary"
@@ -276,35 +257,28 @@ function DbTab({
           <div className="px-3 py-1 text-[10px] text-text-muted font-semibold uppercase tracking-wider border-b border-border mb-1">
             {db}
           </div>
-          {onRemove && (
-            <button
-              onClick={() => { setCtxMenu(null); onRemove(); }}
-              className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-error hover:bg-error/10 transition-colors cursor-pointer"
-            >
-              <X size={11} />
-              Remove database
-            </button>
-          )}
-          {!onRemove && (
-            <div className="px-3 py-1.5 text-[12px] text-text-muted">Default database</div>
-          )}
+          <button
+            onClick={() => { setCtxMenu(null); onRemove(); }}
+            className="flex items-center gap-2 w-full px-3 py-1.5 text-[12px] text-error hover:bg-error/10 transition-colors cursor-pointer"
+          >
+            <X size={11} />
+            Remove database
+          </button>
         </div>
       )}
     </>
   );
 }
 
-/* ── Fuzzy match ────────────────────────────────────────── */
+/* ── Fuzzy match ─────────────────────────────────────────── */
 
 function fuzzyMatch(query: string, target: string): { match: boolean; score: number } {
   if (!query) return { match: true, score: 0 };
   const q = query.toLowerCase();
   const t = target.toLowerCase();
 
-  // Exact substring = highest score
   if (t.includes(q)) return { match: true, score: 100 + q.length };
 
-  // Fuzzy: all chars of query appear in order in target
   let qi = 0;
   let score = 0;
   let consecutive = 0;
@@ -312,7 +286,7 @@ function fuzzyMatch(query: string, target: string): { match: boolean; score: num
     if (t[ti] === q[qi]) {
       qi++;
       consecutive++;
-      score += consecutive; // reward consecutive matches
+      score += consecutive;
     } else {
       consecutive = 0;
     }
@@ -466,13 +440,12 @@ function TableList({
   );
 }
 
-/* ── Table node (expandable to show columns) ────────────── */
+/* ── Table node ──────────────────────────────────────────── */
 
 function highlightMatch(name: string, query: string): React.ReactNode {
   if (!query) return name;
   const q = query.toLowerCase();
   const n = name.toLowerCase();
-  // Exact substring highlight
   const idx = n.indexOf(q);
   if (idx !== -1) {
     return (
@@ -483,12 +456,14 @@ function highlightMatch(name: string, query: string): React.ReactNode {
       </>
     );
   }
-  // Fuzzy: highlight individual matched chars
+  // Fuzzy highlight
   const result: React.ReactNode[] = [];
   let qi = 0;
   for (let i = 0; i < name.length; i++) {
-    if (qi < q.length && name[i].toLowerCase() === q[qi]) {
-      result.push(<mark key={i} className="bg-accent/25 text-inherit rounded-[2px]">{name[i]}</mark>);
+    if (qi < q.length && n[i] === q[qi]) {
+      result.push(
+        <mark key={i} className="bg-accent/25 text-inherit rounded-[2px]">{name[i]}</mark>,
+      );
       qi++;
     } else {
       result.push(name[i]);
@@ -515,7 +490,6 @@ function TableNode({
   const isView = table.type === "view";
   const nodeRef = useRef<HTMLDivElement>(null);
 
-  // Scroll selected node into view
   useEffect(() => {
     if (selected && nodeRef.current) {
       nodeRef.current.scrollIntoView({ block: "nearest" });
@@ -585,11 +559,13 @@ function ResizableTableList({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <div className="flex shrink-0 h-full" style={{ width }}>
-      <div className="flex-1 min-w-0 h-full flex flex-col min-h-0 border-r border-border">{children}</div>
+    <div className="flex h-full shrink-0 border-r border-border" style={{ width }}>
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-bg-secondary">
+        {children}
+      </div>
       <div
         onMouseDown={onMouseDown}
-        className="w-[3px] shrink-0 cursor-col-resize hover:bg-accent/50 active:bg-accent transition-colors h-full"
+        className="w-[4px] shrink-0 cursor-col-resize hover:bg-accent/30 active:bg-accent/50 transition-colors"
       />
     </div>
   );

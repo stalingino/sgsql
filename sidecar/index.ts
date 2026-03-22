@@ -5,6 +5,7 @@ import {
   handleCloseConnection,
   handleSchemaRequest,
   handleQuery,
+  handleCancel,
 } from "./routes/schema";
 
 const DEFAULT_PORT = 45821; // distinctive high port — avoids collisions
@@ -63,6 +64,11 @@ async function main() {
         if (path === "/query" && req.method === "POST") {
           console.log("[sidecar] executing query");
           return handleQuery(req, headers);
+        }
+
+        if (path === "/cancel" && req.method === "POST") {
+          console.log("[sidecar] cancelling query");
+          return handleCancel(req, headers);
         }
 
         if (path.startsWith("/schema/") && req.method === "GET") {

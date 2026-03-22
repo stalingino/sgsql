@@ -10,6 +10,8 @@ export interface QueryLogEntry {
   duration: number; // ms
   rowCount?: number;
   error?: string;
+  cancelled?: boolean;
+  cancelDetail?: string;
 }
 
 let logIdCounter = 0;

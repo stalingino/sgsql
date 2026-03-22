@@ -1,6 +1,7 @@
 import type { ConnectionProfile } from "../lib/types";
 import {
   getConnection,
+  getProfile,
   setConnection,
   closeConnection,
   hasConnection,
@@ -565,18 +566,112 @@ async function executeSQL(entry: PoolEntry, sql: string, isSelect: boolean) {
   }
 }
 
-export async function handleQuery(
+// ---------------------------------------------------------------------------
+// POST /cancel — kill the currently running query on a connection
+// ---------------------------------------------------------------------------
+
+export async function handleCancel(
   req: Request,
   headers: Record<string, string>,
 ): Promise<Response> {
-  let body: { connectionId?: string; sql?: string };
+  let body: { connectionId?: string };
   try {
     body = await req.json();
   } catch {
     return errorResponse("Invalid JSON body", headers, 400);
   }
 
-  const { connectionId, sql } = body;
+  const { connectionId } = body;
+  if (!connectionId) {
+    return errorResponse("Missing connectionId", headers, 400);
+  }
+
+  const entry = getConnection(connectionId);
+  if (!entry) {
+    return errorResponse("Connection not found", headers, 404);
+  }
+
+  const profile = getProfile(connectionId);
+
+  let detail = "";
+  try {
+    switch (entry.type) {
+      case "mysql": {
+        // Get the thread ID of the running query connection
+        const threadId = (entry.client as any).connection?.threadId
+          ?? (entry.client as any).threadId;
+        if (!threadId) {
+          return errorResponse("Cannot determine MySQL thread ID", headers, 500);
+        }
+        // Open a separate connection to kill the query
+        const mysql = await import("mysql2/promise");
+        const killer = await mysql.createConnection({
+          host: profile?.host ?? "localhost",
+          port: profile?.port ?? 3306,
+          user: profile?.username ?? "root",
+          password: profile?.password ?? "",
+          connectTimeout: 5000,
+        });
+        await killer.query(`KILL QUERY ${threadId}`);
+        await killer.end();
+        detail = `Killed MySQL query on thread ${threadId}`;
+        console.log(`[sidecar] ${detail}`);
+        break;
+      }
+      case "postgres": {
+        // Cancel the current query using pg_cancel_backend
+        const [row] = await entry.client`SELECT pg_backend_pid() AS pid`;
+        const pid = row?.pid;
+        if (pid) {
+          await entry.client`SELECT pg_cancel_backend(${pid})`;
+          detail = `Killed Postgres query on pid ${pid}`;
+          console.log(`[sidecar] ${detail}`);
+        }
+        break;
+      }
+      case "sqlite": {
+        detail = "SQLite queries cannot be killed server-side";
+        break;
+      }
+    }
+    return json({ ok: true, detail }, headers);
+  } catch (e: unknown) {
+    const message = friendlyError(e);
+    console.error(`[sidecar] cancel error: ${message}`);
+    return errorResponse(message, headers);
+  }
+}
+
+/** Switch the active database on a connection (MySQL: USE, Postgres: SET search_path) */
+async function switchDb(entry: PoolEntry, db: string): Promise<void> {
+  if (!db) return;
+  switch (entry.type) {
+    case "mysql":
+      await entry.client.query(`USE \`${db}\``);
+      break;
+    case "postgres":
+      // For Postgres, switching database is not trivial (requires new connection).
+      // The search_path approach only switches schema, not database.
+      // For now, no-op — Postgres queries should use qualified names.
+      break;
+    case "sqlite":
+      // SQLite is single-database
+      break;
+  }
+}
+
+export async function handleQuery(
+  req: Request,
+  headers: Record<string, string>,
+): Promise<Response> {
+  let body: { connectionId?: string; sql?: string; db?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return errorResponse("Invalid JSON body", headers, 400);
+  }
+
+  const { connectionId, sql, db } = body;
   if (!connectionId || !sql) {
     return errorResponse("Missing connectionId or sql", headers, 400);
   }
@@ -589,6 +684,8 @@ export async function handleQuery(
   const isSelect = SELECT_RE.test(sql);
 
   try {
+    // Switch database context if requested
+    if (db) await switchDb(entry, db);
     const t0 = performance.now();
     const result = await executeSQL(entry, sql, isSelect);
     return json({ ...result, duration: performance.now() - t0 }, headers);
@@ -598,6 +695,7 @@ export async function handleQuery(
       console.log(`[sidecar] connection error detected, attempting reconnect for ${connectionId}...`);
       try {
         entry = await reconnect(connectionId);
+        if (db) await switchDb(entry, db);
         const t0 = performance.now();
         const result = await executeSQL(entry, sql, isSelect);
         return json({ ...result, duration: performance.now() - t0 }, headers);

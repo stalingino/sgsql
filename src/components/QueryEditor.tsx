@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { Loader2, Play, Sparkles, ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
-import { executeQuery, type QueryResult } from "../lib/schema";
+import { type QueryResult } from "../lib/schema";
 import { useQueryLog } from "../lib/queryLog";
+import { useExecutionQueue } from "../lib/executionQueue";
 import { HighlightedSQL } from "../lib/highlightSQL";
 import { ResultGrid, type CellSelection } from "./ResultGrid";
 
 interface QueryEditorProps {
   connectionId: string;
+  activeDb: string;
   initialSql?: string;
   onSqlChange?: (sql: string) => void;
   onCellSelect?: (selection: CellSelection | null) => void;
@@ -135,7 +137,7 @@ function beautifySql(sql: string): string {
 
 /* ── Component ──────────────────────────────────────────── */
 
-export function QueryEditor({ connectionId, initialSql = "", onSqlChange, onCellSelect }: QueryEditorProps) {
+export function QueryEditor({ connectionId, activeDb, initialSql = "", onSqlChange, onCellSelect }: QueryEditorProps) {
   const [sql, setSql] = useState(initialSql);
   const [result, setResult] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -150,6 +152,7 @@ export function QueryEditor({ connectionId, initialSql = "", onSqlChange, onCell
   const preRef = useRef<HTMLPreElement>(null);
   const onSqlChangeRef = useRef(onSqlChange);
   onSqlChangeRef.current = onSqlChange;
+  const execQueue = useExecutionQueue((s) => s.execute);
   const limitMenuRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
 
@@ -206,27 +209,35 @@ export function QueryEditor({ connectionId, initialSql = "", onSqlChange, onCell
     setOffset(0);
 
     try {
-      const res = await executeQuery(connectionId, finalQuery);
+      const res = await execQueue(connectionId, finalQuery, activeDb);
       setResult(res);
       addLogEntryRef.current({
         timestamp: new Date(),
         query: finalQuery,
-        db: "",
+        db: activeDb,
         schema: "",
         table: "",
         duration: res.duration,
         rowCount: res.rowCount ?? res.affectedRows,
       });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const raw = err instanceof Error ? err.message : String(err);
+      const isCancelled = raw === "Cancelled" || raw.includes("aborted") || (err instanceof DOMException && err.name === "AbortError");
+      const msg = isCancelled ? "Query killed" : raw;
       setError(msg);
+      // Read cancel detail from the execution queue (set by server response before abort)
+      const cancelDetail = isCancelled
+        ? useExecutionQueue.getState().connections.get(connectionId)?.lastCancelDetail ?? undefined
+        : undefined;
       addLogEntryRef.current({
         timestamp: new Date(),
         query: finalQuery,
-        db: "",
+        db: activeDb,
         schema: "",
         table: "",
         duration: 0,
+        cancelled: isCancelled || undefined,
+        cancelDetail,
         error: msg,
       });
     } finally {
