@@ -15,6 +15,7 @@ import {
   type ColumnInfo,
 } from "../lib/schema";
 import { useQueryLog } from "../lib/queryLog";
+import { useEditStore, buildRowKey } from "../lib/editStore";
 import { ResultGrid, type SortState, type CellSelection } from "./ResultGrid";
 import { getConfig } from "../lib/config";
 
@@ -329,6 +330,10 @@ export function DataTable({ connectionId, db, schema, table, onCellSelect }: Dat
       <div className="flex-1 min-h-0">
         {mode === "data" ? (
           <DataView
+            connectionId={connectionId}
+            db={db}
+            schema={schema}
+            table={table}
             headerColumns={headerColumns}
             data={data}
             loading={loading}
@@ -337,6 +342,8 @@ export function DataTable({ connectionId, db, schema, table, onCellSelect }: Dat
             sort={sort}
             onSortChange={(s) => { setSort(s); setOffset(0); }}
             onCellSelect={onCellSelect}
+            pkColumns={columns?.filter((c) => c.isPk).map((c) => c.name) ?? []}
+            columnMeta={columns?.map((c) => ({ name: c.name, dataType: c.dataType, udtName: c.udtName, defaultValue: c.defaultValue })) ?? []}
           />
         ) : (
           <StructureView
@@ -421,6 +428,10 @@ export function DataTable({ connectionId, db, schema, table, onCellSelect }: Dat
 /* ── Data View ─────────────────────────────────────────── */
 
 function DataView({
+  connectionId,
+  db,
+  schema,
+  table,
   headerColumns,
   data,
   loading,
@@ -429,7 +440,13 @@ function DataView({
   sort,
   onSortChange,
   onCellSelect,
+  pkColumns,
+  columnMeta,
 }: {
+  connectionId: string;
+  db: string;
+  schema: string;
+  table: string;
   headerColumns: string[];
   data: TableRowsResult | null;
   loading: boolean;
@@ -438,7 +455,38 @@ function DataView({
   sort: SortState | null;
   onSortChange: (s: SortState | null) => void;
   onCellSelect?: (selection: CellSelection | null) => void;
+  pkColumns: string[];
+  columnMeta: { name: string; dataType: string; udtName: string; defaultValue: string | null }[];
 }) {
+  const editChanges = useEditStore((s) => s.changes);
+
+  // Build dirty-checking functions that use row PKs
+  const isCellDirty = useCallback((rowIndex: number, colIndex: number) => {
+    if (pkColumns.length === 0 || !data?.rows[rowIndex]) return false;
+    const row = data.rows[rowIndex] as unknown[];
+    const rk = buildRowKey(connectionId, db, schema, table, headerColumns, row, pkColumns);
+    return useEditStore.getState().isCellDirty(rk, headerColumns[colIndex]);
+  }, [connectionId, db, schema, table, headerColumns, pkColumns, data?.rows, editChanges]);
+
+  const isRowDirty = useCallback((rowIndex: number) => {
+    if (pkColumns.length === 0 || !data?.rows[rowIndex]) return false;
+    const row = data.rows[rowIndex] as unknown[];
+    const rk = buildRowKey(connectionId, db, schema, table, headerColumns, row, pkColumns);
+    return useEditStore.getState().isRowDirty(rk);
+  }, [connectionId, db, schema, table, headerColumns, pkColumns, data?.rows, editChanges]);
+
+  // Wrap onCellSelect to inject table context
+  const handleCellSelect = useCallback((sel: CellSelection | null) => {
+    if (sel && pkColumns.length > 0) {
+      onCellSelect?.({
+        ...sel,
+        tableContext: { connectionId, db, schema, table, pkColumns, columnMeta },
+      });
+    } else {
+      onCellSelect?.(sel);
+    }
+  }, [connectionId, db, schema, table, pkColumns, columnMeta, onCellSelect]);
+
   if (loading && !data) {
     return (
       <div className="flex items-center justify-center h-full text-text-muted text-sm gap-2">
@@ -464,7 +512,9 @@ function DataView({
       emptyMessage="No rows in this table."
       sort={sort}
       onSortChange={onSortChange}
-      onCellSelect={onCellSelect}
+      onCellSelect={handleCellSelect}
+      isCellDirty={pkColumns.length > 0 ? isCellDirty : undefined}
+      isRowDirty={pkColumns.length > 0 ? isRowDirty : undefined}
     />
   );
 }

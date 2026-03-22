@@ -16,6 +16,7 @@ interface CommandPaletteProps {
   connectionId: string;
   connectionType: "postgres" | "mysql" | "sqlite";
   connectionDatabase: string;
+  mode?: "all" | "db-only";
   onSelectDb: (db: string) => void;
   onSelectTable: (db: string, schema: string, table: string, type: "table" | "view") => void;
   onClose: () => void;
@@ -57,6 +58,7 @@ export function CommandPalette({
   connectionId,
   connectionType,
   connectionDatabase,
+  mode = "all",
   onSelectDb,
   onSelectTable,
   onClose,
@@ -85,22 +87,24 @@ export function CommandPalette({
           allItems.push({ kind: "db", db, schema: "", name: db, score: 0 });
         }
 
-        // Fetch tables for the connected database first, then others
-        const orderedDbs = [connectionDatabase, ...dbs.filter((d) => d !== connectionDatabase)];
-        for (const db of orderedDbs) {
-          try {
-            const tables = await fetchTables(connectionId, db, schema);
-            for (const t of tables) {
-              allItems.push({
-                kind: t.type === "view" ? "view" : "table",
-                db,
-                schema,
-                name: t.name,
-                score: 0,
-              });
+        // Fetch tables only in "all" mode
+        if (mode !== "db-only") {
+          const orderedDbs = [connectionDatabase, ...dbs.filter((d) => d !== connectionDatabase)];
+          for (const db of orderedDbs) {
+            try {
+              const tables = await fetchTables(connectionId, db, schema);
+              for (const t of tables) {
+                allItems.push({
+                  kind: t.type === "view" ? "view" : "table",
+                  db,
+                  schema,
+                  name: t.name,
+                  score: 0,
+                });
+              }
+            } catch {
+              // skip dbs we can't read tables from
             }
-          } catch {
-            // skip dbs we can't read tables from
           }
         }
 
@@ -114,7 +118,7 @@ export function CommandPalette({
     })();
 
     return () => { cancelled = true; };
-  }, [connectionId, connectionDatabase, schema]);
+  }, [connectionId, connectionDatabase, schema, mode]);
 
   // Focus input on mount
   useEffect(() => {
@@ -136,6 +140,13 @@ export function CommandPalette({
         .sort((a, b) => b.score - a.score)
         .map((r) => r.item)
     : items;
+
+  // Sort: tables/views first, databases last
+  const sortedFiltered = [...filtered].sort((a, b) => {
+    if (a.kind === "db" && b.kind !== "db") return 1;
+    if (a.kind !== "db" && b.kind === "db") return -1;
+    return 0;
+  });
 
   // Reset selection when query changes
   useEffect(() => {
@@ -168,7 +179,7 @@ export function CommandPalette({
       onClose();
     } else if (e.key === "ArrowDown") {
       e.preventDefault();
-      setSelectedIdx((prev) => Math.min(prev + 1, filtered.length - 1));
+      setSelectedIdx((prev) => Math.min(prev + 1, sortedFiltered.length - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setSelectedIdx((prev) => Math.max(prev - 1, 0));
@@ -177,12 +188,12 @@ export function CommandPalette({
       if (e.shiftKey) {
         setSelectedIdx((prev) => Math.max(prev - 1, 0));
       } else {
-        setSelectedIdx((prev) => Math.min(prev + 1, filtered.length - 1));
+        setSelectedIdx((prev) => Math.min(prev + 1, sortedFiltered.length - 1));
       }
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (filtered[selectedIdx]) {
-        handleSelect(filtered[selectedIdx]);
+      if (sortedFiltered[selectedIdx]) {
+        handleSelect(sortedFiltered[selectedIdx]);
       }
     }
   };
@@ -229,7 +240,7 @@ export function CommandPalette({
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Stupidly Good Search..."
+            placeholder={mode === "db-only" ? "Search databases..." : "Stupidly Good Search..."}
             className="flex-1 bg-transparent text-sm text-text-primary placeholder:text-text-muted outline-none"
             spellCheck={false}
           />
@@ -247,14 +258,14 @@ export function CommandPalette({
             </div>
           )}
 
-          {!loading && filtered.length === 0 && (
+          {!loading && sortedFiltered.length === 0 && (
             <div className="flex items-center justify-center py-8 text-sm text-text-muted">
               No results found
             </div>
           )}
 
           {!loading &&
-            filtered.map((item, i) => (
+            sortedFiltered.map((item, i) => (
               <div
                 key={`${item.kind}:${item.db}:${item.name}`}
                 className={`flex items-center gap-2.5 px-4 py-2 cursor-pointer transition-colors ${

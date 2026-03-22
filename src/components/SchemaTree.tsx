@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Database,
   Table2,
@@ -8,7 +8,6 @@ import {
   X,
 } from "lucide-react";
 import {
-  fetchDatabases,
   fetchTables,
   type TableInfo,
 } from "../lib/schema";
@@ -22,8 +21,8 @@ interface SchemaTreeProps {
   openDbs: string[];
   activeDb: string | null;
   onActiveDbChange: (db: string) => void;
-  onOpenDb: (db: string) => void;
   onCloseDb: (db: string) => void;
+  onAddDb: () => void;
   onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view") => void;
   tableListVisible?: boolean;
 }
@@ -45,63 +44,18 @@ export function SchemaTree({
   openDbs,
   activeDb,
   onActiveDbChange,
-  onOpenDb,
   onCloseDb,
+  onAddDb,
   onTableSelect,
   tableListVisible = true,
 }: SchemaTreeProps) {
-  const [allDatabases, setAllDatabases] = useState<string[] | null>(null);
-  const [showDbPicker, setShowDbPicker] = useState(false);
-  const [loadingDbs, setLoadingDbs] = useState(false);
-
   const cacheRef = useRef<SchemaCache>(new Map());
   const schema = defaultSchema(connectionType);
-  const popoverRef = useRef<HTMLDivElement>(null);
-  const addBtnRef = useRef<HTMLButtonElement>(null);
 
   // Reset cache when connection changes
   useEffect(() => {
-    setAllDatabases(null);
-    setShowDbPicker(false);
     cacheRef.current = new Map();
   }, [connectionId]);
-
-  // Close popover on outside click
-  useEffect(() => {
-    if (!showDbPicker) return;
-    const handler = (e: MouseEvent) => {
-      if (
-        popoverRef.current && !popoverRef.current.contains(e.target as Node) &&
-        addBtnRef.current && !addBtnRef.current.contains(e.target as Node)
-      ) {
-        setShowDbPicker(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [showDbPicker]);
-
-  const handleAddDb = useCallback(async () => {
-    if (allDatabases) {
-      setShowDbPicker(true);
-      return;
-    }
-    setLoadingDbs(true);
-    try {
-      const dbs = await fetchDatabases(connectionId);
-      setAllDatabases(dbs);
-      setShowDbPicker(true);
-    } catch {
-      // silently fail
-    } finally {
-      setLoadingDbs(false);
-    }
-  }, [connectionId, allDatabases]);
-
-  const handleSelectDb = useCallback((db: string) => {
-    onOpenDb(db);
-    setShowDbPicker(false);
-  }, [onOpenDb]);
 
   const isSqlite = connectionType === "sqlite";
 
@@ -122,61 +76,15 @@ export function SchemaTree({
         {/* Add database button */}
         {!isSqlite && (
           <button
-            ref={addBtnRef}
-            onClick={handleAddDb}
-            disabled={loadingDbs}
-            title="Add database"
+            onClick={onAddDb}
+            title="Add database (⌘K)"
             className="flex flex-col items-center gap-0.5 w-full px-1.5 py-4 text-text-muted hover:text-text-secondary hover:bg-bg-hover transition-colors cursor-pointer border-b border-border"
           >
-            {loadingDbs
-              ? <Loader2 size={13} className="animate-spin" />
-              : <Plus size={13} />
-            }
+            <Plus size={13} />
             <span className="text-[11px] font-medium leading-tight">Add Database</span>
           </button>
         )}
       </div>
-
-      {/* ── Popover ── */}
-      {showDbPicker && allDatabases && (
-        <div
-          ref={popoverRef}
-          className="fixed z-[9999] w-[220px] rounded-md border border-border bg-bg-primary shadow-xl overflow-hidden"
-          style={{
-            ...(addBtnRef.current ? (() => {
-              const rect = addBtnRef.current.getBoundingClientRect();
-              return { top: Math.max(8, rect.top - 200), left: rect.right + 4 };
-            })() : {}),
-          }}
-        >
-          <div className="flex items-center justify-between px-3 py-1.5 border-b border-border">
-            <span className="text-[10px] font-semibold text-text-muted uppercase tracking-wider">Select database</span>
-            <button
-              onClick={() => setShowDbPicker(false)}
-              className="text-text-muted hover:text-text-primary cursor-pointer"
-            >
-              <X size={12} />
-            </button>
-          </div>
-          <div className="max-h-[200px] overflow-y-auto py-1">
-            {allDatabases
-              .filter((d) => !openDbs.includes(d))
-              .map((d) => (
-                <div
-                  key={d}
-                  onClick={() => handleSelectDb(d)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] text-text-secondary hover:bg-bg-hover cursor-pointer transition-colors"
-                >
-                  <Database size={11} className="text-text-muted shrink-0" />
-                  <span className="truncate">{d}</span>
-                </div>
-              ))}
-            {allDatabases.filter((d) => !openDbs.includes(d)).length === 0 && (
-              <div className="px-3 py-2 text-[11px] text-text-muted">All databases added.</div>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* ── Right: table list for active database (toggleable + resizable) ── */}
       {tableListVisible && activeDb && (

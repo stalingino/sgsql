@@ -25,6 +25,16 @@ export interface CellSelection {
   colIndex: number;
   row: unknown[];
   columns: string[];
+  /** Table context for edit support */
+  tableContext?: {
+    connectionId: string;
+    db: string;
+    schema: string;
+    table: string;
+    pkColumns: string[];
+    /** Column metadata for type-aware editing */
+    columnMeta?: { name: string; dataType: string; udtName: string; defaultValue: string | null }[];
+  };
 }
 
 /* ── Copy format helpers ───────────────────────────────── */
@@ -436,6 +446,10 @@ interface ResultGridProps {
   onSortChange?: (sort: SortState | null) => void;
   clientSort?: boolean;
   onCellSelect?: (selection: CellSelection | null) => void;
+  /** Check if a cell is dirty (for edit highlighting) */
+  isCellDirty?: (rowIndex: number, colIndex: number) => boolean;
+  /** Check if a row is dirty (for edit highlighting) */
+  isRowDirty?: (rowIndex: number) => boolean;
 }
 
 export function ResultGrid({
@@ -447,6 +461,8 @@ export function ResultGrid({
   onSortChange,
   clientSort = false,
   onCellSelect,
+  isCellDirty,
+  isRowDirty,
 }: ResultGridProps) {
   const [internalSort, setInternalSort] = useState<SortState | null>(null);
   // Multi-selection state
@@ -754,6 +770,7 @@ export function ResultGrid({
             displayRows.map((row, i) => {
               const isSelected = selectedRows.has(i);
               const isActive = activeRow === i;
+              const rowDirty = isRowDirty?.(i) ?? false;
               return (
                 <tr
                   key={i}
@@ -761,12 +778,15 @@ export function ResultGrid({
                   className={`transition-colors ${
                     isSelected
                       ? focused ? "bg-accent/25" : "bg-accent/12"
-                      : i % 2 === 1 ? "bg-bg-secondary hover:bg-bg-hover" : "hover:bg-bg-hover"
+                      : rowDirty
+                        ? "bg-warning/8"
+                        : i % 2 === 1 ? "bg-bg-secondary hover:bg-bg-hover" : "hover:bg-bg-hover"
                   }`}
                   onContextMenu={(e) => handleContextMenu(e, i, activeCol ?? 0)}
                 >
                   {(row as unknown[]).map((cell, j) => {
                     const isCellActive = isActive && activeCol === j;
+                    const cellDirty = isCellDirty?.(i, j) ?? false;
                     return (
                       <td
                         key={j}
@@ -776,7 +796,7 @@ export function ResultGrid({
                               ? "outline outline-1 outline-accent outline-offset-[-1px]"
                               : "outline outline-1 outline-border outline-offset-[-1px]"
                             : ""
-                        }`}
+                        } ${cellDirty ? "!bg-warning/15 !border-l-2 !border-l-warning" : ""}`}
                         onMouseDown={(e) => handleRowMouseDown(i, j, e)}
                         onClick={(e) => handleRowClick(i, j, e)}
                         onContextMenu={(e) => handleContextMenu(e, i, j)}

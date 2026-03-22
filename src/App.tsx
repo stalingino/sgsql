@@ -18,6 +18,7 @@ import {
   Plus,
   Settings,
   StopCircle,
+  FilePenLine,
 } from "lucide-react";
 import { waitForSidecar } from "./lib/sidecar";
 import { openConnectionManager } from "./lib/openConnectionManager";
@@ -27,6 +28,7 @@ import { useWindowPersist } from "./lib/useWindowPersist";
 import { loadConfig, getConfig, saveConfig, queryStackPop, queryStackPush } from "./lib/config";
 import { useQueryLog } from "./lib/queryLog";
 import { useExecutionQueue } from "./lib/executionQueue";
+import { useEditStore } from "./lib/editStore";
 import { SchemaTree } from "./components/SchemaTree";
 import { DataTable } from "./components/DataTable";
 import { QueryEditor } from "./components/QueryEditor";
@@ -34,6 +36,7 @@ import { QueryConsole } from "./components/QueryConsole";
 import { DetailPanel } from "./components/DetailPanel";
 import { SettingsModal } from "./components/SettingsModal";
 import { CommandPalette } from "./components/CommandPalette";
+import { ChangeHistoryPopup } from "./components/ChangeHistoryPopup";
 import type { CellSelection } from "./components/ResultGrid";
 import type { ConnectionProfile } from "./lib/types";
 import { envBadgeStyle } from "./lib/types";
@@ -97,11 +100,19 @@ function App() {
   const [detailPanelVisible, setDetailPanelVisible] = useState(false);
   const [cellSelection, setCellSelection] = useState<CellSelection | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState<false | "all" | "db-only">(false);
+  const [changeHistoryOpen, setChangeHistoryOpen] = useState(false);
 
   // Execution queue — subscribe to the connections map for reactivity
   const execConnections = useExecutionQueue((s) => s.connections);
   const execCancel = useExecutionQueue((s) => s.cancel);
+
+  // Edit store — subscribe for change count reactivity
+  const editChanges = useEditStore((s) => s.changes);
+  const editChangeCount = editChanges.size;
+
+  // Track whether detail panel was already open (for focus vs scroll-only behavior)
+  const detailPanelWasOpenRef = useRef(detailPanelVisible);
 
   // Load config on mount — sets theme, panel states
   const { setMode: setThemeMode } = useThemeStore();
@@ -125,6 +136,7 @@ function App() {
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
   const addQueryTabRef = useRef<(() => void) | null>(null);
+  const saveAllChangesRef = useRef<(() => void) | null>(null);
 
   /* ── Global keyboard shortcuts ────────────────────────── */
 
@@ -132,11 +144,44 @@ function App() {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "p") {
         e.preventDefault();
-        setCommandPaletteOpen((prev) => !prev);
+        setCommandPaletteOpen((prev) => prev ? false : "all");
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setCommandPaletteOpen((prev) => prev ? false : "db-only");
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "e") {
         e.preventDefault();
         addQueryTabRef.current?.();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "l") {
+        e.preventDefault();
+        setSidebarVisible((v) => {
+          const next = !v;
+          saveConfig({ sidebar: { ...getConfig().sidebar, visible: next, width: getConfig().sidebar?.width ?? 280 } });
+          return next;
+        });
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "r") {
+        e.preventDefault();
+        setDetailPanelVisible((v) => {
+          const next = !v;
+          saveConfig({ detailPanel: { ...getConfig().detailPanel, visible: next, width: getConfig().detailPanel?.width ?? 300 } });
+          return next;
+        });
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+        e.preventDefault();
+        saveAllChangesRef.current?.();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "z") {
+        // Only intercept if there are pending edit changes to revert
+        const editStore = useEditStore.getState();
+        if (editStore.changes.size > 0) {
+          e.preventDefault();
+          editStore.revertLast();
+        }
+        // Otherwise let native undo work (e.g. in textarea)
       }
     };
     document.addEventListener("keydown", handler);
@@ -361,6 +406,31 @@ function App() {
   }, [activeTabId]);
   addQueryTabRef.current = addQueryTab;
 
+  /* ── Save all pending changes ────────────────────────── */
+
+  const execQueue = useExecutionQueue((s) => s.execute);
+  const saveAllChanges = useCallback(async () => {
+    const updates = useEditStore.getState().buildAllUpdates();
+    if (updates.length === 0) return;
+    for (const { sql, rowKey } of updates) {
+      try {
+        await execQueue(rowKey.connectionId, sql, rowKey.db);
+        useEditStore.getState().removeRow(rowKey);
+      } catch (err) {
+        console.error("Failed to save:", err);
+        break; // Stop on first error
+      }
+    }
+  }, [execQueue]);
+  saveAllChangesRef.current = saveAllChanges;
+
+  /* ── Track detail panel visibility for scroll/focus ───── */
+
+  const handleCellSelection = useCallback((sel: CellSelection | null) => {
+    detailPanelWasOpenRef.current = detailPanelVisible;
+    setCellSelection(sel);
+  }, [detailPanelVisible]);
+
   /* ── Loading ──────────────────────────────────────────── */
 
   if (!configReady || (!sidecarReady && !sidecarError)) {
@@ -433,7 +503,28 @@ function App() {
         </div>
 
         {/* Right toolbar */}
-        <div className="flex items-center gap-0.5 mx-1 shrink-0">
+        <div className="flex items-center gap-0.5 mx-1 shrink-0 relative">
+          {/* Pending changes */}
+          {editChangeCount > 0 && (
+            <button
+              onClick={() => setChangeHistoryOpen((v) => !v)}
+              title={`${editChangeCount} pending change${editChangeCount !== 1 ? "s" : ""}`}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer border ${
+                changeHistoryOpen
+                  ? "text-warning bg-warning/15 border-warning/40"
+                  : "text-warning hover:bg-warning/10 border-warning/30"
+              }`}
+            >
+              <FilePenLine size={12} />
+              <span className="tabular-nums">{editChangeCount}</span>
+            </button>
+          )}
+
+          {/* Change history popup */}
+          {changeHistoryOpen && editChangeCount > 0 && (
+            <ChangeHistoryPopup onClose={() => setChangeHistoryOpen(false)} />
+          )}
+
           {/* Kill running query */}
           {isRunning && activeTab?.connectionId && (
             <button
@@ -520,6 +611,7 @@ function App() {
           connectionId={activeTab.connectionId}
           connectionType={activeTab.profile.type}
           connectionDatabase={activeTab.profile.database}
+          mode={commandPaletteOpen}
           onSelectDb={(db) => {
             openDb(db);
           }}
@@ -560,8 +652,8 @@ function App() {
                 openDbs={activeTab.openDbs}
                 activeDb={activeTab.activeDbName}
                 onActiveDbChange={setActiveDb}
-                onOpenDb={openDb}
                 onCloseDb={closeDb}
+                onAddDb={() => setCommandPaletteOpen("db-only")}
                 onTableSelect={handleTableSelect}
                 tableListVisible={sidebarVisible}
               />
@@ -622,7 +714,7 @@ function App() {
                           connectionId={activeTab.connectionId!}
                           activeDb={activeTab.activeDbName || ""}
                           initialSql={ct.sql || ""}
-                          onCellSelect={setCellSelection}
+                          onCellSelect={handleCellSelection}
                           onSqlChange={(sql) => {
                             setTabs((prev) => prev.map((tab) => {
                               if (tab.id !== activeTab.id || !tab.activeDbName) return tab;
@@ -644,7 +736,7 @@ function App() {
                           db={ct.db}
                           schema={ct.schema}
                           table={ct.table}
-                          onCellSelect={setCellSelection}
+                          onCellSelect={handleCellSelection}
                         />
                       )}
                     </div>
@@ -674,7 +766,7 @@ function App() {
             {detailPanelVisible && (
               <ResizableDetailPanel>
                 <aside className="h-full border-l border-border bg-bg-primary">
-                  <DetailPanel selection={cellSelection} />
+                  <DetailPanel selection={cellSelection} wasAlreadyOpen={detailPanelWasOpenRef.current} />
                 </aside>
               </ResizableDetailPanel>
             )}
