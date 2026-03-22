@@ -113,6 +113,22 @@ function App() {
     });
   }, []);
 
+  /* ── Clean up all connections when main window is closed ── */
+
+  useEffect(() => {
+    const unlisten = getCurrentWindow().onCloseRequested(async () => {
+      // Close all connections and clear tabs before the window hides
+      for (const tab of tabsRef.current) {
+        if (tab.connectionId) {
+          await closeConnection(tab.connectionId).catch(() => {});
+        }
+      }
+      setTabs([]);
+      setActiveTabId(null);
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
+
   /* ── Listen for connection-selected events ────────────── */
 
   useEffect(() => {

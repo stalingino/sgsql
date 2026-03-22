@@ -760,7 +760,7 @@ export function ResultGrid({
                   data-row-idx={i}
                   className={`transition-colors ${
                     isSelected
-                      ? focused ? "bg-accent/15" : "bg-accent/8"
+                      ? focused ? "bg-accent/25" : "bg-accent/12"
                       : i % 2 === 1 ? "bg-bg-secondary hover:bg-bg-hover" : "hover:bg-bg-hover"
                   }`}
                   onContextMenu={(e) => handleContextMenu(e, i, activeCol ?? 0)}

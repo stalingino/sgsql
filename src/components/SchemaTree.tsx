@@ -331,9 +331,19 @@ function TableList({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [selectedIdx, setSelectedIdx] = useState(-1);
+  const filterInputRef = useRef<HTMLInputElement>(null);
 
   // Clear search when db changes
-  useEffect(() => { setQuery(""); }, [db]);
+  useEffect(() => { setQuery(""); setSelectedIdx(-1); }, [db]);
+
+  // Reset selection when query changes
+  useEffect(() => { setSelectedIdx(-1); }, [query]);
+
+  // Auto-focus the filter input on mount
+  useEffect(() => {
+    filterInputRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -376,14 +386,37 @@ function TableList({
         .map((r) => r.t)
     : tables;
 
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Tab" && filtered.length > 0) {
+      e.preventDefault();
+      const dir = e.shiftKey ? -1 : 1;
+      setSelectedIdx((prev) => {
+        if (prev < 0) return 0;
+        return (prev + dir + filtered.length) % filtered.length;
+      });
+    } else if (e.key === "ArrowDown" && filtered.length > 0) {
+      e.preventDefault();
+      setSelectedIdx((prev) => Math.min(prev + 1, filtered.length - 1));
+    } else if (e.key === "ArrowUp" && filtered.length > 0) {
+      e.preventDefault();
+      setSelectedIdx((prev) => Math.max(prev - 1, 0));
+    } else if (e.key === "Enter" && selectedIdx >= 0 && selectedIdx < filtered.length) {
+      e.preventDefault();
+      const t = filtered[selectedIdx];
+      onTableSelect?.(db, schema, t.name, t.type === "view" ? "view" : "table");
+    }
+  };
+
   return (
     <div className="flex flex-col flex-1 min-h-0">
       {/* Search input */}
       <div className="px-2 py-1.5 border-b border-border shrink-0">
         <input
+          ref={filterInputRef}
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={handleKeyDown}
           placeholder="Filter tables..."
           className="w-full bg-bg-hover text-text-primary text-[12px] font-mono placeholder-text-muted px-2 py-1 rounded outline-none focus:ring-1 focus:ring-accent/50"
         />
@@ -407,13 +440,14 @@ function TableList({
           </div>
         )}
 
-        {!loading && !error && filtered.map((t) => (
+        {!loading && !error && filtered.map((t, i) => (
           <TableNode
             key={`${t.type}:${t.name}`}
             table={t}
             query={query}
             db={db}
             schema={schema}
+            selected={i === selectedIdx}
             onTableSelect={onTableSelect}
           />
         ))}
@@ -458,19 +492,32 @@ function TableNode({
   query = "",
   db,
   schema,
+  selected,
   onTableSelect,
 }: {
   table: TableInfo;
   query?: string;
   db: string;
   schema: string;
+  selected?: boolean;
   onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view") => void;
 }) {
   const isView = table.type === "view";
+  const nodeRef = useRef<HTMLDivElement>(null);
+
+  // Scroll selected node into view
+  useEffect(() => {
+    if (selected && nodeRef.current) {
+      nodeRef.current.scrollIntoView({ block: "nearest" });
+    }
+  }, [selected]);
 
   return (
     <div
-      className="flex items-center gap-1.5 py-[3px] pr-2 pl-3 cursor-pointer hover:bg-bg-hover transition-colors"
+      ref={nodeRef}
+      className={`flex items-center gap-1.5 py-[3px] pr-2 pl-3 cursor-pointer transition-colors ${
+        selected ? "bg-accent/20" : "hover:bg-bg-hover"
+      }`}
       onClick={() => onTableSelect?.(db, schema, table.name, isView ? "view" : "table")}
     >
       {isView

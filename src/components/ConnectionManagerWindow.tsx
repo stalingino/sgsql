@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -10,6 +10,7 @@ import {
   Zap,
   Database,
   Loader2,
+  Search,
 } from "lucide-react";
 import { useConnectionsStore } from "../stores/connections";
 import {
@@ -37,6 +38,22 @@ export function ConnectionManagerWindow() {
   const [saving, setSaving] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [statusMsg, setStatusMsg] = useState<{ type: "url" | "ok" | "error"; text: string } | null>(null);
+  const [filter, setFilter] = useState("");
+
+  const filterRef = useRef<HTMLInputElement>(null);
+
+  // Auto-focus filter input on launch
+  useEffect(() => {
+    if (loaded && profiles.length > 0) {
+      filterRef.current?.focus();
+    }
+  }, [loaded, profiles.length > 0]);
+
+  const filteredProfiles = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return profiles;
+    return profiles.filter((p) => fuzzyMatch(q, p));
+  }, [profiles, filter]);
 
   useEffect(() => {
     if (!loaded) loadProfiles();
@@ -60,6 +77,8 @@ export function ConnectionManagerWindow() {
     // Hydrate password from keychain
     const password = await keychainGet(p.id).catch(() => "");
     setDraft({ ...p, password });
+    // Keep focus on filter so Enter/Tab keep working
+    filterRef.current?.focus();
   }
 
   function handleNewConnection() {
@@ -189,16 +208,36 @@ export function ConnectionManagerWindow() {
     getCurrentWindow().close();
   }
 
+  // Keyboard: Tab through connections, Enter to connect
+  function handleListKeyDown(e: React.KeyboardEvent) {
+    const target = e.target as HTMLElement;
+    const isFormField = target.tagName === "INPUT" || target.tagName === "SELECT" || target.tagName === "TEXTAREA";
+    const isFilterInput = target === filterRef.current;
+
+    if (e.key === "Tab" && filteredProfiles.length > 0 && (!isFormField || isFilterInput)) {
+      e.preventDefault();
+      const currentIdx = filteredProfiles.findIndex((p) => p.id === selectedId);
+      const dir = e.shiftKey ? -1 : 1;
+      const nextIdx = currentIdx < 0 ? 0 : (currentIdx + dir + filteredProfiles.length) % filteredProfiles.length;
+      selectProfile(filteredProfiles[nextIdx]);
+      filterRef.current?.focus();
+    } else if (e.key === "Enter" && selectedId && (!isFormField || isFilterInput)) {
+      e.preventDefault();
+      handleConnect();
+    }
+  }
+
   const isSqlite = draft.type === "sqlite";
   const envMeta = ENV_LABELS[draft.env] ?? ENV_LABELS[""];
   const isDark = document.documentElement.getAttribute("data-theme") !== "light";
   const envColor = isDark ? envMeta.dark : envMeta.light;
 
+  // eslint-disable-next-line jsx-a11y/no-static-element-interactions
   return (
-    <div className="flex h-screen bg-bg-secondary select-none">
+    <div className="flex h-screen bg-bg-secondary select-none" onKeyDown={handleListKeyDown}>
       {/* Left sidebar — connection list */}
       <div className="w-[220px] flex flex-col border-r border-border bg-bg-primary shrink-0">
-        <div className="p-3 border-b border-border" data-tauri-drag-region>
+        <div className="p-3 border-b border-border space-y-2" data-tauri-drag-region>
           <button
             onClick={handleNewConnection}
             className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-sm rounded-md bg-accent hover:bg-accent-hover text-white transition-colors cursor-pointer"
@@ -206,9 +245,23 @@ export function ConnectionManagerWindow() {
             <Plus size={14} />
             New Connection
           </button>
+          {profiles.length > 0 && (
+            <div className="relative">
+              <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
+              <input
+                ref={filterRef}
+                type="text"
+                placeholder="Filter..."
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                className="w-full pl-7 pr-2 py-1 text-xs rounded bg-bg-secondary border border-border-light text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent"
+                spellCheck={false}
+              />
+            </div>
+          )}
         </div>
         <div className="flex-1 overflow-y-auto">
-          {profiles.map((p) => {
+          {filteredProfiles.map((p) => {
             const pEnv = ENV_LABELS[p.env] ?? ENV_LABELS[""];
             const pColor = isDark ? pEnv.dark : pEnv.light;
             return (
@@ -244,10 +297,10 @@ export function ConnectionManagerWindow() {
               </button>
             );
           })}
-          {profiles.length === 0 && loaded && (
+          {filteredProfiles.length === 0 && loaded && (
             <div className="flex flex-col items-center gap-2 px-3 py-8 text-center text-sm text-text-muted">
               <Database size={24} className="opacity-30" />
-              No connections yet
+              {filter ? "No matches" : "No connections yet"}
             </div>
           )}
         </div>
@@ -491,6 +544,25 @@ export function ConnectionManagerWindow() {
       </div>
     </div>
   );
+}
+
+/** Fuzzy match: every character in the query appears in order in the haystack */
+function fuzzyStr(query: string, haystack: string): boolean {
+  let hi = 0;
+  for (let qi = 0; qi < query.length; qi++) {
+    const ch = query[qi];
+    while (hi < haystack.length && haystack[hi] !== ch) hi++;
+    if (hi >= haystack.length) return false;
+    hi++;
+  }
+  return true;
+}
+
+function fuzzyMatch(query: string, p: ConnectionProfile): boolean {
+  const targets = [p.name, p.host, p.database, p.type, p.username].map((s) =>
+    (s || "").toLowerCase(),
+  );
+  return targets.some((t) => fuzzyStr(query, t));
 }
 
 function Field({

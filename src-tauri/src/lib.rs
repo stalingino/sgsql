@@ -8,6 +8,7 @@ mod encrypted_store;
 mod config;
 
 struct SidecarChild(Mutex<Option<CommandChild>>);
+struct AppExiting(Mutex<bool>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -24,6 +25,8 @@ pub fn run() {
             config::config_save,
         ])
         .setup(|app| {
+            app.manage(AppExiting(Mutex::new(false)));
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -91,17 +94,40 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // If main window is being closed while connection-manager is open,
-            // hide it instead of destroying — so user can reconnect from conn manager.
+            // When the main window is closed, don't quit — open the connection manager instead.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     let app = window.app_handle();
-                    if app.webview_windows().contains_key("connection-manager") {
-                        log::info!("Main window close requested while conn-manager open — hiding");
-                        api.prevent_close();
-                        let _ = window.hide();
-                        return;
+
+                    // If we're in the process of exiting, allow the close
+                    if let Some(state) = app.try_state::<AppExiting>() {
+                        if *state.0.lock().unwrap() {
+                            return;
+                        }
                     }
+
+                    api.prevent_close();
+
+                    // Show or create the connection-manager window
+                    if let Some(cm) = app.webview_windows().get("connection-manager") {
+                        let _ = cm.show();
+                        let _ = cm.set_focus();
+                    } else {
+                        // Create connection-manager window
+                        let _cm = tauri::WebviewWindowBuilder::new(
+                            app,
+                            "connection-manager",
+                            tauri::WebviewUrl::App("connection-manager.html".into()),
+                        )
+                        .title("SG SQL Connections")
+                        .inner_size(740.0, 560.0)
+                        .center()
+                        .resizable(true)
+                        .build();
+                    }
+
+                    let _ = window.hide();
+                    return;
                 }
             }
 
@@ -121,15 +147,17 @@ pub fn run() {
                     }
                 } else {
                     // If every remaining window is hidden the user effectively quit
-                    // (e.g. closed the connection-manager before ever connecting).
-                    // Close them all so we reach the is_empty() branch above.
                     let all_hidden = windows
                         .values()
                         .all(|w| !w.is_visible().unwrap_or(true));
                     if all_hidden {
-                        log::info!("Only hidden windows remain — closing all to exit");
+                        log::info!("Only hidden windows remain — exiting");
+                        // Set the exiting flag so CloseRequested doesn't reopen conn manager
+                        if let Some(state) = app.try_state::<AppExiting>() {
+                            *state.0.lock().unwrap() = true;
+                        }
                         for w in windows.values() {
-                            let _ = w.close();
+                            let _ = w.destroy();
                         }
                     }
                 }
