@@ -135,8 +135,13 @@ function App() {
 
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+  const activeTabIdRef = useRef(activeTabId);
+  activeTabIdRef.current = activeTabId;
   const addQueryTabRef = useRef<(() => void) | null>(null);
   const saveAllChangesRef = useRef<(() => void) | null>(null);
+  const closeContentTabRef = useRef<(id: string) => void>(() => {});
+  const closeDbRef = useRef<(db: string) => void>(() => {});
+  const closeTabRef = useRef<(id: string) => void>(() => {});
 
   /* ── Global keyboard shortcuts ────────────────────────── */
 
@@ -173,6 +178,33 @@ function App() {
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
         saveAllChangesRef.current?.();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "w") {
+        e.preventDefault();
+        const curTabId = activeTabIdRef.current;
+        if (!curTabId) {
+          // No tabs left — close the window
+          getCurrentWindow().close();
+          return;
+        }
+        const curTab = tabsRef.current.find((t) => t.id === curTabId);
+        if (!curTab) return;
+
+        // 1. If active db has content tabs, close the active one
+        if (curTab.activeDbName) {
+          const ws = curTab.workspaces[curTab.activeDbName];
+          if (ws && ws.contentTabs.length > 0) {
+            const toClose = ws.activeContentTabId || ws.contentTabs[ws.contentTabs.length - 1].id;
+            closeContentTabRef.current(toClose);
+            return;
+          }
+          // 2. No content tabs — close the active db tab
+          closeDbRef.current(curTab.activeDbName);
+          return;
+        }
+
+        // 3. No open dbs — close the connection tab
+        closeTabRef.current(curTabId);
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "z") {
         // Only intercept if there are pending edit changes to revert
@@ -369,6 +401,10 @@ function App() {
       return { ...tab, workspaces: { ...tab.workspaces, [tab.activeDbName]: updatedWs } };
     }));
   }, [activeTabId]);
+
+  closeContentTabRef.current = closeContentTab;
+  closeDbRef.current = closeDb;
+  closeTabRef.current = closeTab;
 
   const setActiveContentTab = useCallback((contentTabId: string) => {
     setTabs((prev) => prev.map((tab) => {
