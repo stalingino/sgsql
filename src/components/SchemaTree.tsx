@@ -100,6 +100,16 @@ export function SchemaTree({
     setShowDbPicker(false);
   }, []);
 
+  // Listen for external db open requests (e.g. from command palette)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const db = (e as CustomEvent<string>).detail;
+      if (db) selectDb(db);
+    };
+    window.addEventListener("sgsql:open-db", handler);
+    return () => window.removeEventListener("sgsql:open-db", handler);
+  }, [selectDb]);
+
   const removeDb = useCallback((db: string) => {
     setOpenDbs((prev) => {
       const next = prev.filter((d) => d !== db);

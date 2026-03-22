@@ -31,6 +31,7 @@ import { QueryEditor } from "./components/QueryEditor";
 import { QueryConsole } from "./components/QueryConsole";
 import { DetailPanel } from "./components/DetailPanel";
 import { SettingsModal } from "./components/SettingsModal";
+import { CommandPalette } from "./components/CommandPalette";
 import type { CellSelection } from "./components/ResultGrid";
 import type { ConnectionProfile } from "./lib/types";
 import { envBadgeStyle } from "./lib/types";
@@ -81,6 +82,7 @@ function App() {
   const [detailPanelVisible, setDetailPanelVisible] = useState(false);
   const [cellSelection, setCellSelection] = useState<CellSelection | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   // Load config on mount — sets theme, panel states
   const { setMode: setThemeMode } = useThemeStore();
@@ -103,6 +105,19 @@ function App() {
 
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+
+  /* ── Cmd/Ctrl+P → Command Palette ─────────────────────── */
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "p") {
+        e.preventDefault();
+        setCommandPaletteOpen((prev) => !prev);
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, []);
 
   /* ── Sidecar boot ─────────────────────────────────────── */
 
@@ -397,6 +412,23 @@ function App() {
 
       {/* Settings modal */}
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+
+      {/* Command Palette */}
+      {commandPaletteOpen && activeTab?.connectionId && (
+        <CommandPalette
+          connectionId={activeTab.connectionId}
+          connectionType={activeTab.profile.type}
+          connectionDatabase={activeTab.profile.database}
+          onSelectDb={(db) => {
+            setSidebarVisible(true);
+            window.dispatchEvent(new CustomEvent("sgsql:open-db", { detail: db }));
+          }}
+          onSelectTable={(db, schema, table, type) => {
+            handleTableSelect(db, schema, table, type);
+          }}
+          onClose={() => setCommandPaletteOpen(false)}
+        />
+      )}
 
       {/* ── Body ────────────────────────────────────────────── */}
       {!activeTab ? (

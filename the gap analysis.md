@@ -14,7 +14,7 @@ Phase 3 — Schema Browser ✅ Mostly Complete
 Phase 4 — Table Data Viewer 🔴 Major Gaps
 ✅ Pagination (100 rows/page)
 ✅ NULL rendering (gray italic)
-❌ Sort by column header click — no sort
+❌ Sort by column header click — no sort ✅
 ❌ Filter builder — no WHERE clause UI
 ❌ Inline cell editing — cells are read-only
 ❌ Add row / delete row
