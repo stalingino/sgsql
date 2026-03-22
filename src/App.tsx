@@ -5,7 +5,7 @@ import {
   Database,
   ServerCrash,
   Loader2,
-  PlugZap,
+  Cable,
   Sun,
   Moon,
   Monitor,
@@ -485,7 +485,7 @@ function App() {
             title="New Connection"
             className="flex items-center gap-1 px-2 py-1 rounded-md border border-border text-text-secondary hover:text-text-primary hover:bg-bg-hover hover:border-text-muted transition-colors cursor-pointer"
           >
-            <Plus size={14} />
+            <Cable size={14} />
           </button>
         </div>
 
@@ -629,14 +629,14 @@ function App() {
       {!activeTab ? (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
-            <Database size={48} className="text-accent mx-auto mb-4" />
+            <img src="/logo.png" alt="SG SQL" className="w-28 h-28 mx-auto mb-4" />
             <h1 className="text-3xl font-bold mb-1 text-text-primary">SG SQL</h1>
             <p className="text-text-secondary mb-6 text-sm">Stupidly Good SQL</p>
             <button
               onClick={() => openConnectionManager()}
               className="flex items-center gap-2 mx-auto px-5 py-2 text-sm rounded-lg bg-accent hover:bg-accent-hover text-white transition-colors cursor-pointer"
             >
-              <PlugZap size={14} />
+              <Cable size={14} />
               Open Connection Manager
             </button>
           </div>
