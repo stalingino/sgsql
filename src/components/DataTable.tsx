@@ -513,6 +513,7 @@ function DataView({
       sort={sort}
       onSortChange={onSortChange}
       onCellSelect={handleCellSelect}
+      tableName={table}
       isCellDirty={pkColumns.length > 0 ? isCellDirty : undefined}
       isRowDirty={pkColumns.length > 0 ? isRowDirty : undefined}
     />

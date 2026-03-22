@@ -318,12 +318,14 @@ function ContextMenu({
   displayRows,
   selectedRows,
   onClose,
+  tableName = "table_name",
 }: {
   state: CtxMenuState;
   columns: string[];
   displayRows: unknown[][];
   selectedRows: Set<number>;
   onClose: () => void;
+  tableName?: string;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [subOpen, setSubOpen] = useState(false);
@@ -364,7 +366,7 @@ function ContextMenu({
     { label: "Markdown Table", fn: () => copyText(rowsToMarkdown(columns, selRows)) },
     { label: "CSV", fn: () => copyText(rowsToCSV(columns, selRows, false)) },
     { label: "CSV with Header", fn: () => copyText(rowsToCSV(columns, selRows, true)) },
-    { label: "INSERT Statement", fn: () => copyText(rowsToInsert(columns, selRows)) },
+    { label: "INSERT Statement", fn: () => copyText(rowsToInsert(columns, selRows, tableName)) },
   ];
 
   return (
@@ -450,6 +452,8 @@ interface ResultGridProps {
   isCellDirty?: (rowIndex: number, colIndex: number) => boolean;
   /** Check if a row is dirty (for edit highlighting) */
   isRowDirty?: (rowIndex: number) => boolean;
+  /** Table name for copy-as-insert */
+  tableName?: string;
 }
 
 export function ResultGrid({
@@ -463,6 +467,7 @@ export function ResultGrid({
   onCellSelect,
   isCellDirty,
   isRowDirty,
+  tableName: _tableName,
 }: ResultGridProps) {
   const [internalSort, setInternalSort] = useState<SortState | null>(null);
   // Multi-selection state
@@ -819,6 +824,7 @@ export function ResultGrid({
           columns={columns}
           displayRows={displayRows}
           selectedRows={selectedRows}
+          tableName={_tableName}
           onClose={() => setCtxMenu(null)}
         />
       )}

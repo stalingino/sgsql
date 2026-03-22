@@ -159,6 +159,11 @@ export function QueryEditor({ connectionId, activeDb, initialSql = "", onSqlChan
   const addLogEntryRef = useRef(useQueryLog.getState().addEntry);
   addLogEntryRef.current = useQueryLog.getState().addEntry;
 
+  // Auto-focus the editor on mount
+  useEffect(() => {
+    textareaRef.current?.focus();
+  }, []);
+
   // Close limit menu on outside click
   useEffect(() => {
     if (!showLimitMenu) return;

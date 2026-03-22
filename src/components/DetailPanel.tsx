@@ -95,7 +95,7 @@ export function DetailPanel({ selection, wasAlreadyOpen }: DetailPanelProps) {
       </div>
 
       {/* Field list */}
-      <div ref={scrollContainerRef} className="flex-1 overflow-auto min-h-0 py-1 selectable">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 py-1 pb-4 selectable">
         {columns.map((col, i) => {
           const value = (row as unknown[])[i];
           const meta = columnMeta?.find((m) => m.name === col);
@@ -313,13 +313,14 @@ function FieldRow({
   return (
     <div className={fieldClasses} data-field-index={index}>
       {/* Column name + quick-set */}
-      <div className="flex items-center gap-1">
-        <span className={`text-[11px] font-semibold cursor-text ${isDirty ? "text-warning" : "text-text-muted"}`}>
-          {name}
-          {isDirty && <span className="ml-1 text-[9px] text-warning/70">modified</span>}
-        </span>
-        <span className="text-[9px] text-text-muted/40 font-mono">{dataType}</span>
-        <div className="flex-1" />
+      <div className="flex items-center gap-1 min-w-0">
+        <div className="flex items-baseline gap-1 min-w-0 flex-1 overflow-hidden">
+          <span className={`text-[11px] font-semibold cursor-text truncate shrink-0 ${isDirty ? "text-warning" : "text-text-muted"}`}>
+            {name}
+            {isDirty && <span className="ml-1 text-[9px] text-warning/70">modified</span>}
+          </span>
+          <span className="text-[9px] text-text-muted/40 font-mono truncate">{dataType}</span>
+        </div>
         {canEdit && rowKey && (
           <QuickSetSelect
             rowKey={rowKey}
@@ -374,7 +375,7 @@ function FieldRow({
             value={displayValue}
             onChange={(e) => handleChange(e.target.value)}
             readOnly={!canEdit}
-            rows={Math.min(20, displayValue.split("\n").length)}
+            style={{ fieldSizing: "content" as any, minHeight: "2lh", maxHeight: "12lh" }}
             className={`w-full px-2 py-1 text-[12px] font-mono text-text-primary bg-bg-secondary border rounded outline-none resize-y focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors ${inputBorder}`}
           />
         ) : typeof value === "number" || (isDirty && typeof pendingChange?.originalValue === "number") ? (
@@ -392,7 +393,7 @@ function FieldRow({
               value={displayValue}
               onChange={(e) => handleChange(e.target.value)}
               readOnly={!canEdit}
-              rows={Math.min(20, Math.ceil(displayValue.length / 40))}
+              style={{ fieldSizing: "content" as any, minHeight: "2lh", maxHeight: "12lh" }}
               className={`w-full px-2 py-1 text-[12px] font-mono text-text-primary bg-bg-secondary border rounded outline-none resize-y focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors ${inputBorder}`}
             />
           ) : (
