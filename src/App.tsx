@@ -345,6 +345,7 @@ function App() {
       const newActive = t.activeDbName === db
         ? (newDbs.length > 0 ? newDbs[newDbs.length - 1] : null)
         : t.activeDbName;
+      if (t.activeDbName === db) setCellSelection(null);
       return { ...t, openDbs: newDbs, activeDbName: newActive, workspaces: newWorkspaces };
     }));
   }, [activeTabId]);
@@ -396,6 +397,7 @@ function App() {
       let newActiveId = ws.activeContentTabId;
       if (ws.activeContentTabId === contentTabId) {
         newActiveId = next.length === 0 ? null : next[Math.min(idx, next.length - 1)].id;
+        setCellSelection(null);
       }
       const updatedWs = { ...ws, contentTabs: next, activeContentTabId: newActiveId };
       return { ...tab, workspaces: { ...tab.workspaces, [tab.activeDbName]: updatedWs } };
