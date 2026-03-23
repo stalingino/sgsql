@@ -667,7 +667,7 @@ function App() {
       {!activeTab ? (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
-            <img src="/logo.png" alt="SG SQL" className="w-28 h-28 mx-auto mb-4" />
+            <img src="/logo-nobg.png" alt="SG SQL" className="w-36 h-36 mx-auto mb-4" />
             <h1 className="text-3xl font-bold mb-1 text-text-primary">SG SQL</h1>
             <p className="text-text-secondary mb-6 text-sm">Stupidly Good SQL</p>
             <button
