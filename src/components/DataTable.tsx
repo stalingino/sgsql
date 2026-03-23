@@ -7,6 +7,11 @@ import {
   Columns2,
   KeyRound,
   Link2,
+  Filter,
+  Plus,
+  Code2,
+  Copy,
+  Check,
 } from "lucide-react";
 import {
   fetchTableRows,
@@ -18,9 +23,11 @@ import { useQueryLog } from "../lib/queryLog";
 import { useEditStore, buildRowKey } from "../lib/editStore";
 import { ResultGrid, type SortState, type CellSelection } from "./ResultGrid";
 import { getConfig } from "../lib/config";
+import { FilterPanel, type FilterRow, type FilterPanelActions, createFilter, buildWhereClause } from "./FilterPanel";
 
 interface DataTableProps {
   connectionId: string;
+  connectionType: "postgres" | "mysql" | "sqlite";
   db: string;
   schema: string;
   table: string;
@@ -217,7 +224,7 @@ function ResizableTh({
 
 /* ── Main component ────────────────────────────────────── */
 
-export function DataTable({ connectionId, db, schema, table, onCellSelect }: DataTableProps) {
+export function DataTable({ connectionId, connectionType, db, schema, table, onCellSelect }: DataTableProps) {
   const [mode, setMode] = useState<ViewMode>("data");
   const [data, setData] = useState<TableRowsResult | null>(null);
   const [columns, setColumns] = useState<ColumnInfo[] | null>(null);
@@ -225,6 +232,12 @@ export function DataTable({ connectionId, db, schema, table, onCellSelect }: Dat
   const [structLoading, setStructLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filters, setFilters] = useState<FilterRow[]>([]);
+  const [appliedWhere, setAppliedWhere] = useState<string>("");
+  const [sqlPreview, setSqlPreview] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const filterActionsRef = useRef<FilterPanelActions | null>(null);
   const [sort, setSort] = useState<SortState | null>(() => {
     // Initialize from settings default
     const defaultOrder = getConfig().settings?.defaultOrderBy?.trim();
@@ -238,10 +251,31 @@ export function DataTable({ connectionId, db, schema, table, onCellSelect }: Dat
   const addLogEntryRef = useRef(useQueryLog.getState().addEntry);
   addLogEntryRef.current = useQueryLog.getState().addEntry;
 
+  // Cmd+F to toggle filters
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault();
+        setFiltersOpen((prev) => {
+          if (!prev) {
+            // Opening: add an initial filter if empty
+            setFilters((f) => (f.length === 0 ? [createFilter()] : f));
+          }
+          return !prev;
+        });
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
   // Reset offset and sort when table changes
   useEffect(() => {
     setOffset(0);
     setMode("data");
+    setFiltersOpen(false);
+    setFilters([]);
+    setAppliedWhere("");
     // Re-apply default sort from settings
     const defaultOrder = getConfig().settings?.defaultOrderBy?.trim();
     if (defaultOrder) {
@@ -279,7 +313,7 @@ export function DataTable({ connectionId, db, schema, table, onCellSelect }: Dat
 
     const orderBy = sort ? `${sort.column} ${sort.dir}` : undefined;
     const start = performance.now();
-    fetchTableRows(connectionId, db, schema, table, PAGE_SIZE, offset, orderBy)
+    fetchTableRows(connectionId, db, schema, table, PAGE_SIZE, offset, orderBy, appliedWhere || undefined)
       .then((result) => {
         if (!cancelled) {
           setData(result);
@@ -313,7 +347,7 @@ export function DataTable({ connectionId, db, schema, table, onCellSelect }: Dat
       });
 
     return () => { cancelled = true; };
-  }, [connectionId, db, schema, table, offset, sort]);
+  }, [connectionId, db, schema, table, offset, sort, appliedWhere]);
 
   // Use columns from structure for the header when data has no rows
   const headerColumns = (data?.columns?.length ? data.columns : null) ?? columns?.map((c) => c.name) ?? [];
@@ -323,6 +357,14 @@ export function DataTable({ connectionId, db, schema, table, onCellSelect }: Dat
   const totalPages = Math.max(1, Math.ceil(totalEstimate / PAGE_SIZE));
   const hasPrev = offset > 0;
   const hasNext = (data?.rows.length ?? 0) === PAGE_SIZE;
+
+  const activeFilterCount = filters.filter((f) => f.enabled && (f.mode === "raw" ? f.rawSql.trim() : f.column)).length;
+
+  const handleApplyFilters = useCallback(() => {
+    const where = buildWhereClause(filters, connectionType, true);
+    setAppliedWhere(where);
+    setOffset(0);
+  }, [filters, connectionType]);
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -353,9 +395,22 @@ export function DataTable({ connectionId, db, schema, table, onCellSelect }: Dat
         )}
       </div>
 
+      {/* Filter panel — above footer */}
+      {filtersOpen && mode === "data" && (
+        <FilterPanel
+          columns={headerColumns}
+          filters={filters}
+          onFiltersChange={setFilters}
+          onApply={handleApplyFilters}
+          onClose={() => setFiltersOpen(false)}
+          connectionType={connectionType}
+          footerActionsRef={filterActionsRef}
+        />
+      )}
+
       {/* Bottom bar */}
       <div className="flex items-center px-2 py-1 border-t border-border bg-bg-secondary shrink-0 text-[11px] text-text-secondary">
-        {/* Left: view mode toggle */}
+        {/* Left: view mode toggle + filters */}
         <div className="flex items-center gap-0.5">
           <button
             onClick={() => setMode("data")}
@@ -379,6 +434,32 @@ export function DataTable({ connectionId, db, schema, table, onCellSelect }: Dat
             <Columns2 size={11} />
             Structure
           </button>
+
+          {/* Filters button — only in data mode */}
+          {mode === "data" && (
+            <button
+              onClick={() => {
+                setFiltersOpen((prev) => {
+                  if (!prev) setFilters((f) => (f.length === 0 ? [createFilter()] : f));
+                  return !prev;
+                });
+              }}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded transition-colors cursor-pointer ml-1 ${
+                filtersOpen
+                  ? "bg-accent/15 text-accent"
+                  : appliedWhere
+                    ? "bg-warning/15 text-warning"
+                    : "hover:bg-bg-hover text-text-muted"
+              }`}
+              title="Toggle filters (⌘F)"
+            >
+              <Filter size={11} />
+              Filters
+              {activeFilterCount > 0 && appliedWhere && (
+                <span className="text-[9px] bg-accent/20 text-accent px-1 rounded-full font-medium">{activeFilterCount}</span>
+              )}
+            </button>
+          )}
         </div>
 
         {/* Center: pagination */}
@@ -418,9 +499,72 @@ export function DataTable({ connectionId, db, schema, table, onCellSelect }: Dat
           )}
         </div>
 
-        {/* Right: spacer to balance layout */}
-        <div className="w-[120px]" />
+        {/* Right: filter actions (when filters open) */}
+        <div className="flex items-center gap-1">
+          {filtersOpen && mode === "data" && (
+            <>
+              <button
+                onClick={() => filterActionsRef.current?.addFilter()}
+                className="flex items-center gap-1 px-2 py-0.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+              >
+                <Plus size={10} />
+                Add
+              </button>
+              <button
+                onClick={() => setSqlPreview(!sqlPreview)}
+                className={`flex items-center gap-1 px-2 py-0.5 rounded transition-colors cursor-pointer ${
+                  sqlPreview ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text-primary hover:bg-bg-hover"
+                }`}
+              >
+                <Code2 size={10} />
+                SQL
+              </button>
+              <button
+                onClick={handleApplyFilters}
+                className="flex items-center gap-1 px-3 py-0.5 rounded bg-accent text-white hover:bg-accent/90 transition-colors cursor-pointer font-medium"
+              >
+                Apply
+              </button>
+            </>
+          )}
+        </div>
       </div>
+
+      {/* SQL Preview — below footer */}
+      {sqlPreview && filtersOpen && (
+        <div className="border-t border-border bg-bg-secondary px-3 py-2 text-[11px]">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-semibold text-text-muted uppercase tracking-wider">Generated WHERE clause</span>
+            <button
+              onClick={async () => {
+                const text = filterActionsRef.current?.checkedWhere || filterActionsRef.current?.allWhere || "";
+                await navigator.clipboard.writeText(text);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              }}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+            >
+              {copied ? <Check size={10} className="text-success" /> : <Copy size={10} />}
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+          {filterActionsRef.current?.checkedWhere && (
+            <div className="mb-1">
+              <span className="text-[9px] text-text-muted uppercase mr-1">Checked:</span>
+              <code className="text-[11px] font-mono text-accent select-all break-all">{filterActionsRef.current.checkedWhere}</code>
+            </div>
+          )}
+          {filterActionsRef.current?.allWhere && filterActionsRef.current.allWhere !== filterActionsRef.current.checkedWhere && (
+            <div>
+              <span className="text-[9px] text-text-muted uppercase mr-1">All:</span>
+              <code className="text-[11px] font-mono text-text-secondary select-all break-all">{filterActionsRef.current.allWhere}</code>
+            </div>
+          )}
+          {!filterActionsRef.current?.allWhere && (
+            <div className="text-text-muted italic">No filters defined.</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

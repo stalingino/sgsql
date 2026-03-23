@@ -87,9 +87,11 @@ export async function fetchTableRows(
   limit = 50,
   offset = 0,
   orderBy?: string,
+  where?: string,
 ): Promise<TableRowsResult> {
   let url = `/schema/${connId}/rows?db=${encodeURIComponent(db)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}&limit=${limit}&offset=${offset}`;
   if (orderBy) url += `&orderBy=${encodeURIComponent(orderBy)}`;
+  if (where) url += `&where=${encodeURIComponent(where)}`;
   return sidecarFetch<TableRowsResult>(url);
 }
 

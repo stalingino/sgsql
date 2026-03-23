@@ -769,6 +769,7 @@ function App() {
                       ) : (
                         <DataTable
                           connectionId={activeTab.connectionId!}
+                          connectionType={activeTab.profile.type}
                           db={ct.db}
                           schema={ct.schema}
                           table={ct.table}

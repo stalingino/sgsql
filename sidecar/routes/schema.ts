@@ -158,6 +158,7 @@ async function dispatchSchemaAction(
   limit = 50,
   offset = 0,
   orderBy?: string,
+  where?: string,
 ): Promise<unknown> {
   switch (action) {
     case "databases": return getDatabases(entry);
@@ -174,7 +175,7 @@ async function dispatchSchemaAction(
       return getForeignKeys(entry, db, schema, table);
     case "rows":
       if (!table) throw new Error("Missing ?table= param");
-      return getRows(entry, db, schema, table, limit, offset, orderBy);
+      return getRows(entry, db, schema, table, limit, offset, orderBy, where);
     default:
       throw new Error(`Unknown schema action: ${action}`);
   }
@@ -204,9 +205,10 @@ export async function handleSchemaRequest(
   const limit = parseInt(url.searchParams.get("limit") ?? "50", 10);
   const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
   const orderBy = url.searchParams.get("orderBy") ?? undefined;
+  const where = url.searchParams.get("where") ?? undefined;
 
   try {
-    const result = await dispatchSchemaAction(entry, action, db, schema, table, limit, offset, orderBy);
+    const result = await dispatchSchemaAction(entry, action, db, schema, table, limit, offset, orderBy, where);
     return json(result, headers);
   } catch (e: unknown) {
     // Auto-reconnect once on connection errors
@@ -214,7 +216,7 @@ export async function handleSchemaRequest(
       console.log(`[sidecar] connection error in schema/${action}, attempting reconnect for ${connId}...`);
       try {
         entry = await reconnect(connId);
-        const result = await dispatchSchemaAction(entry, action, db, schema, table, limit, offset, orderBy);
+        const result = await dispatchSchemaAction(entry, action, db, schema, table, limit, offset, orderBy, where);
         return json(result, headers);
       } catch (retryErr: unknown) {
         const message = friendlyError(retryErr);
@@ -723,6 +725,7 @@ async function getRows(
   limit = 50,
   offset = 0,
   orderBy?: string,
+  where?: string,
 ): Promise<{ columns: string[]; rows: any[][]; totalEstimate: number; query: string }> {
   const safeLimit = Math.min(Math.max(limit, 1), 1000);
 
@@ -748,7 +751,8 @@ async function getRows(
       const colQuery = await entry.client.unsafe(`SELECT * FROM ${qualified} LIMIT 0`);
       const allCols = colQuery.columns?.map((c: any) => c.name) ?? [];
       const orderClause = buildOrderClause(allCols.length > 0 ? allCols : [], orderBy);
-      const query = `SELECT * FROM ${qualified}${orderClause} LIMIT ${safeLimit} OFFSET ${offset}`;
+      const whereClause = where ? ` WHERE ${where}` : "";
+      const query = `SELECT * FROM ${qualified}${whereClause}${orderClause} LIMIT ${safeLimit} OFFSET ${offset}`;
       // Get estimated row count
       const [countRow] = await entry.client`
         SELECT reltuples::bigint AS estimate
@@ -774,7 +778,8 @@ async function getRows(
       );
       const allCols = (colRows as any[]).map((r: any) => r.COLUMN_NAME);
       const orderClause = buildOrderClause(allCols, orderBy);
-      const query = `SELECT * FROM \`${d}\`.\`${table}\`${orderClause} LIMIT ${safeLimit} OFFSET ${offset}`;
+      const whereClause = where ? ` WHERE ${where}` : "";
+      const query = `SELECT * FROM \`${d}\`.\`${table}\`${whereClause}${orderClause} LIMIT ${safeLimit} OFFSET ${offset}`;
       // Get estimated row count
       const [countRows] = await entry.client.query(
         `SELECT TABLE_ROWS AS estimate FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
@@ -796,7 +801,8 @@ async function getRows(
       const pragmaRows = entry.client.query(`PRAGMA table_info("${table}")`).all() as any[];
       const allCols = pragmaRows.map((r: any) => r.name);
       const orderClause = buildOrderClause(allCols, orderBy);
-      const query = `SELECT * FROM "${table}"${orderClause} LIMIT ${safeLimit} OFFSET ${offset}`;
+      const whereClause = where ? ` WHERE ${where}` : "";
+      const query = `SELECT * FROM "${table}"${whereClause}${orderClause} LIMIT ${safeLimit} OFFSET ${offset}`;
       // Get row count
       const countRow = entry.client
         .query(`SELECT COUNT(*) AS cnt FROM "${table}"`)
