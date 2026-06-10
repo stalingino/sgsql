@@ -5,6 +5,7 @@ import { create } from "zustand";
 /** Identifies a specific row by its primary key values */
 export interface RowKey {
   connectionId: string;
+  connectionType: "postgres" | "mysql" | "sqlite";
   db: string;
   schema: string;
   table: string;
@@ -22,7 +23,7 @@ export interface CellChange {
 }
 
 /** Serialize a RowKey into a stable string for Map keys */
-function rowKeyId(rk: RowKey): string {
+export function rowKeyId(rk: RowKey): string {
   const pkStr = Object.entries(rk.pkValues)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([k, v]) => `${k}=${v === null ? "NULL" : String(v)}`)
@@ -35,11 +36,47 @@ function cellKey(rk: RowKey, column: string): string {
   return `${rowKeyId(rk)}:${column}`;
 }
 
+/* ── Row Operations ────────────────────────────────────── */
+
+export interface PendingInsert {
+  id: string;
+  connectionId: string;
+  connectionType: "postgres" | "mysql" | "sqlite";
+  db: string;
+  schema: string;
+  table: string;
+  columns: string[];
+  values: Record<string, unknown>;
+  timestamp: number;
+}
+
+export interface PendingDelete {
+  id: string;
+  rowKey: RowKey;
+  /** Original row data for display */
+  rowData: unknown[];
+  columns: string[];
+  timestamp: number;
+}
+
+export interface PendingSqlStatement {
+  sql: string;
+  type: "update" | "insert" | "delete";
+  id: string;
+  connectionId: string;
+  db: string;
+  rowKey?: RowKey;
+}
+
 /* ── Store ─────────────────────────────────────────────── */
 
 interface EditStoreState {
   /** All pending cell changes, keyed by cellKey */
   changes: Map<string, CellChange>;
+  /** Pending row inserts */
+  inserts: PendingInsert[];
+  /** Pending row deletes */
+  deletes: Map<string, PendingDelete>;
 
   /** Set a cell change. If newValue equals originalValue, removes the change. */
   setChange: (rowKey: RowKey, column: string, originalValue: unknown, newValue: unknown) => void;
@@ -62,7 +99,7 @@ interface EditStoreState {
   /** Get all changes */
   getAllChanges: () => CellChange[];
 
-  /** Get total change count */
+  /** Get total change count — includes cell changes, inserts, deletes */
   changeCount: () => number;
 
   /** Revert a single cell change */
@@ -74,7 +111,7 @@ interface EditStoreState {
   /** Revert all changes */
   revertAll: () => void;
 
-  /** Revert the most recent change (by timestamp) */
+  /** Revert the most recent change (by timestamp) — cell change, insert, or delete */
   revertLast: () => void;
 
   /** Remove changes for a row (after successful save) */
@@ -88,6 +125,41 @@ interface EditStoreState {
 
   /** Build all UPDATE SQLs */
   buildAllUpdates: () => { sql: string; rowKey: RowKey }[];
+
+  /* ── Row operations ─────────────────────────────────── */
+
+  /** Add a new row (pending insert) */
+  addInsert: (connectionId: string, connectionType: "postgres" | "mysql" | "sqlite", db: string, schema: string, table: string, columns: string[]) => string;
+
+  /** Mark row(s) for deletion */
+  addDelete: (rowKey: RowKey, rowData: unknown[], columns: string[]) => void;
+
+  /** Check if a row is pending deletion */
+  isRowDeleted: (rowKey: RowKey) => boolean;
+
+  /** Remove a pending insert */
+  removeInsert: (id: string) => void;
+
+  /** Unmark a row from deletion */
+  removeDelete: (rowKey: RowKey) => void;
+
+  /** Get inserts for a specific table */
+  getTableInserts: (connectionId: string, db: string, schema: string, table: string) => PendingInsert[];
+
+  /** Get deletes for a specific table */
+  getTableDeletes: (connectionId: string, db: string, schema: string, table: string) => PendingDelete[];
+
+  /** Update a value in a pending insert */
+  updateInsertValue: (id: string, column: string, value: unknown) => void;
+
+  /** Build INSERT SQL for a pending insert */
+  buildInsertSql: (id: string) => string | null;
+
+  /** Build DELETE SQL for a pending delete */
+  buildDeleteSql: (rowKey: RowKey) => string | null;
+
+  /** Build all SQL statements (updates + inserts + deletes) */
+  buildAllSql: () => PendingSqlStatement[];
 }
 
 /** Sentinel for raw SQL expressions (DEFAULT, NOW(), etc.) */
@@ -122,12 +194,22 @@ function sqlValue(val: unknown): string {
 }
 
 /** Quote a column/table identifier */
-function quoteIdent(name: string): string {
-  return `\`${name.replace(/`/g, "``")}\``;
+function quoteIdent(type: "postgres" | "mysql" | "sqlite", name: string): string {
+  if (type === "mysql") return `\`${name.replace(/`/g, "``")}\``;
+  return `"${name.replace(/"/g, '""')}"`;
 }
+
+function quoteTableRef(type: "postgres" | "mysql" | "sqlite", schema: string, table: string): string {
+  if (!schema) return quoteIdent(type, table);
+  return `${quoteIdent(type, schema)}.${quoteIdent(type, table)}`;
+}
+
+let insertCounter = 0;
 
 export const useEditStore = create<EditStoreState>((set, get) => ({
   changes: new Map(),
+  inserts: [],
+  deletes: new Map(),
 
   setChange(rowKey, column, originalValue, newValue) {
     set((state) => {
@@ -182,6 +264,12 @@ export const useEditStore = create<EditStoreState>((set, get) => ({
     for (const key of get().changes.keys()) {
       if (key.startsWith(prefix)) return true;
     }
+    for (const ins of get().inserts) {
+      if (ins.connectionId === connectionId && ins.db === db && ins.schema === schema && ins.table === table) return true;
+    }
+    for (const key of get().deletes.keys()) {
+      if (key.startsWith(prefix)) return true;
+    }
     return false;
   },
 
@@ -190,7 +278,7 @@ export const useEditStore = create<EditStoreState>((set, get) => ({
   },
 
   changeCount() {
-    return get().changes.size;
+    return get().changes.size + get().inserts.length + get().deletes.size;
   },
 
   revertCell(rowKey, column) {
@@ -213,28 +301,56 @@ export const useEditStore = create<EditStoreState>((set, get) => ({
   },
 
   revertAll() {
-    set({ changes: new Map() });
+    set({ changes: new Map(), inserts: [], deletes: new Map() });
   },
 
   revertLast() {
-    const changes = get().changes;
-    if (changes.size === 0) return;
+    const { changes, inserts, deletes } = get();
 
-    // Find the change with the highest timestamp
-    let latestKey: string | null = null;
+    // Find the most recent item across all three collections
     let latestTs = -1;
+    let latestType: "change" | "insert" | "delete" = "change";
+    let latestId = "";
+
     for (const [key, change] of changes) {
       if (change.timestamp > latestTs) {
         latestTs = change.timestamp;
-        latestKey = key;
+        latestType = "change";
+        latestId = key;
+      }
+    }
+    for (const ins of inserts) {
+      if (ins.timestamp > latestTs) {
+        latestTs = ins.timestamp;
+        latestType = "insert";
+        latestId = ins.id;
+      }
+    }
+    for (const [key, del] of deletes) {
+      if (del.timestamp > latestTs) {
+        latestTs = del.timestamp;
+        latestType = "delete";
+        latestId = key;
       }
     }
 
-    if (latestKey) {
+    if (latestTs < 0) return;
+
+    if (latestType === "change") {
       set((state) => {
         const next = new Map(state.changes);
-        next.delete(latestKey);
+        next.delete(latestId);
         return { changes: next };
+      });
+    } else if (latestType === "insert") {
+      set((state) => ({
+        inserts: state.inserts.filter((i) => i.id !== latestId),
+      }));
+    } else {
+      set((state) => {
+        const next = new Map(state.deletes);
+        next.delete(latestId);
+        return { deletes: next };
       });
     }
   },
@@ -244,7 +360,7 @@ export const useEditStore = create<EditStoreState>((set, get) => ({
   },
 
   removeAll() {
-    set({ changes: new Map() });
+    set({ changes: new Map(), inserts: [], deletes: new Map() });
   },
 
   buildRowUpdate(rowKey) {
@@ -252,16 +368,16 @@ export const useEditStore = create<EditStoreState>((set, get) => ({
     if (changes.length === 0) return null;
 
     const setClauses = changes.map((c) =>
-      `${quoteIdent(c.column)} = ${sqlValue(c.newValue)}`
+      `${quoteIdent(rowKey.connectionType, c.column)} = ${sqlValue(c.newValue)}`
     );
 
     const whereClauses = Object.entries(rowKey.pkValues).map(([col, val]) =>
       val === null
-        ? `${quoteIdent(col)} IS NULL`
-        : `${quoteIdent(col)} = ${sqlValue(val)}`
+        ? `${quoteIdent(rowKey.connectionType, col)} IS NULL`
+        : `${quoteIdent(rowKey.connectionType, col)} = ${sqlValue(val)}`
     );
 
-    return `UPDATE ${quoteIdent(rowKey.table)} SET ${setClauses.join(", ")} WHERE ${whereClauses.join(" AND ")}`;
+    return `UPDATE ${quoteTableRef(rowKey.connectionType, rowKey.schema, rowKey.table)} SET ${setClauses.join(", ")} WHERE ${whereClauses.join(" AND ")}`;
   },
 
   buildAllUpdates() {
@@ -282,6 +398,122 @@ export const useEditStore = create<EditStoreState>((set, get) => ({
     }
     return updates;
   },
+
+  /* ── Row operations ─────────────────────────────────── */
+
+  addInsert(connectionId, connectionType, db, schema, table, columns) {
+    const id = `insert-${++insertCounter}-${Date.now()}`;
+    const values: Record<string, unknown> = {};
+    for (const col of columns) values[col] = null;
+    set((state) => ({
+      inserts: [...state.inserts, { id, connectionId, connectionType, db, schema, table, columns, values, timestamp: Date.now() }],
+    }));
+    return id;
+  },
+
+  addDelete(rowKey, rowData, columns) {
+    const key = rowKeyId(rowKey);
+    set((state) => {
+      const next = new Map(state.deletes);
+      if (next.has(key)) return {}; // already marked
+      next.set(key, {
+        id: key,
+        rowKey,
+        rowData,
+        columns,
+        timestamp: Date.now(),
+      });
+      return { deletes: next };
+    });
+  },
+
+  isRowDeleted(rowKey) {
+    return get().deletes.has(rowKeyId(rowKey));
+  },
+
+  removeInsert(id) {
+    set((state) => ({
+      inserts: state.inserts.filter((i) => i.id !== id),
+    }));
+  },
+
+  removeDelete(rowKey) {
+    set((state) => {
+      const next = new Map(state.deletes);
+      next.delete(rowKeyId(rowKey));
+      return { deletes: next };
+    });
+  },
+
+  getTableInserts(connectionId, db, schema, table) {
+    return get().inserts.filter(
+      (i) => i.connectionId === connectionId && i.db === db && i.schema === schema && i.table === table,
+    );
+  },
+
+  getTableDeletes(connectionId, db, schema, table) {
+    const prefix = `${connectionId}:${db}:${schema}:${table}:`;
+    const result: PendingDelete[] = [];
+    for (const [key, del] of get().deletes) {
+      if (key.startsWith(prefix)) result.push(del);
+    }
+    return result;
+  },
+
+  updateInsertValue(id, column, value) {
+    set((state) => ({
+      inserts: state.inserts.map((i) =>
+        i.id === id ? { ...i, values: { ...i.values, [column]: value }, timestamp: Date.now() } : i,
+      ),
+    }));
+  },
+
+  buildInsertSql(id) {
+    const ins = get().inserts.find((i) => i.id === id);
+    if (!ins) return null;
+    const cols = ins.columns.filter((c) => ins.values[c] !== null && ins.values[c] !== undefined);
+    if (cols.length === 0) {
+      if (ins.connectionType === "mysql") {
+        return `INSERT INTO ${quoteTableRef(ins.connectionType, ins.schema, ins.table)} () VALUES ()`;
+      }
+      return `INSERT INTO ${quoteTableRef(ins.connectionType, ins.schema, ins.table)} DEFAULT VALUES`;
+    }
+    const colList = cols.map((c) => quoteIdent(ins.connectionType, c)).join(", ");
+    const valList = cols.map((c) => sqlValue(ins.values[c])).join(", ");
+    return `INSERT INTO ${quoteTableRef(ins.connectionType, ins.schema, ins.table)} (${colList}) VALUES (${valList})`;
+  },
+
+  buildDeleteSql(rowKey) {
+    const whereClauses = Object.entries(rowKey.pkValues).map(([col, val]) =>
+      val === null
+        ? `${quoteIdent(rowKey.connectionType, col)} IS NULL`
+        : `${quoteIdent(rowKey.connectionType, col)} = ${sqlValue(val)}`,
+    );
+    return `DELETE FROM ${quoteTableRef(rowKey.connectionType, rowKey.schema, rowKey.table)} WHERE ${whereClauses.join(" AND ")}`;
+  },
+
+  buildAllSql() {
+    const result: PendingSqlStatement[] = [];
+
+    // Updates
+    for (const { sql, rowKey } of get().buildAllUpdates()) {
+      result.push({ sql, type: "update", id: rowKeyId(rowKey), connectionId: rowKey.connectionId, db: rowKey.db, rowKey });
+    }
+
+    // Inserts
+    for (const ins of get().inserts) {
+      const sql = get().buildInsertSql(ins.id);
+      if (sql) result.push({ sql, type: "insert", id: ins.id, connectionId: ins.connectionId, db: ins.db });
+    }
+
+    // Deletes
+    for (const [key, del] of get().deletes) {
+      const sql = get().buildDeleteSql(del.rowKey);
+      if (sql) result.push({ sql, type: "delete", id: key, connectionId: del.rowKey.connectionId, db: del.rowKey.db, rowKey: del.rowKey });
+    }
+
+    return result;
+  },
 }));
 
 /* ── Helpers ───────────────────────────────────────────── */
@@ -289,6 +521,7 @@ export const useEditStore = create<EditStoreState>((set, get) => ({
 /** Build a RowKey from context + row data */
 export function buildRowKey(
   connectionId: string,
+  connectionType: "postgres" | "mysql" | "sqlite",
   db: string,
   schema: string,
   table: string,
@@ -301,5 +534,5 @@ export function buildRowKey(
     const idx = columns.indexOf(pk);
     pkValues[pk] = idx >= 0 ? row[idx] : null;
   }
-  return { connectionId, db, schema, table, pkValues };
+  return { connectionId, connectionType, db, schema, table, pkValues };
 }

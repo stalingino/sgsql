@@ -9,6 +9,7 @@ import {
   Link2,
   Filter,
   Plus,
+  Trash2,
   Code2,
   Copy,
   Check,
@@ -248,8 +249,69 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     return { column: col, dir: dir === "ASC" ? "ASC" : "DESC" };
   });
 
+  const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+
   const addLogEntryRef = useRef(useQueryLog.getState().addEntry);
   addLogEntryRef.current = useQueryLog.getState().addEntry;
+
+  const pkColumns = columns?.filter((c) => c.isPk).map((c) => c.name) ?? [];
+  const headerColumns = (data?.columns?.length ? data.columns : null) ?? columns?.map((c) => c.name) ?? [];
+
+  // Add row handler
+  const handleAddRow = useCallback(() => {
+    if (!columns || columns.length === 0) return;
+    const colNames = columns.map((c) => c.name);
+    const insertId = useEditStore.getState().addInsert(connectionId, connectionType, db, schema, table, colNames);
+    // Select the new insert row to show in detail pane
+    const realRows = data?.rows.length ?? 0;
+    const existingInserts = useEditStore.getState().getTableInserts(connectionId, db, schema, table);
+    const newRowIndex = realRows + existingInserts.length - 1;
+    const newRow = colNames.map(() => null);
+    const columnMeta = columns.map((c) => ({ name: c.name, dataType: c.dataType, udtName: c.udtName, defaultValue: c.defaultValue }));
+    onCellSelect?.({
+      rowIndex: newRowIndex,
+      colIndex: 0,
+      row: newRow,
+      columns: colNames,
+      tableContext: { connectionId, connectionType, db, schema, table, pkColumns, columnMeta },
+      insertId,
+    });
+  }, [connectionId, connectionType, db, schema, table, columns, data?.rows, pkColumns, onCellSelect]);
+
+  // Delete selected rows handler
+  const handleDeleteRows = useCallback(() => {
+    if (pkColumns.length === 0 || !data?.rows) return;
+    for (const idx of selectedRows) {
+      const row = data.rows[idx] as unknown[];
+      if (!row) continue;
+      const rk = buildRowKey(connectionId, connectionType, db, schema, table, headerColumns, row, pkColumns);
+      // Toggle: if already deleted, undelete
+      if (useEditStore.getState().isRowDeleted(rk)) {
+        useEditStore.getState().removeDelete(rk);
+      } else {
+        useEditStore.getState().addDelete(rk, row, headerColumns);
+      }
+    }
+  }, [connectionId, connectionType, db, schema, table, headerColumns, pkColumns, data?.rows, selectedRows]);
+
+  // Cmd+= to add row, Delete/Backspace to delete selected rows
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "i") {
+        e.preventDefault();
+        handleAddRow();
+      }
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedRows.size > 0) {
+        // Only trigger if not focused on an input/textarea
+        const target = e.target as HTMLElement;
+        if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT") return;
+        e.preventDefault();
+        handleDeleteRows();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [handleAddRow, handleDeleteRows, selectedRows.size]);
 
   // Cmd+F to toggle filters
   useEffect(() => {
@@ -349,9 +411,6 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     return () => { cancelled = true; };
   }, [connectionId, db, schema, table, offset, sort, appliedWhere]);
 
-  // Use columns from structure for the header when data has no rows
-  const headerColumns = (data?.columns?.length ? data.columns : null) ?? columns?.map((c) => c.name) ?? [];
-
   const page = Math.floor(offset / PAGE_SIZE) + 1;
   const totalEstimate = data?.totalEstimate ?? 0;
   const totalPages = Math.max(1, Math.ceil(totalEstimate / PAGE_SIZE));
@@ -373,6 +432,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
         {mode === "data" ? (
           <DataView
             connectionId={connectionId}
+            connectionType={connectionType}
             db={db}
             schema={schema}
             table={table}
@@ -384,7 +444,8 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
             sort={sort}
             onSortChange={(s) => { setSort(s); setOffset(0); }}
             onCellSelect={onCellSelect}
-            pkColumns={columns?.filter((c) => c.isPk).map((c) => c.name) ?? []}
+            onSelectionChange={setSelectedRows}
+            pkColumns={pkColumns}
             columnMeta={columns?.map((c) => ({ name: c.name, dataType: c.dataType, udtName: c.udtName, defaultValue: c.defaultValue })) ?? []}
           />
         ) : (
@@ -410,7 +471,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
 
       {/* Bottom bar */}
       <div className="flex items-center px-2 py-1 border-t border-border bg-bg-secondary shrink-0 text-[11px] text-text-secondary">
-        {/* Left: view mode toggle + filters */}
+        {/* Left: view toggle + row actions */}
         <div className="flex items-center gap-0.5">
           <button
             onClick={() => setMode("data")}
@@ -435,30 +496,29 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
             Structure
           </button>
 
-          {/* Filters button — only in data mode */}
+          {/* Add / Delete row buttons */}
           {mode === "data" && (
-            <button
-              onClick={() => {
-                setFiltersOpen((prev) => {
-                  if (!prev) setFilters((f) => (f.length === 0 ? [createFilter()] : f));
-                  return !prev;
-                });
-              }}
-              className={`flex items-center gap-1 px-2 py-0.5 rounded transition-colors cursor-pointer ml-1 ${
-                filtersOpen
-                  ? "bg-accent/15 text-accent"
-                  : appliedWhere
-                    ? "bg-warning/15 text-warning"
-                    : "hover:bg-bg-hover text-text-muted"
-              }`}
-              title="Toggle filters (⌘F)"
-            >
-              <Filter size={11} />
-              Filters
-              {activeFilterCount > 0 && appliedWhere && (
-                <span className="text-[9px] bg-accent/20 text-accent px-1 rounded-full font-medium">{activeFilterCount}</span>
+            <>
+              <div className="w-px h-4 bg-border mx-1" />
+              <button
+                onClick={handleAddRow}
+                className="flex items-center gap-1 px-2 py-0.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+                title="Add row (⌘I)"
+              >
+                <Plus size={10} />
+                Add Row
+              </button>
+              {pkColumns.length > 0 && selectedRows.size > 0 && (
+                <button
+                  onClick={handleDeleteRows}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded text-row-delete hover:bg-row-delete/15 transition-colors cursor-pointer"
+                  title="Delete selected row(s) (Delete)"
+                >
+                  <Trash2 size={10} />
+                  Delete{selectedRows.size > 1 ? ` (${selectedRows.size})` : ""}
+                </button>
               )}
-            </button>
+            </>
           )}
         </div>
 
@@ -499,7 +559,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
           )}
         </div>
 
-        {/* Right: filter actions (when filters open) */}
+        {/* Right: filters + filter actions */}
         <div className="flex items-center gap-1">
           {filtersOpen && mode === "data" && (
             <>
@@ -525,7 +585,33 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
               >
                 Apply
               </button>
+              <div className="w-px h-4 bg-border mx-0.5" />
             </>
+          )}
+
+          {mode === "data" && (
+            <button
+              onClick={() => {
+                setFiltersOpen((prev) => {
+                  if (!prev) setFilters((f) => (f.length === 0 ? [createFilter()] : f));
+                  return !prev;
+                });
+              }}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded transition-colors cursor-pointer ${
+                filtersOpen
+                  ? "bg-accent/15 text-accent"
+                  : appliedWhere
+                    ? "bg-warning/15 text-warning"
+                    : "hover:bg-bg-hover text-text-muted"
+              }`}
+              title="Toggle filters (⌘F)"
+            >
+              <Filter size={11} />
+              Filters
+              {activeFilterCount > 0 && appliedWhere && (
+                <span className="text-[9px] bg-accent/20 text-accent px-1 rounded-full font-medium">{activeFilterCount}</span>
+              )}
+            </button>
           )}
         </div>
       </div>
@@ -573,6 +659,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
 
 function DataView({
   connectionId,
+  connectionType,
   db,
   schema,
   table,
@@ -584,10 +671,12 @@ function DataView({
   sort,
   onSortChange,
   onCellSelect,
+  onSelectionChange,
   pkColumns,
   columnMeta,
 }: {
   connectionId: string;
+  connectionType: "postgres" | "mysql" | "sqlite";
   db: string;
   schema: string;
   table: string;
@@ -599,37 +688,90 @@ function DataView({
   sort: SortState | null;
   onSortChange: (s: SortState | null) => void;
   onCellSelect?: (selection: CellSelection | null) => void;
+  onSelectionChange?: (selectedIndices: Set<number>) => void;
   pkColumns: string[];
   columnMeta: { name: string; dataType: string; udtName: string; defaultValue: string | null }[];
 }) {
   const editChanges = useEditStore((s) => s.changes);
+  const editDeletes = useEditStore((s) => s.deletes);
+  const editInserts = useEditStore((s) => s.inserts);
+
+  // Get pending inserts for this table
+  const tableInserts = useMemo(() =>
+    editInserts.filter(
+      (i) => i.connectionId === connectionId && i.db === db && i.schema === schema && i.table === table,
+    ),
+    [editInserts, connectionId, db, schema, table],
+  );
+
+  // Build combined rows: real data rows + virtual insert rows appended at bottom
+  const realRowCount = data?.rows.length ?? 0;
+  const combinedRows = useMemo(() => {
+    const real = data?.rows ?? [];
+    const insertRows = tableInserts.map((ins) =>
+      headerColumns.map((col) => ins.values[col] ?? null),
+    );
+    return [...real, ...insertRows];
+  }, [data?.rows, tableInserts, headerColumns]);
 
   // Build dirty-checking functions that use row PKs
   const isCellDirty = useCallback((rowIndex: number, colIndex: number) => {
+    if (rowIndex >= realRowCount) return false; // insert rows don't have dirty cells
     if (pkColumns.length === 0 || !data?.rows[rowIndex]) return false;
     const row = data.rows[rowIndex] as unknown[];
-    const rk = buildRowKey(connectionId, db, schema, table, headerColumns, row, pkColumns);
+    const rk = buildRowKey(connectionId, connectionType, db, schema, table, headerColumns, row, pkColumns);
     return useEditStore.getState().isCellDirty(rk, headerColumns[colIndex]);
-  }, [connectionId, db, schema, table, headerColumns, pkColumns, data?.rows, editChanges]);
+  }, [connectionId, connectionType, db, schema, table, headerColumns, pkColumns, data?.rows, realRowCount, editChanges]);
 
   const isRowDirty = useCallback((rowIndex: number) => {
+    if (rowIndex >= realRowCount) return false;
     if (pkColumns.length === 0 || !data?.rows[rowIndex]) return false;
     const row = data.rows[rowIndex] as unknown[];
-    const rk = buildRowKey(connectionId, db, schema, table, headerColumns, row, pkColumns);
+    const rk = buildRowKey(connectionId, connectionType, db, schema, table, headerColumns, row, pkColumns);
     return useEditStore.getState().isRowDirty(rk);
-  }, [connectionId, db, schema, table, headerColumns, pkColumns, data?.rows, editChanges]);
+  }, [connectionId, connectionType, db, schema, table, headerColumns, pkColumns, data?.rows, realRowCount, editChanges]);
 
-  // Wrap onCellSelect to inject table context
+  const isRowDeleted = useCallback((rowIndex: number) => {
+    if (rowIndex >= realRowCount) return false;
+    if (pkColumns.length === 0 || !data?.rows[rowIndex]) return false;
+    const row = data.rows[rowIndex] as unknown[];
+    const rk = buildRowKey(connectionId, connectionType, db, schema, table, headerColumns, row, pkColumns);
+    return useEditStore.getState().isRowDeleted(rk);
+  }, [connectionId, connectionType, db, schema, table, headerColumns, pkColumns, data?.rows, realRowCount, editDeletes]);
+
+  const isRowInserted = useCallback((rowIndex: number) => {
+    return rowIndex >= realRowCount;
+  }, [realRowCount]);
+
+  // Duplicate rows handler
+  const handleDuplicateRows = useCallback((rowIndices: number[]) => {
+    for (const idx of rowIndices) {
+      const row = combinedRows[idx] as unknown[];
+      if (!row) continue;
+      const id = useEditStore.getState().addInsert(connectionId, connectionType, db, schema, table, headerColumns);
+      // Copy all column values from the source row
+      for (let ci = 0; ci < headerColumns.length; ci++) {
+        const val = row[ci];
+        if (val !== null && val !== undefined) {
+          useEditStore.getState().updateInsertValue(id, headerColumns[ci], val);
+        }
+      }
+    }
+  }, [connectionId, connectionType, db, schema, table, headerColumns, combinedRows]);
+
+  // Wrap onCellSelect to inject table context (also handle insert rows)
   const handleCellSelect = useCallback((sel: CellSelection | null) => {
-    if (sel && pkColumns.length > 0) {
+    if (sel) {
+      // For insert rows, still pass table context but with empty pkColumns (no PKs yet)
       onCellSelect?.({
         ...sel,
-        tableContext: { connectionId, db, schema, table, pkColumns, columnMeta },
+        tableContext: { connectionId, connectionType, db, schema, table, pkColumns, columnMeta },
+        ...(sel.rowIndex >= realRowCount ? { insertId: tableInserts[sel.rowIndex - realRowCount]?.id } : {}),
       });
     } else {
       onCellSelect?.(sel);
     }
-  }, [connectionId, db, schema, table, pkColumns, columnMeta, onCellSelect]);
+  }, [connectionId, connectionType, db, schema, table, pkColumns, columnMeta, onCellSelect, realRowCount, tableInserts]);
 
   if (loading && !data) {
     return (
@@ -651,7 +793,7 @@ function DataView({
   return (
     <ResultGrid
       columns={headerColumns}
-      rows={data?.rows ?? []}
+      rows={combinedRows}
       offset={offset}
       emptyMessage="No rows in this table."
       sort={sort}
@@ -660,6 +802,10 @@ function DataView({
       tableName={table}
       isCellDirty={pkColumns.length > 0 ? isCellDirty : undefined}
       isRowDirty={pkColumns.length > 0 ? isRowDirty : undefined}
+      isRowDeleted={pkColumns.length > 0 ? isRowDeleted : undefined}
+      isRowInserted={isRowInserted}
+      onSelectionChange={onSelectionChange}
+      onDuplicateRows={handleDuplicateRows}
     />
   );
 }

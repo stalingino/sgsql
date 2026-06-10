@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ArrowDown, Copy, ClipboardCopy, ChevronRight } from "lucide-react";
+import { ArrowUp, ArrowDown, Copy, ClipboardCopy, ChevronRight, CopyPlus } from "lucide-react";
 
 /* ── Constants ─────────────────────────────────────────── */
 
@@ -28,6 +28,7 @@ export interface CellSelection {
   /** Table context for edit support */
   tableContext?: {
     connectionId: string;
+    connectionType: "postgres" | "mysql" | "sqlite";
     db: string;
     schema: string;
     table: string;
@@ -35,6 +36,8 @@ export interface CellSelection {
     /** Column metadata for type-aware editing */
     columnMeta?: { name: string; dataType: string; udtName: string; defaultValue: string | null }[];
   };
+  /** If this is a pending insert row, its ID in the edit store */
+  insertId?: string;
 }
 
 /* ── Copy format helpers ───────────────────────────────── */
@@ -319,6 +322,7 @@ function ContextMenu({
   selectedRows,
   onClose,
   tableName = "table_name",
+  onDuplicateRows,
 }: {
   state: CtxMenuState;
   columns: string[];
@@ -326,6 +330,7 @@ function ContextMenu({
   selectedRows: Set<number>;
   onClose: () => void;
   tableName?: string;
+  onDuplicateRows?: (rowIndices: number[]) => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [subOpen, setSubOpen] = useState(false);
@@ -423,6 +428,23 @@ function ContextMenu({
           </div>
         )}
       </div>
+
+      {/* Duplicate Row(s) */}
+      {onDuplicateRows && (
+        <>
+          <div className="my-1 border-t border-border" />
+          <button
+            className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-bg-hover transition-colors cursor-pointer text-left"
+            onClick={() => {
+              onDuplicateRows(Array.from(selectedRows).sort((a, b) => a - b));
+              onClose();
+            }}
+          >
+            <CopyPlus size={12} className="text-text-muted shrink-0" />
+            Duplicate Row{rowCount > 1 ? `s (${rowCount})` : ""}
+          </button>
+        </>
+      )}
     </div>
   );
 }
@@ -452,6 +474,14 @@ interface ResultGridProps {
   isCellDirty?: (rowIndex: number, colIndex: number) => boolean;
   /** Check if a row is dirty (for edit highlighting) */
   isRowDirty?: (rowIndex: number) => boolean;
+  /** Check if a row is pending deletion */
+  isRowDeleted?: (rowIndex: number) => boolean;
+  /** Check if a row is a pending insert */
+  isRowInserted?: (rowIndex: number) => boolean;
+  /** Notify parent when selection changes */
+  onSelectionChange?: (selectedIndices: Set<number>) => void;
+  /** Callback to duplicate selected rows */
+  onDuplicateRows?: (rowIndices: number[]) => void;
   /** Table name for copy-as-insert */
   tableName?: string;
 }
@@ -467,6 +497,10 @@ export function ResultGrid({
   onCellSelect,
   isCellDirty,
   isRowDirty,
+  isRowDeleted,
+  isRowInserted,
+  onSelectionChange,
+  onDuplicateRows,
   tableName: _tableName,
 }: ResultGridProps) {
   const [internalSort, setInternalSort] = useState<SortState | null>(null);
@@ -479,6 +513,11 @@ export function ResultGrid({
   const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ anchor: number; active: boolean } | null>(null);
+
+  // Notify parent of selection changes
+  useEffect(() => {
+    onSelectionChange?.(selectedRows);
+  }, [selectedRows, onSelectionChange]);
 
   const activeSort = clientSort ? internalSort : (externalSort ?? null);
 
@@ -614,14 +653,18 @@ export function ResultGrid({
     [anchorRow, displayRows, columns, onCellSelect, selectSingle],
   );
 
-  // Clear selection when data changes
+  // Keep selection indexes valid when rows change. Do not always notify the
+  // parent with null here; pending insert rows are appended via state changes,
+  // and clearing parent selection would immediately close the new-row editor.
   useEffect(() => {
-    setSelectedRows(new Set());
-    setActiveRow(null);
-    setActiveCol(null);
-    setAnchorRow(null);
-    onCellSelect?.(null);
-  }, [rows]);
+    setSelectedRows((prev) => new Set(Array.from(prev).filter((idx) => idx < rows.length)));
+    setActiveRow((prev) => (prev !== null && prev < rows.length ? prev : null));
+    setAnchorRow((prev) => (prev !== null && prev < rows.length ? prev : null));
+    if (rows.length === 0) {
+      setActiveCol(null);
+      onCellSelect?.(null);
+    }
+  }, [rows.length, onCellSelect]);
 
   // Keyboard: Cmd/Ctrl+C copies selected rows; Shift+arrows for range; arrows for navigation
   useEffect(() => {
@@ -776,16 +819,22 @@ export function ResultGrid({
               const isSelected = selectedRows.has(i);
               const isActive = activeRow === i;
               const rowDirty = isRowDirty?.(i) ?? false;
+              const rowDeleted = isRowDeleted?.(i) ?? false;
+              const rowInserted = isRowInserted?.(i) ?? false;
               return (
                 <tr
                   key={i}
                   data-row-idx={i}
                   className={`transition-colors ${
-                    isSelected
-                      ? focused ? "bg-accent/25" : "bg-accent/12"
-                      : rowDirty
-                        ? "bg-warning/8"
-                        : i % 2 === 1 ? "bg-bg-secondary hover:bg-bg-hover" : "hover:bg-bg-hover"
+                    rowDeleted
+                      ? "bg-row-delete/15 line-through opacity-60"
+                      : rowInserted
+                        ? "bg-row-insert/10"
+                        : isSelected
+                          ? focused ? "bg-accent/25" : "bg-accent/12"
+                          : rowDirty
+                            ? "bg-warning/8"
+                            : i % 2 === 1 ? "bg-bg-secondary hover:bg-bg-hover" : "hover:bg-bg-hover"
                   }`}
                   onContextMenu={(e) => handleContextMenu(e, i, activeCol ?? 0)}
                 >
@@ -826,6 +875,7 @@ export function ResultGrid({
           selectedRows={selectedRows}
           tableName={_tableName}
           onClose={() => setCtxMenu(null)}
+          onDuplicateRows={onDuplicateRows}
         />
       )}
     </div>

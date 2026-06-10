@@ -16,7 +16,7 @@ Phase 4 — Table Data Viewer 🔴 Major Gaps
 ✅ NULL rendering (gray italic)
 ❌ Sort by column header click — no sort ✅
 ❌ Filter builder — no WHERE clause UI
-❌ Inline cell editing — cells are read-only
+❌ Inline cell editing — cells are read-only ✅
 ❌ Add row / delete row
 ❌ Export to CSV / JSON
 ❌ JSON cell expand modal — objects just stringify inline

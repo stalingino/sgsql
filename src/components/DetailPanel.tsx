@@ -15,14 +15,19 @@ interface DetailPanelProps {
 export function DetailPanel({ selection, wasAlreadyOpen }: DetailPanelProps) {
   // Subscribe for reactivity on changes
   const _editChanges = useEditStore((s) => s.changes);
+  const _editInserts = useEditStore((s) => s.inserts);
   void _editChanges; // subscribe for re-render
+  void _editInserts;
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  // Derive row key if we have table context
+  const isInsertRow = !!selection?.insertId;
+
+  // Derive row key if we have table context (not for insert rows)
   const rowKey: RowKey | null =
-    selection?.tableContext
+    selection?.tableContext && !isInsertRow
       ? buildRowKey(
           selection.tableContext.connectionId,
+          selection.tableContext.connectionType,
           selection.tableContext.db,
           selection.tableContext.schema,
           selection.tableContext.table,
@@ -32,9 +37,14 @@ export function DetailPanel({ selection, wasAlreadyOpen }: DetailPanelProps) {
         )
       : null;
 
+  // For insert rows, get the current values from the store
+  const insertData = isInsertRow
+    ? useEditStore.getState().inserts.find((i) => i.id === selection.insertId)
+    : null;
+
   const rowDirty = rowKey ? useEditStore.getState().isRowDirty(rowKey) : false;
   const rowChanges = rowKey ? useEditStore.getState().getRowChanges(rowKey) : [];
-  const canEdit = !!rowKey;
+  const canEdit = !!rowKey || isInsertRow;
 
   // Build column meta lookup
   const columnMeta = selection?.tableContext?.columnMeta;
@@ -68,14 +78,18 @@ export function DetailPanel({ selection, wasAlreadyOpen }: DetailPanelProps) {
     );
   }
 
-  const { row, columns } = selection;
+  const { columns } = selection;
+  // For insert rows, use the store's current values; for regular rows, use the selection data
+  const row = isInsertRow && insertData
+    ? columns.map((col) => insertData.values[col] ?? null)
+    : selection.row;
 
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Header */}
       <div className="flex items-center h-8 px-3 border-b border-border bg-bg-secondary shrink-0">
-        <span className="text-[11px] font-semibold text-text-secondary">
-          Row Details
+        <span className={`text-[11px] font-semibold ${isInsertRow ? "text-row-insert" : "text-text-secondary"}`}>
+          {isInsertRow ? "New Row" : "Row Details"}
         </span>
         <span className="ml-2 text-[10px] text-text-muted">
           ({columns.length} fields)
@@ -109,6 +123,7 @@ export function DetailPanel({ selection, wasAlreadyOpen }: DetailPanelProps) {
               canEdit={canEdit}
               dataType={meta?.udtName || meta?.dataType || ""}
               defaultValue={meta?.defaultValue ?? null}
+              insertId={isInsertRow ? selection.insertId : undefined}
             />
           );
         })}
@@ -184,30 +199,34 @@ function QuickSetSelect({
   originalValue,
   dataType,
   defaultValue,
+  insertId,
 }: {
-  rowKey: RowKey;
+  rowKey: RowKey | null;
   column: string;
   originalValue: unknown;
   dataType: string;
   defaultValue: string | null;
+  insertId?: string;
 }) {
   const showNow = isDateTimeType(dataType);
 
   const handleChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value;
-    if (!v) return; // placeholder selected, ignore
-    if (v === "__null__") {
-      useEditStore.getState().setChange(rowKey, column, originalValue, null);
-    } else if (v === "__empty__") {
-      useEditStore.getState().setChange(rowKey, column, originalValue, "");
-    } else if (v === "__default__") {
-      useEditStore.getState().setChange(rowKey, column, originalValue, new SqlExpression("DEFAULT", "DEFAULT"));
-    } else if (v === "__now__") {
-      useEditStore.getState().setChange(rowKey, column, originalValue, new SqlExpression("NOW()", "NOW()"));
+    if (!v) return;
+    let newVal: unknown;
+    if (v === "__null__") newVal = null;
+    else if (v === "__empty__") newVal = "";
+    else if (v === "__default__") newVal = new SqlExpression("DEFAULT", "DEFAULT");
+    else if (v === "__now__") newVal = new SqlExpression("NOW()", "NOW()");
+    else return;
+
+    if (insertId) {
+      useEditStore.getState().updateInsertValue(insertId, column, newVal);
+    } else if (rowKey) {
+      useEditStore.getState().setChange(rowKey, column, originalValue, newVal);
     }
-    // Reset select back to placeholder so it can be re-picked
     e.target.value = "";
-  }, [rowKey, column, originalValue]);
+  }, [rowKey, column, originalValue, insertId]);
 
   return (
     <select
@@ -235,6 +254,7 @@ function FieldRow({
   canEdit,
   dataType,
   defaultValue,
+  insertId,
 }: {
   index: number;
   name: string;
@@ -243,6 +263,7 @@ function FieldRow({
   canEdit: boolean;
   dataType: string;
   defaultValue: string | null;
+  insertId?: string;
 }) {
   const isNull = value === null || value === undefined;
   const isBoolean = typeof value === "boolean";
@@ -251,30 +272,27 @@ function FieldRow({
 
   // Get pending edit value from store
   const pendingChange = rowKey ? useEditStore.getState().getChange(rowKey, name) : undefined;
-  const isDirty = !!pendingChange;
+  const isDirty = insertId ? (value !== null && value !== undefined) : !!pendingChange;
+  const effectiveValue = insertId ? value : (pendingChange?.newValue ?? value);
 
   // Check if the pending value is a SqlExpression
-  const isSqlExpr = isDirty && pendingChange!.newValue instanceof SqlExpression;
+  const isSqlExpr = effectiveValue instanceof SqlExpression;
 
   // For NULL fields: show placeholder instead of "NULL" as editable text
-  const isCurrentlyNull = isDirty
-    ? pendingChange!.newValue === null
-    : isNull;
+  const isCurrentlyNull = effectiveValue === null || effectiveValue === undefined;
 
   // Track whether a NULL field is being actively edited
   const [nullEditing, setNullEditing] = useState(false);
   const [nullEditText, setNullEditText] = useState("");
 
   const displayValue = isSqlExpr
-    ? (pendingChange!.newValue as SqlExpression).label
+    ? (effectiveValue as SqlExpression).label
     : isCurrentlyNull && !nullEditing
       ? ""
-      : isDirty
-        ? formatValue(pendingChange!.newValue)
-        : formatValue(value);
+      : formatValue(effectiveValue);
 
   const handleChange = useCallback((newVal: string) => {
-    if (!rowKey || !canEdit) return;
+    if (!canEdit) return;
 
     // Convert typed value back
     let parsed: unknown = newVal;
@@ -286,8 +304,13 @@ function FieldRow({
       parsed = Number(newVal);
     }
 
-    useEditStore.getState().setChange(rowKey, name, value, parsed);
-  }, [rowKey, name, value, canEdit, isBoolean, isNull, isCurrentlyNull]);
+    if (insertId) {
+      // For insert rows, update the insert store
+      useEditStore.getState().updateInsertValue(insertId, name, parsed);
+    } else if (rowKey) {
+      useEditStore.getState().setChange(rowKey, name, value, parsed);
+    }
+  }, [rowKey, name, value, canEdit, isBoolean, isNull, isCurrentlyNull, insertId]);
 
   const handleNullFocus = useCallback(() => {
     if (isCurrentlyNull) {
@@ -307,27 +330,28 @@ function FieldRow({
     handleChange(newVal);
   }, [handleChange]);
 
-  const fieldClasses = `px-3 py-1.5 ${isDirty ? "bg-warning/8 border-l-2 border-l-warning" : ""}`;
-  const inputBorder = isDirty ? "border-warning/50" : "border-border";
+  const fieldClasses = `px-3 py-1.5 ${isDirty ? (insertId ? "bg-row-insert/8 border-l-2 border-l-row-insert" : "bg-warning/8 border-l-2 border-l-warning") : ""}`;
+  const inputBorder = isDirty ? (insertId ? "border-row-insert/50" : "border-warning/50") : "border-border";
 
   return (
     <div className={fieldClasses} data-field-index={index}>
       {/* Column name + quick-set */}
       <div className="flex items-center gap-1 min-w-0">
         <div className="flex items-baseline gap-1 min-w-0 flex-1 overflow-hidden">
-          <span className={`text-[11px] font-semibold cursor-text truncate shrink-0 ${isDirty ? "text-warning" : "text-text-muted"}`}>
+          <span className={`text-[11px] font-semibold cursor-text truncate shrink-0 ${isDirty ? (insertId ? "text-row-insert" : "text-warning") : "text-text-muted"}`}>
             {name}
-            {isDirty && <span className="ml-1 text-[9px] text-warning/70">modified</span>}
+            {isDirty && !insertId && <span className="ml-1 text-[9px] text-warning/70">modified</span>}
           </span>
           <span className="text-[9px] text-text-muted/40 font-mono truncate">{dataType}</span>
         </div>
-        {canEdit && rowKey && (
+        {canEdit && (rowKey || insertId) && (
           <QuickSetSelect
             rowKey={rowKey}
             column={name}
             originalValue={value}
             dataType={dataType}
             defaultValue={defaultValue}
+            insertId={insertId}
           />
         )}
       </div>
@@ -378,7 +402,7 @@ function FieldRow({
             style={{ fieldSizing: "content" as any, minHeight: "2lh", maxHeight: "12lh" }}
             className={`w-full px-2 py-1 text-[12px] font-mono text-text-primary bg-bg-secondary border rounded outline-none resize-y focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors ${inputBorder}`}
           />
-        ) : typeof value === "number" || (isDirty && typeof pendingChange?.originalValue === "number") ? (
+        ) : typeof value === "number" || (!insertId && typeof pendingChange?.originalValue === "number") ? (
           <input
             type="text"
             value={displayValue}

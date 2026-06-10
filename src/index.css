@@ -16,6 +16,8 @@
   --color-success: #4ade80;
   --color-error: #f87171;
   --color-warning: #facc15;
+  --color-row-insert: #4ade80;
+  --color-row-delete: #c084a0;
 }
 
 /* ── Dark theme (default) ───────────────────────────────── */

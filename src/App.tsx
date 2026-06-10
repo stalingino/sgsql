@@ -109,7 +109,9 @@ function App() {
 
   // Edit store — subscribe for change count reactivity
   const editChanges = useEditStore((s) => s.changes);
-  const editChangeCount = editChanges.size;
+  const editInserts = useEditStore((s) => s.inserts);
+  const editDeletes = useEditStore((s) => s.deletes);
+  const editChangeCount = editChanges.size + editInserts.length + editDeletes.size;
 
   // Track whether detail panel was already open (for focus vs scroll-only behavior)
   const detailPanelWasOpenRef = useRef(detailPanelVisible);
@@ -448,12 +450,21 @@ function App() {
 
   const execQueue = useExecutionQueue((s) => s.execute);
   const saveAllChanges = useCallback(async () => {
-    const updates = useEditStore.getState().buildAllUpdates();
-    if (updates.length === 0) return;
-    for (const { sql, rowKey } of updates) {
+    const store = useEditStore.getState();
+    const statements = store.buildAllSql();
+    if (statements.length === 0) return;
+
+    for (const { sql, type, id, connectionId, db, rowKey } of statements) {
       try {
-        await execQueue(rowKey.connectionId, sql, rowKey.db);
-        useEditStore.getState().removeRow(rowKey);
+        await execQueue(connectionId, sql, db);
+        // Remove from store on success
+        if (type === "update") {
+          if (rowKey) store.removeRow(rowKey);
+        } else if (type === "insert") {
+          store.removeInsert(id);
+        } else if (type === "delete") {
+          if (rowKey) store.removeDelete(rowKey);
+        }
       } catch (err) {
         console.error("Failed to save:", err);
         break; // Stop on first error
@@ -467,6 +478,10 @@ function App() {
   const handleCellSelection = useCallback((sel: CellSelection | null) => {
     detailPanelWasOpenRef.current = detailPanelVisible;
     setCellSelection(sel);
+    // Auto-open detail pane for new insert rows
+    if (sel?.insertId && !detailPanelVisible) {
+      setDetailPanelVisible(true);
+    }
   }, [detailPanelVisible]);
 
   /* ── Loading ──────────────────────────────────────────── */
