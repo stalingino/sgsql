@@ -38,3 +38,5 @@ Thumbs.db
 *.sln
 *.sw?
 .claude
+tsconfig.tsbuildinfo
+graphify-out/
