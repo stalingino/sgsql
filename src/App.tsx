@@ -454,9 +454,20 @@ function App() {
     const statements = store.buildAllSql();
     if (statements.length === 0) return;
 
-    for (const { sql, type, id, connectionId, db, rowKey } of statements) {
+    let savedAny = false;
+    for (const { sql, type, id, connectionId, db, schema, table, rowKey } of statements) {
+      const startedAt = performance.now();
       try {
-        await execQueue(connectionId, sql, db);
+        const result = await execQueue(connectionId, sql, db);
+        useQueryLog.getState().addEntry({
+          timestamp: new Date(),
+          query: sql,
+          db,
+          schema,
+          table,
+          duration: result.duration,
+          rowCount: result.affectedRows ?? result.rowCount,
+        });
         // Remove from store on success
         if (type === "update") {
           if (rowKey) store.removeRow(rowKey);
@@ -465,11 +476,22 @@ function App() {
         } else if (type === "delete") {
           if (rowKey) store.removeDelete(rowKey);
         }
+        savedAny = true;
       } catch (err) {
+        useQueryLog.getState().addEntry({
+          timestamp: new Date(),
+          query: sql,
+          db,
+          schema,
+          table,
+          duration: performance.now() - startedAt,
+          error: err instanceof Error ? err.message : String(err),
+        });
         console.error("Failed to save:", err);
         break; // Stop on first error
       }
     }
+    if (savedAny) store.requestDataRefresh();
   }, [execQueue]);
   saveAllChangesRef.current = saveAllChanges;
 

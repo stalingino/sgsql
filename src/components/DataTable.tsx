@@ -250,12 +250,28 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   });
 
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+  const dataRevision = useEditStore((s) => s.dataRevision);
 
   const addLogEntryRef = useRef(useQueryLog.getState().addEntry);
   addLogEntryRef.current = useQueryLog.getState().addEntry;
 
-  const pkColumns = columns?.filter((c) => c.isPk).map((c) => c.name) ?? [];
-  const headerColumns = (data?.columns?.length ? data.columns : null) ?? columns?.map((c) => c.name) ?? [];
+  const pkColumns = useMemo(
+    () => columns?.filter((c) => c.isPk).map((c) => c.name) ?? [],
+    [columns],
+  );
+  const headerColumns = useMemo(
+    () => (data?.columns?.length ? data.columns : null) ?? columns?.map((c) => c.name) ?? [],
+    [data?.columns, columns],
+  );
+  const columnMeta = useMemo(
+    () => columns?.map((c) => ({
+      name: c.name,
+      dataType: c.dataType,
+      udtName: c.udtName,
+      defaultValue: c.defaultValue,
+    })) ?? [],
+    [columns],
+  );
 
   // Add row handler
   const handleAddRow = useCallback(() => {
@@ -409,7 +425,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
       });
 
     return () => { cancelled = true; };
-  }, [connectionId, db, schema, table, offset, sort, appliedWhere]);
+  }, [connectionId, db, schema, table, offset, sort, appliedWhere, dataRevision]);
 
   const page = Math.floor(offset / PAGE_SIZE) + 1;
   const totalEstimate = data?.totalEstimate ?? 0;
@@ -446,7 +462,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
             onCellSelect={onCellSelect}
             onSelectionChange={setSelectedRows}
             pkColumns={pkColumns}
-            columnMeta={columns?.map((c) => ({ name: c.name, dataType: c.dataType, udtName: c.udtName, defaultValue: c.defaultValue })) ?? []}
+            columnMeta={columnMeta}
           />
         ) : (
           <StructureView
@@ -695,6 +711,7 @@ function DataView({
   const editChanges = useEditStore((s) => s.changes);
   const editDeletes = useEditStore((s) => s.deletes);
   const editInserts = useEditStore((s) => s.inserts);
+  const selectedCellRef = useRef<CellSelection | null>(null);
 
   // Get pending inserts for this table
   const tableInserts = useMemo(() =>
@@ -763,15 +780,53 @@ function DataView({
   const handleCellSelect = useCallback((sel: CellSelection | null) => {
     if (sel) {
       // For insert rows, still pass table context but with empty pkColumns (no PKs yet)
-      onCellSelect?.({
+      const enrichedSelection: CellSelection = {
         ...sel,
         tableContext: { connectionId, connectionType, db, schema, table, pkColumns, columnMeta },
         ...(sel.rowIndex >= realRowCount ? { insertId: tableInserts[sel.rowIndex - realRowCount]?.id } : {}),
-      });
+      };
+      selectedCellRef.current = enrichedSelection;
+      onCellSelect?.(enrichedSelection);
     } else {
+      selectedCellRef.current = null;
       onCellSelect?.(sel);
     }
   }, [connectionId, connectionType, db, schema, table, pkColumns, columnMeta, onCellSelect, realRowCount, tableInserts]);
+
+  // A selection contains a row snapshot. After a table refetch, resolve that
+  // record again by primary key so the detail panel receives current values.
+  useEffect(() => {
+    const selection = selectedCellRef.current;
+    const freshRows = data?.rows;
+    if (!selection || !freshRows || selection.insertId) return;
+
+    let rowIndex = selection.rowIndex;
+    if (pkColumns.length > 0) {
+      const pkIndexes = pkColumns.map((pk) => headerColumns.indexOf(pk));
+      const selectedPkValues = pkIndexes.map((index) => selection.row[index]);
+      rowIndex = freshRows.findIndex((row) =>
+        pkIndexes.every((columnIndex, index) =>
+          columnIndex >= 0 && Object.is(row[columnIndex], selectedPkValues[index]),
+        ),
+      );
+    }
+
+    if (rowIndex < 0 || rowIndex >= freshRows.length) {
+      selectedCellRef.current = null;
+      onCellSelect?.(null);
+      return;
+    }
+
+    const refreshedSelection: CellSelection = {
+      ...selection,
+      rowIndex,
+      row: freshRows[rowIndex],
+      columns: headerColumns,
+      tableContext: { connectionId, connectionType, db, schema, table, pkColumns, columnMeta },
+    };
+    selectedCellRef.current = refreshedSelection;
+    onCellSelect?.(refreshedSelection);
+  }, [data?.rows, headerColumns, pkColumns, connectionId, connectionType, db, schema, table, columnMeta, onCellSelect]);
 
   if (loading && !data) {
     return (

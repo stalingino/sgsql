@@ -65,6 +65,8 @@ export interface PendingSqlStatement {
   id: string;
   connectionId: string;
   db: string;
+  schema: string;
+  table: string;
   rowKey?: RowKey;
 }
 
@@ -77,6 +79,12 @@ interface EditStoreState {
   inserts: PendingInsert[];
   /** Pending row deletes */
   deletes: Map<string, PendingDelete>;
+
+  /** Incremented after mutations so visible table data is refetched. */
+  dataRevision: number;
+
+  /** Request a refetch of visible table data. */
+  requestDataRefresh: () => void;
 
   /** Set a cell change. If newValue equals originalValue, removes the change. */
   setChange: (rowKey: RowKey, column: string, originalValue: unknown, newValue: unknown) => void;
@@ -210,6 +218,11 @@ export const useEditStore = create<EditStoreState>((set, get) => ({
   changes: new Map(),
   inserts: [],
   deletes: new Map(),
+  dataRevision: 0,
+
+  requestDataRefresh() {
+    set((state) => ({ dataRevision: state.dataRevision + 1 }));
+  },
 
   setChange(rowKey, column, originalValue, newValue) {
     set((state) => {
@@ -497,19 +510,19 @@ export const useEditStore = create<EditStoreState>((set, get) => ({
 
     // Updates
     for (const { sql, rowKey } of get().buildAllUpdates()) {
-      result.push({ sql, type: "update", id: rowKeyId(rowKey), connectionId: rowKey.connectionId, db: rowKey.db, rowKey });
+      result.push({ sql, type: "update", id: rowKeyId(rowKey), connectionId: rowKey.connectionId, db: rowKey.db, schema: rowKey.schema, table: rowKey.table, rowKey });
     }
 
     // Inserts
     for (const ins of get().inserts) {
       const sql = get().buildInsertSql(ins.id);
-      if (sql) result.push({ sql, type: "insert", id: ins.id, connectionId: ins.connectionId, db: ins.db });
+      if (sql) result.push({ sql, type: "insert", id: ins.id, connectionId: ins.connectionId, db: ins.db, schema: ins.schema, table: ins.table });
     }
 
     // Deletes
     for (const [key, del] of get().deletes) {
       const sql = get().buildDeleteSql(del.rowKey);
-      if (sql) result.push({ sql, type: "delete", id: key, connectionId: del.rowKey.connectionId, db: del.rowKey.db, rowKey: del.rowKey });
+      if (sql) result.push({ sql, type: "delete", id: key, connectionId: del.rowKey.connectionId, db: del.rowKey.db, schema: del.rowKey.schema, table: del.rowKey.table, rowKey: del.rowKey });
     }
 
     return result;

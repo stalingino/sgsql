@@ -3,6 +3,7 @@ import { Save, Undo2 } from "lucide-react";
 import type { CellSelection } from "./ResultGrid";
 import { useEditStore, buildRowKey, SqlExpression, type RowKey } from "../lib/editStore";
 import { useExecutionQueue } from "../lib/executionQueue";
+import { useQueryLog } from "../lib/queryLog";
 
 /* ── Detail Panel ──────────────────────────────────────── */
 
@@ -138,17 +139,38 @@ function SaveRowButton({ rowKey }: { rowKey: RowKey }) {
   const execQueue = useExecutionQueue((s) => s.execute);
   const buildRowUpdate = useEditStore((s) => s.buildRowUpdate);
   const removeRow = useEditStore((s) => s.removeRow);
+  const requestDataRefresh = useEditStore((s) => s.requestDataRefresh);
 
   const handleSave = useCallback(async () => {
     const sql = buildRowUpdate(rowKey);
     if (!sql) return;
+    const startedAt = performance.now();
     try {
-      await execQueue(rowKey.connectionId, sql, rowKey.db);
+      const result = await execQueue(rowKey.connectionId, sql, rowKey.db);
+      useQueryLog.getState().addEntry({
+        timestamp: new Date(),
+        query: sql,
+        db: rowKey.db,
+        schema: rowKey.schema,
+        table: rowKey.table,
+        duration: result.duration,
+        rowCount: result.affectedRows ?? result.rowCount,
+      });
       removeRow(rowKey);
+      requestDataRefresh();
     } catch (err) {
+      useQueryLog.getState().addEntry({
+        timestamp: new Date(),
+        query: sql,
+        db: rowKey.db,
+        schema: rowKey.schema,
+        table: rowKey.table,
+        duration: performance.now() - startedAt,
+        error: err instanceof Error ? err.message : String(err),
+      });
       console.error("Failed to save row:", err);
     }
-  }, [rowKey, execQueue, buildRowUpdate, removeRow]);
+  }, [rowKey, execQueue, buildRowUpdate, removeRow, requestDataRefresh]);
 
   return (
     <button
