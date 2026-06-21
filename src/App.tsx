@@ -50,6 +50,7 @@ interface ContentTab {
   table: string;
   type: "table" | "view" | "query";
   sql?: string;
+  viewMode?: "data" | "structure";
 }
 
 interface DbWorkspace {
@@ -558,6 +559,7 @@ function App() {
   const activeWorkspace = activeTab?.activeDbName
     ? activeTab.workspaces[activeTab.activeDbName] ?? null
     : null;
+  const activeContentTab = activeWorkspace?.contentTabs.find((tab) => tab.id === activeWorkspace.activeContentTabId);
   const isRunning = activeTab?.connectionId
     ? (execConnections.get(activeTab.connectionId)?.running ?? false)
     : false;
@@ -799,6 +801,15 @@ function App() {
                           schema={ct.schema}
                           table={ct.table}
                           onCellSelect={handleCellSelection}
+                          viewMode={ct.viewMode ?? "data"}
+                          onViewModeChange={(viewMode) => {
+                            setTabs((prev) => prev.map((tab) => {
+                              if (tab.id !== activeTab.id || !tab.activeDbName) return tab;
+                              const ws = tab.workspaces[tab.activeDbName];
+                              if (!ws) return tab;
+                              return { ...tab, workspaces: { ...tab.workspaces, [tab.activeDbName]: { ...ws, contentTabs: ws.contentTabs.map((content) => content.id === ct.id ? { ...content, viewMode } : content) } } };
+                            }));
+                          }}
                         />
                       )}
                     </div>
@@ -828,7 +839,7 @@ function App() {
             </main>
 
             {/* Right detail panel */}
-            {detailPanelVisible && (
+            {detailPanelVisible && activeContentTab?.viewMode !== "structure" && (
               <ResizableDetailPanel>
                 <aside className="h-full border-l border-border bg-bg-primary">
                   <DetailPanel selection={cellSelection} wasAlreadyOpen={detailPanelWasOpenRef.current} />

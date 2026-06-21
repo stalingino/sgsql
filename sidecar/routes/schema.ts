@@ -211,11 +211,68 @@ async function dispatchSchemaAction(
     case "fks":
       if (!table) throw new Error("Missing ?table= param");
       return getForeignKeys(entry, db, schema, table);
+    case "ddl":
+      if (!table) throw new Error("Missing ?table= param");
+      return getTableDdl(entry, db, schema, table);
     case "rows":
       if (!table) throw new Error("Missing ?table= param");
       return getRows(entry, db, schema, table, limit, offset, orderBy, where);
     default:
       throw new Error(`Unknown schema action: ${action}`);
+  }
+}
+
+async function getTableDdl(
+  entry: PoolEntry,
+  db?: string,
+  schema?: string,
+  table?: string,
+): Promise<{ ddl: string }> {
+  switch (entry.type) {
+    case "postgres": {
+      const s = schema || "public";
+      const [view] = await entry.client`
+        SELECT c.relkind, CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid, true) END AS definition
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = ${s} AND c.relname = ${table!}
+      `;
+      if (view?.relkind === "v" || view?.relkind === "m") {
+        const kind = view.relkind === "m" ? "MATERIALIZED VIEW" : "VIEW";
+        return { ddl: `CREATE ${kind} "${s.replace(/"/g, '""')}"."${table!.replace(/"/g, '""')}" AS\n${view.definition};` };
+      }
+      const columns = await entry.client`
+        SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod) AS type,
+          a.attnotnull, pg_get_expr(d.adbin, d.adrelid) AS default_value
+        FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
+        WHERE n.nspname = ${s} AND c.relname = ${table!} AND a.attnum > 0 AND NOT a.attisdropped
+        ORDER BY a.attnum
+      `;
+      const constraints = await entry.client`
+        SELECT con.conname, pg_get_constraintdef(con.oid, true) AS definition
+        FROM pg_constraint con
+        JOIN pg_class c ON c.oid = con.conrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = ${s} AND c.relname = ${table!}
+      `;
+      const lines = [
+        ...columns.map((column: any) => `  "${String(column.attname).replace(/"/g, '""')}" ${column.type}${column.default_value ? ` DEFAULT ${column.default_value}` : ""}${column.attnotnull ? " NOT NULL" : ""}`),
+        ...constraints.map((constraint: any) => `  CONSTRAINT "${String(constraint.conname).replace(/"/g, '""')}" ${constraint.definition}`),
+      ];
+      return { ddl: `CREATE TABLE "${s.replace(/"/g, '""')}"."${table!.replace(/"/g, '""')}" (\n${lines.join(",\n")}\n);` };
+    }
+    case "mysql": {
+      const d = db || "information_schema";
+      const [rows] = await entry.client.query(`SHOW CREATE TABLE \`${d.replace(/`/g, "``")}\`.\`${table!.replace(/`/g, "``")}\``);
+      const row = (rows as any[])[0] ?? {};
+      return { ddl: row["Create Table"] ?? row["Create View"] ?? "" };
+    }
+    case "sqlite": {
+      const row = entry.client.query("SELECT sql FROM sqlite_master WHERE name = ? AND type IN ('table', 'view')").get(table) as any;
+      return { ddl: row?.sql ? `${row.sql};` : "" };
+    }
   }
 }
 
@@ -395,11 +452,15 @@ async function getColumns(
           c.column_name,
           c.data_type,
           c.udt_name,
+          pg_catalog.format_type(a.atttypid, a.atttypmod) AS formatted_type,
           c.is_nullable,
           c.column_default,
           c.ordinal_position,
           CASE WHEN pk.column_name IS NOT NULL THEN 'PRI' ELSE '' END AS column_key
         FROM information_schema.columns c
+        JOIN pg_namespace ns ON ns.nspname = c.table_schema
+        JOIN pg_class cls ON cls.relnamespace = ns.oid AND cls.relname = c.table_name
+        JOIN pg_attribute a ON a.attrelid = cls.oid AND a.attname = c.column_name AND a.attnum > 0
         LEFT JOIN (
           SELECT kcu.column_name
           FROM information_schema.table_constraints tc
@@ -467,9 +528,16 @@ async function getIndexes(
     case "postgres": {
       const s = schema || "public";
       const rows = await entry.client`
-        SELECT indexname, indexdef
-        FROM pg_indexes
-        WHERE schemaname = ${s} AND tablename = ${table!}
+        SELECT p.indexname, p.indexdef,
+          EXISTS (
+            SELECT 1 FROM pg_constraint con
+            JOIN pg_class rel ON rel.oid = con.conrelid
+            JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+            WHERE con.contype = 'p' AND con.conname = p.indexname
+              AND ns.nspname = p.schemaname AND rel.relname = p.tablename
+          ) AS primary
+        FROM pg_indexes p
+        WHERE p.schemaname = ${s} AND p.tablename = ${table!}
       `;
       return { indexes: rows.map((r: any) => ({ ...r })) };
     }
@@ -492,6 +560,7 @@ async function getIndexes(
         indexes.push({
           name: idx.name,
           unique: idx.unique === 1,
+          primary: idx.origin === "pk",
           columns: cols.map((c: any) => c.name),
         });
       }

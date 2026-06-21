@@ -19,6 +19,24 @@ export interface ColumnInfo {
   position: number;
 }
 
+export interface IndexInfo {
+  name: string;
+  columns: string[];
+  unique: boolean;
+  definition?: string;
+  primary?: boolean;
+}
+
+export interface ForeignKeyInfo {
+  name: string;
+  column: string;
+  foreignSchema: string;
+  foreignTable: string;
+  foreignColumn: string;
+  onUpdate?: string;
+  onDelete?: string;
+}
+
 /* ── Sidecar API calls ───────────────────────────────────── */
 
 export async function openConnection(
@@ -152,11 +170,55 @@ export async function fetchColumns(
   return res.columns.map((c: any) => ({
     name: c.column_name ?? c.name ?? "",
     dataType: c.data_type ?? c.dataType ?? "",
-    udtName: c.udt_name ?? c.udtName ?? c.column_type ?? "",
+    udtName: c.formatted_type ?? c.udt_name ?? c.udtName ?? c.column_type ?? "",
     nullable: (c.is_nullable ?? c.nullable ?? "YES") === "YES",
     defaultValue: c.column_default ?? c.defaultValue ?? null,
     isPk: c.column_key === "PRI" || c.isPk === true,
     isFk: c.column_key === "MUL" || c.isFk === true,
     position: c.ordinal_position ?? c.position ?? 0,
   }));
+}
+
+function schemaUrl(connId: string, action: string, db: string, schema: string, table: string) {
+  return `/schema/${connId}/${action}?db=${encodeURIComponent(db)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`;
+}
+
+export async function fetchIndexes(connId: string, db: string, schema: string, table: string): Promise<IndexInfo[]> {
+  const res = await sidecarFetch<{ indexes: any[] }>(schemaUrl(connId, "indexes", db, schema, table));
+  return res.indexes.map((index: any) => {
+    const definition = index.indexdef ?? index.definition;
+    const definitionColumns = typeof definition === "string"
+      ? definition.match(/\((.*)\)/)?.[1]?.split(",").map((part: string) => part.trim().replace(/^['"`]|['"`]$/g, "")) ?? []
+      : [];
+    return {
+      name: index.indexname ?? index.Key_name ?? index.name ?? "",
+      columns: index.columns ?? (index.Column_name ? [index.Column_name] : definitionColumns),
+      unique: index.unique === true || index.Non_unique === 0 || /CREATE\s+UNIQUE\s+INDEX/i.test(definition ?? ""),
+      primary: index.primary === true || index.Key_name === "PRIMARY" || index.origin === "pk",
+      definition,
+    };
+  }).reduce<IndexInfo[]>((all, index) => {
+    const existing = all.find((item) => item.name === index.name);
+    if (existing) existing.columns.push(...index.columns.filter((column: string) => !existing.columns.includes(column)));
+    else all.push(index);
+    return all;
+  }, []);
+}
+
+export async function fetchForeignKeys(connId: string, db: string, schema: string, table: string): Promise<ForeignKeyInfo[]> {
+  const res = await sidecarFetch<{ foreignKeys: any[] }>(schemaUrl(connId, "fks", db, schema, table));
+  return res.foreignKeys.map((fk: any) => ({
+    name: fk.constraint_name ?? `fk_${table}_${fk.column_name}_${fk.id ?? ""}`,
+    column: fk.column_name ?? "",
+    foreignSchema: fk.foreign_table_schema ?? schema,
+    foreignTable: fk.foreign_table_name ?? "",
+    foreignColumn: fk.foreign_column_name ?? "",
+    onUpdate: fk.on_update,
+    onDelete: fk.on_delete,
+  }));
+}
+
+export async function fetchTableDdl(connId: string, db: string, schema: string, table: string): Promise<string> {
+  const res = await sidecarFetch<{ ddl: string }>(schemaUrl(connId, "ddl", db, schema, table));
+  return res.ddl;
 }

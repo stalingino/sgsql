@@ -27,6 +27,7 @@ import { ResultGrid, type SortState, type CellSelection } from "./ResultGrid";
 import { getConfig } from "../lib/config";
 import { HighlightedSQL } from "../lib/highlightSQL";
 import { FilterPanel, type FilterRow, createFilter, buildWhereClause } from "./FilterPanel";
+import { SchemaEditor } from "./SchemaEditor";
 
 interface DataTableProps {
   connectionId: string;
@@ -35,6 +36,8 @@ interface DataTableProps {
   schema: string;
   table: string;
   onCellSelect?: (selection: CellSelection | null) => void;
+  viewMode?: ViewMode;
+  onViewModeChange?: (mode: ViewMode) => void;
 }
 
 const PAGE_SIZE = 50;
@@ -259,12 +262,19 @@ function ResizableTh({
 
 /* ── Main component ────────────────────────────────────── */
 
-export function DataTable({ connectionId, connectionType, db, schema, table, onCellSelect }: DataTableProps) {
-  const [mode, setMode] = useState<ViewMode>("data");
+export function DataTable({ connectionId, connectionType, db, schema, table, onCellSelect, viewMode, onViewModeChange }: DataTableProps) {
+  const [internalMode, setInternalMode] = useState<ViewMode>(viewMode ?? "data");
+  const mode = viewMode ?? internalMode;
+  const changeMode = (next: ViewMode) => {
+    setInternalMode(next);
+    onViewModeChange?.(next);
+    if (next === "structure") onCellSelect?.(null);
+  };
   const [data, setData] = useState<TableRowsResult | null>(null);
   const [columns, setColumns] = useState<ColumnInfo[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [structLoading, setStructLoading] = useState(true);
+  const [structureRevision, setStructureRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -272,6 +282,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   const [appliedWhere, setAppliedWhere] = useState<string>("");
   const [filterRefreshRevision, setFilterRefreshRevision] = useState(0);
   const [sqlPreview, setSqlPreview] = useState(false);
+  const [schemaDdlOpen, setSchemaDdlOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [sort, setSort] = useState<SortState | null>(() => {
     // Initialize from settings default
@@ -384,11 +395,12 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   // Reset offset and sort when table changes
   useEffect(() => {
     setOffset(0);
-    setMode("data");
+    setInternalMode("data");
     setFiltersOpen(false);
     setFilters([]);
     setAppliedWhere("");
     setSqlPreview(false);
+    setSchemaDdlOpen(false);
     // Re-apply default sort from settings
     const defaultOrder = getConfig().settings?.defaultOrderBy?.trim();
     if (defaultOrder) {
@@ -400,6 +412,17 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   }, [connectionId, db, schema, table]);
 
   // Fetch structure (columns) on mount / table change
+  const refreshStructure = useCallback(async () => {
+    setStructLoading(true);
+    try {
+      const cols = await fetchColumns(connectionId, db, schema, table);
+      setColumns(cols.sort((a, b) => a.position - b.position));
+      setStructureRevision((revision) => revision + 1);
+    } finally {
+      setStructLoading(false);
+    }
+  }, [connectionId, db, schema, table]);
+
   useEffect(() => {
     let cancelled = false;
     setStructLoading(true);
@@ -511,9 +534,18 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
             columnMeta={columnMeta}
           />
         ) : (
-          <StructureView
-            columns={columns}
+          <SchemaEditor
+            key={`${connectionId}:${db}:${schema}:${table}:${structureRevision}`}
+            connectionId={connectionId}
+            connectionType={connectionType}
+            db={db}
+            schema={schema}
+            table={table}
+            columns={columns ?? []}
             loading={structLoading}
+            onRefresh={refreshStructure}
+            ddlOpen={schemaDdlOpen}
+            onDdlClose={() => setSchemaDdlOpen(false)}
           />
         )}
       </div>
@@ -540,7 +572,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
         {/* Left: view toggle + row actions */}
         <div className="flex items-center gap-0.5">
           <button
-            onClick={() => setMode("data")}
+            onClick={() => changeMode("data")}
             className={`flex items-center gap-1 px-2 py-0.5 rounded transition-colors cursor-pointer ${
               mode === "data"
                 ? "bg-accent/15 text-accent"
@@ -551,7 +583,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
             Data
           </button>
           <button
-            onClick={() => setMode("structure")}
+            onClick={() => changeMode("structure")}
             className={`flex items-center gap-1 px-2 py-0.5 rounded transition-colors cursor-pointer ${
               mode === "structure"
                 ? "bg-accent/15 text-accent"
@@ -584,6 +616,19 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
                   Delete{selectedRows.size > 1 ? ` (${selectedRows.size})` : ""}
                 </button>
               )}
+            </>
+          )}
+          {mode === "structure" && (
+            <>
+              <div className="w-px h-4 bg-border mx-1" />
+              <button
+                onClick={() => setSchemaDdlOpen(true)}
+                className="flex items-center gap-1 px-2 py-0.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+                title="Show table DDL"
+              >
+                <Code2 size={10} />
+                DDL
+              </button>
             </>
           )}
         </div>
@@ -937,7 +982,7 @@ function DataView({
 
 /* ── Structure View ────────────────────────────────────── */
 
-function StructureView({
+export function StructureView({
   columns,
   loading,
 }: {
