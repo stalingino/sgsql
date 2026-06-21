@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useRef, useState, useMemo } from "react";
-import { Loader2, Play, Sparkles, ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
-import { fetchColumns, type QueryResult } from "../lib/schema";
+import { Loader2, Play, Sparkles, ChevronLeft, ChevronRight, ChevronDown, Columns3, Table2, Layers3 } from "lucide-react";
+import { fetchColumns, fetchSchemas, fetchTables, type ColumnInfo, type QueryResult } from "../lib/schema";
 import { useQueryLog } from "../lib/queryLog";
 import { useExecutionQueue } from "../lib/executionQueue";
 import { useEditStore } from "../lib/editStore";
+import {
+  buildSqlCompletions,
+  catalogTableKey,
+  findTableReferences,
+  getCompletionTarget,
+  type CatalogTable,
+  type SqlCompletion,
+} from "../lib/sqlAutocomplete";
 import { HighlightedSQL } from "../lib/highlightSQL";
 import { ResultGrid, type CellSelection } from "./ResultGrid";
 
@@ -181,6 +189,22 @@ function beautifySql(sql: string): string {
   return out.trim();
 }
 
+function defaultAutocompleteSchema(type: QueryEditorProps["connectionType"]): string {
+  if (type === "postgres") return "public";
+  if (type === "sqlite") return "main";
+  return "";
+}
+
+function completionPopupPosition(textarea: HTMLTextAreaElement, value: string, cursor: number) {
+  const before = value.slice(0, cursor);
+  const lines = before.split("\n");
+  const column = (lines[lines.length - 1] ?? "").replace(/\t/g, "  ").length;
+  const left = Math.max(8, Math.min(textarea.clientWidth - 270, 12 + column * 7.8 - textarea.scrollLeft));
+  const naturalTop = 12 + lines.length * 19 - textarea.scrollTop;
+  const top = Math.max(26, Math.min(textarea.clientHeight - 150, naturalTop));
+  return { left, top };
+}
+
 /* ── Component ──────────────────────────────────────────── */
 
 export function QueryEditor({ connectionId, connectionType, activeDb, initialSql = "", onSqlChange, onCellSelect }: QueryEditorProps) {
@@ -194,6 +218,13 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   const [cursorPos, setCursorPos] = useState(0);
   const [editorHeight, setEditorHeight] = useState(120);
   const [editableContext, setEditableContext] = useState<EditableTableContext | null>(null);
+  const [catalog, setCatalog] = useState<CatalogTable[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [columnRevision, setColumnRevision] = useState(0);
+  const [completionOpen, setCompletionOpen] = useState(false);
+  const [completionForced, setCompletionForced] = useState(false);
+  const [completionIndex, setCompletionIndex] = useState(0);
+  const [completionPosition, setCompletionPosition] = useState({ left: 12, top: 32 });
   const dataRevision = useEditStore((s) => s.dataRevision);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -207,6 +238,9 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   const selectedResultRef = useRef<CellSelection | null>(null);
   const lastDataRevisionRef = useRef(dataRevision);
   const editableContextRef = useRef<EditableTableContext | null>(null);
+  const columnCacheRef = useRef<Map<string, ColumnInfo[]>>(new Map());
+  const pendingColumnsRef = useRef<Set<string>>(new Set());
+  const metadataGenerationRef = useRef(0);
 
   const addLogEntryRef = useRef(useQueryLog.getState().addEntry);
   addLogEntryRef.current = useQueryLog.getState().addEntry;
@@ -215,6 +249,45 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   useEffect(() => {
     textareaRef.current?.focus();
   }, []);
+
+  // Load relation metadata up front. Column metadata remains lazy and is only
+  // requested for relations referenced by the active statement.
+  useEffect(() => {
+    let cancelled = false;
+    const fallbackSchema = defaultAutocompleteSchema(connectionType);
+    setCatalog([]);
+    setCatalogLoading(true);
+    columnCacheRef.current = new Map();
+    pendingColumnsRef.current = new Set();
+    metadataGenerationRef.current += 1;
+    setColumnRevision((revision) => revision + 1);
+
+    (async () => {
+      let schemas = [fallbackSchema];
+      if (connectionType === "postgres") {
+        try {
+          const loaded = await fetchSchemas(connectionId, activeDb);
+          if (loaded.length > 0) schemas = loaded;
+        } catch {
+          // Keep public-schema autocomplete available if schema enumeration fails.
+        }
+      }
+
+      const groups = await Promise.all(schemas.map(async (schema) => {
+        try {
+          const tables = await fetchTables(connectionId, activeDb, schema);
+          return tables.map((table): CatalogTable => ({ ...table, db: activeDb, schema }));
+        } catch {
+          return [];
+        }
+      }));
+      if (!cancelled) setCatalog(groups.flat());
+    })().finally(() => {
+      if (!cancelled) setCatalogLoading(false);
+    });
+
+    return () => { cancelled = true; };
+  }, [connectionId, connectionType, activeDb]);
 
   // Close limit menu on outside click
   useEffect(() => {
@@ -233,6 +306,51 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
     if (!sql.trim()) return null;
     return getStatementRange(sql, cursorPos);
   }, [sql, cursorPos]);
+
+  const defaultSchema = defaultAutocompleteSchema(connectionType);
+  const activeStatement = useMemo(() => getStatementAtCursor(sql, cursorPos), [sql, cursorPos]);
+  const tableReferences = useMemo(
+    () => findTableReferences(activeStatement, catalog, defaultSchema),
+    [activeStatement, catalog, defaultSchema],
+  );
+
+  useEffect(() => {
+    const generation = metadataGenerationRef.current;
+    const pending = pendingColumnsRef.current;
+    for (const table of tableReferences) {
+      const key = catalogTableKey(table);
+      if (columnCacheRef.current.has(key) || pending.has(key)) continue;
+      pending.add(key);
+      fetchColumns(connectionId, table.db, table.schema, table.name)
+        .then((columns) => {
+          if (generation !== metadataGenerationRef.current) return;
+          columnCacheRef.current.set(key, columns);
+          setColumnRevision((revision) => revision + 1);
+        })
+        .catch(() => {})
+        .finally(() => pending.delete(key));
+    }
+  }, [connectionId, tableReferences]);
+
+  const completionTarget = useMemo(
+    () => getCompletionTarget(sql, cursorPos, completionForced),
+    [sql, cursorPos, completionForced],
+  );
+  const completions = useMemo(
+    () => buildSqlCompletions({
+      target: completionTarget,
+      catalog,
+      references: tableReferences,
+      columnsByTable: columnCacheRef.current,
+      defaultSchema,
+      dialect: connectionType,
+    }),
+    [completionTarget, catalog, tableReferences, defaultSchema, connectionType, columnRevision],
+  );
+
+  useEffect(() => {
+    setCompletionIndex((index) => Math.min(index, Math.max(0, completions.length - 1)));
+  }, [completions.length]);
 
   const resolveEditableContext = useCallback(async (
     executedSql: string,
@@ -438,24 +556,74 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
     return () => { cancelled = true; };
   }, [dataRevision, connectionId, activeDb, execQueue, resolveEditableContext, publishRefreshedSelection]);
 
+  const applyCompletion = useCallback((completion: SqlCompletion) => {
+    const nextSql = sql.slice(0, completionTarget.replaceStart) + completion.insertText + sql.slice(completionTarget.replaceEnd);
+    const nextCursor = completionTarget.replaceStart + completion.insertText.length;
+    setSql(nextSql);
+    setCursorPos(nextCursor);
+    setCompletionOpen(false);
+    setCompletionForced(false);
+    onSqlChangeRef.current?.(nextSql);
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(nextCursor, nextCursor);
+    });
+  }, [sql, completionTarget]);
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
+      setCompletionOpen(false);
       runQuery();
+      return;
     }
-  }, [runQuery]);
+    if ((e.metaKey || e.ctrlKey) && e.key === " ") {
+      e.preventDefault();
+      const textarea = textareaRef.current;
+      if (textarea) setCompletionPosition(completionPopupPosition(textarea, sql, textarea.selectionStart));
+      setCompletionForced(true);
+      setCompletionOpen(true);
+      setCompletionIndex(0);
+      return;
+    }
+    if (!completionOpen) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setCompletionIndex((index) => completions.length ? (index + 1) % completions.length : 0);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setCompletionIndex((index) => completions.length ? (index - 1 + completions.length) % completions.length : 0);
+    } else if ((e.key === "Enter" || e.key === "Tab") && completions[completionIndex]) {
+      e.preventDefault();
+      applyCompletion(completions[completionIndex]);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setCompletionOpen(false);
+      setCompletionForced(false);
+    }
+  }, [runQuery, completionOpen, completions, completionIndex, applyCompletion, sql]);
 
   const handleBeautify = useCallback(() => {
     const beautified = beautifySql(sql);
     setSql(beautified);
+    setCompletionOpen(false);
+    setCompletionForced(false);
     onSqlChangeRef.current?.(beautified);
   }, [sql]);
 
   const handleCursorChange = useCallback(() => {
-    if (textareaRef.current) {
-      setCursorPos(textareaRef.current.selectionStart);
-    }
-  }, []);
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const position = textarea.selectionStart;
+    const target = getCompletionTarget(sql, position);
+    setCursorPos(position);
+    setCompletionForced(false);
+    setCompletionOpen(target.shouldOpen);
+    setCompletionIndex(0);
+    setCompletionPosition(completionPopupPosition(textarea, sql, position));
+  }, [sql]);
 
   // Resizable editor pane
   const onDragStart = useCallback((e: React.MouseEvent) => {
@@ -511,23 +679,80 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
             value={sql}
             onChange={(e) => {
               const val = e.target.value;
+              const position = e.target.selectionStart;
+              const target = getCompletionTarget(val, position);
               setSql(val);
               onSqlChangeRef.current?.(val);
-              setCursorPos(e.target.selectionStart);
+              setCursorPos(position);
+              setCompletionForced(false);
+              setCompletionOpen(target.shouldOpen);
+              setCompletionIndex(0);
+              setCompletionPosition(completionPopupPosition(e.target, val, position));
               // Sync scroll
               if (preRef.current) preRef.current.scrollTop = e.target.scrollTop;
             }}
             onScroll={(e) => {
-              if (preRef.current) preRef.current.scrollTop = (e.target as HTMLTextAreaElement).scrollTop;
+              const textarea = e.target as HTMLTextAreaElement;
+              if (preRef.current) preRef.current.scrollTop = textarea.scrollTop;
+              setCompletionPosition(completionPopupPosition(textarea, sql, textarea.selectionStart));
             }}
             onClick={handleCursorChange}
-            onKeyUp={handleCursorChange}
+            onKeyUp={(e) => {
+              if (["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape", " "].includes(e.key)) return;
+              handleCursorChange();
+            }}
             onKeyDown={handleKeyDown}
+            onBlur={(e) => {
+              if ((e.relatedTarget as HTMLElement | null)?.closest("[data-sql-completion]")) return;
+              setCompletionOpen(false);
+              setCompletionForced(false);
+            }}
             placeholder="Enter SQL query... (Ctrl+Enter to run)"
             spellCheck={false}
             className="absolute inset-0 w-full h-full bg-transparent text-text-primary caret-text-primary text-[13px] font-mono p-3 outline-none placeholder-text-muted z-10 resize-none"
             style={{ caretColor: "var(--color-text-primary)", color: "transparent" }}
           />
+          {completionOpen && (completions.length > 0 || completionForced || catalogLoading) && (
+            <div
+              data-sql-completion
+              className="absolute z-30 w-[270px] max-h-52 overflow-y-auto rounded-md border border-border bg-bg-primary shadow-2xl py-1 text-[12px] no-select"
+              style={{ left: completionPosition.left, top: completionPosition.top }}
+              onMouseDown={(e) => e.preventDefault()}
+            >
+              {completions.map((completion, index) => (
+                <button
+                  key={completion.key}
+                  type="button"
+                  className={`flex items-center gap-2 w-full px-2.5 py-1.5 text-left cursor-pointer ${
+                    index === completionIndex ? "bg-accent/15 text-text-primary" : "hover:bg-bg-hover text-text-secondary"
+                  }`}
+                  onMouseEnter={() => setCompletionIndex(index)}
+                  onClick={() => applyCompletion(completion)}
+                >
+                  {completion.kind === "column" ? (
+                    <Columns3 size={12} className="shrink-0 text-accent" />
+                  ) : completion.kind === "schema" ? (
+                    <Layers3 size={12} className="shrink-0 text-purple-400" />
+                  ) : (
+                    <Table2 size={12} className="shrink-0 text-sky-400" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate font-mono">{completion.label}</span>
+                  <span className="max-w-[110px] truncate text-[10px] text-text-muted">{completion.detail}</span>
+                </button>
+              ))}
+              {completions.length === 0 && (
+                <div className="flex items-center gap-2 px-3 py-2 text-text-muted">
+                  {catalogLoading && <Loader2 size={11} className="animate-spin" />}
+                  {catalogLoading ? "Loading schema metadata…" : "No schema suggestions"}
+                </div>
+              )}
+              {completions.length > 0 && (
+                <div className="px-2.5 pt-1.5 pb-1 text-[9px] text-text-muted border-t border-border mt-1">
+                  ↑↓ select · Enter/Tab insert · Esc close · Ctrl+Space open
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

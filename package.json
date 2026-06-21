@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test": "bun test",
     "preview": "vite preview",
     "tauri": "tauri",
     "sidecar:build": "bun build --compile sidecar/index.ts --outfile src-tauri/binaries/dbsidecar-aarch64-apple-darwin && codesign --remove-signature src-tauri/binaries/dbsidecar-aarch64-apple-darwin && codesign --force --sign - --entitlements src-tauri/sidecar-entitlements.plist src-tauri/binaries/dbsidecar-aarch64-apple-darwin"

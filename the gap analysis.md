@@ -1,47 +1,171 @@
-the gap analysis — Phases 1-3 are essentially complete, Phases 4-5 have notable gaps:
+# sgsql gap analysis
 
-Phase 1 — Scaffold & Sidecar ✅ Complete
-All 4 deliverables done. Sidecar spawns, port 45821, dev mode detection, clean shutdown.
+Updated: 2026-06-21
 
-Phase 2 — Connection Manager ✅ Complete
-All 4 deliverables done. Add/edit/delete profiles, AES-256-GCM encryption, OS keychain for passwords, test connection with feedback.
+Scope: implementation compared with `sgsql-plan.md`. Status is based on source inspection and a successful `bun run build`; database-specific behavior was not exercised against live PostgreSQL, MySQL, or SQLite instances.
 
-Phase 3 — Schema Browser ✅ Mostly Complete
-✅ Tree renders for Postgres, MySQL, SQLite
-✅ Lazy loading (databases on mount, tables on db click)
-✅ Columns show type, nullable, default, PK/FK badges (in Structure view)
-⚠️ Context menu on tables — only DB tabs have right-click menu (remove). Tables have no context menu for: Copy name, View DDL, Truncate, Drop
-Phase 4 — Table Data Viewer 🔴 Major Gaps
-✅ Pagination (100 rows/page)
-✅ NULL rendering (gray italic)
-❌ Sort by column header click — no sort ✅
-❌ Filter builder — no WHERE clause UI
-❌ Inline cell editing — cells are read-only ✅
-❌ Add row / delete row
-❌ Export to CSV / JSON
-❌ JSON cell expand modal — objects just stringify inline
-Phase 5 — SQL Editor 🟡 Partial
-✅ Custom editor with syntax highlighting (textarea + pre overlay)
-✅ Ctrl+Enter runs statement at cursor
-✅ Execution time + row count display
-✅ Statement-at-cursor detection, selection-based execution
-✅ Beautify, row limit dropdown
-❌ Schema-aware autocomplete — no autocomplete at all
-❌ Multi-result tabs — single result view only
-❌ Error highlighting in editor — errors show below, no line markers
-❌ Query history UI (Cmd+H) — log exists but no browsable history panel
-❌ Save/load named queries
-Priority ranking (by user impact):
-#	Feature	Phase	Impact
-1	Sort by column header	4	High — basic table browsing
-2	Inline cell editing + Apply/Discard	4	High — core CRUD
-3	Table context menu (Copy name, DDL, etc.)	3	Medium
-4	Export CSV/JSON	4	Medium
-5	Schema-aware autocomplete	5	High — editor usability
-6	Filter builder	4	Medium
-7	Add/delete row	4	Medium
-8	Query history UI	5	Low-medium
-9	JSON cell expand modal	4	Low
-10	Multi-result tabs	5	Low
-11	Error line highlighting	5	Low
-12	Save/load named queries	5	Low
+## Summary
+
+Phases 1 and 2 are substantially complete. Phase 4 has also progressed significantly and now contains the core staged CRUD workflow. The largest product gaps are the incomplete schema hierarchy in Phase 3, file export and JSON expansion in Phase 4, and most of the planned editor workflow in Phase 5.
+
+| Phase | Status | Main remaining gap |
+|---|---|---|
+| 1 — Scaffold and sidecar | ✅ Substantially complete | Cross-platform sidecar packaging belongs to Phase 8 |
+| 2 — Connection manager | ✅ Substantially complete | Runtime coverage across all database types is not automated |
+| 3 — Schema browser | 🟡 Partial | No schema level or table context actions |
+| 4 — Table data viewer | 🟢 Mostly complete | No downloadable export or JSON expand modal |
+| 5 — SQL editor | 🟡 Partial | No Monaco, multi-result tabs, error markers, or saved queries |
+| 6 — Schema editor | 🔴 Not started | DDL editing and management UI are absent |
+| 7 — UI polish | 🟡 Partial | Tab reordering, full shortcuts, and EXPLAIN are absent |
+| 8 — Distribution | 🔴 Early | Apple Silicon local build only; no release pipeline |
+
+## Phase 1 — Scaffold and sidecar
+
+Status: ✅ Substantially complete
+
+- Tauri launches the Bun sidecar and waits for its health endpoint.
+- Production ports are selected from `7521`–`7530`; direct development uses `45821`.
+- The selected port is exposed to the frontend and covered by the CSP.
+- Sidecar and database connections are cleaned up on application shutdown.
+
+Remaining concern:
+
+- The configured sidecar artifact is Apple Silicon-specific. Other macOS architectures, Windows, and Linux are Phase 8 work.
+
+## Phase 2 — Connection manager
+
+Status: ✅ Substantially complete
+
+- Add, edit, delete, filter, and test connection profiles are implemented.
+- PostgreSQL, MySQL, and SQLite profiles are supported.
+- Profiles persist in the encrypted Tauri store.
+- Passwords are kept in the OS keychain rather than in the profile store.
+- Connection URL parsing and environment/color labels are implemented.
+- Connection errors are converted to user-facing messages.
+
+Remaining concern:
+
+- There is no automated integration suite proving save/load/test behavior for every database type.
+
+## Phase 3 — Schema browser
+
+Status: 🟡 Partial
+
+Implemented:
+
+- Database tabs and a searchable table/view list.
+- Table metadata loading for PostgreSQL, MySQL, and SQLite.
+- Column metadata with type, nullable, default, primary-key, and foreign-key indicators in the table Structure view.
+- Lazy loading and caching of tables per selected database; columns load when a table opens.
+
+Gaps:
+
+- The planned hierarchy `database → schema → table/view → column` is not present.
+- PostgreSQL is fixed to the `public` schema in the UI, so tables in other schemas cannot be browsed.
+- Columns are not expandable children in the schema browser.
+- Table/view right-click actions are absent: Copy name, View DDL, Truncate, and Drop.
+- Foreign-key columns do not navigate to the referenced table.
+- The only current schema-area context menu removes a database tab.
+
+## Phase 4 — Table data viewer
+
+Status: 🟢 Mostly complete
+
+Implemented:
+
+- Server-side pagination at 100 rows per page.
+- Header-click sorting with ascending, descending, and cleared states.
+- Structured filter builder, raw SQL mode, generated-SQL preview, apply, and clear.
+- Staged cell updates through the detail panel with type-aware inputs and dirty-state highlighting.
+- Staged row insertion and primary-key-based deletion.
+- Apply, discard, undo, and change-history workflows for pending updates, inserts, and deletes.
+- NULL rendering, row selection, column resizing, and client-side copy actions.
+- Copy selected rows as JSON, CSV, CSV with headers, HTML, Markdown, plain text, or INSERT SQL.
+
+Gaps:
+
+- CSV/JSON support copies data to the clipboard; it does not export a downloadable file or a complete table result.
+- JSON values render inline and can be viewed as formatted text in the detail panel, but there is no dedicated expand modal.
+- Editing occurs in the detail panel rather than directly inside grid cells. The staged editing outcome exists, but it does not match the plan's literal inline-grid interaction.
+- Foreign-key values are not clickable navigation links.
+- The implementation uses a custom grid rather than AG Grid. This is only a gap if AG Grid remains a product requirement.
+
+## Phase 5 — SQL editor
+
+Status: 🟡 Partial
+
+Implemented:
+
+- Custom textarea editor with a syntax-highlight overlay.
+- Selection execution and statement-at-cursor execution with `Cmd/Ctrl+Enter`.
+- Schema-aware table/view autocomplete across PostgreSQL schemas, plus lazy column autocomplete for relations referenced by the active statement. Alias-qualified completion and `Ctrl+Space` are supported.
+- Beautify action and row-limit selection.
+- Execution time, affected-row count, result row count, pagination, cancellation, and error display.
+- Query results can participate in staged editing when a safe single-table context and primary key can be inferred.
+- An in-memory query console exists for the current session.
+
+Gaps:
+
+- Monaco is not installed or used.
+- No separate results per statement and no multi-result tabs.
+- No editor line/column error markers.
+- Query history is not the planned persistent, per-connection last-500 history and has no `Cmd+H` workflow. Logging is enabled only while the console is visible.
+- No save/load named-query workflow. `Cmd/Ctrl+S` currently applies pending data changes.
+- No `Cmd/Ctrl+Shift+Enter` run-all workflow.
+
+## Phases 6–8
+
+### Phase 6 — Schema editor
+
+Status: 🔴 Not started
+
+There is a read-only Structure view, but no column editor, ALTER TABLE generation, index manager, foreign-key editor, or View DDL modal.
+
+### Phase 7 — UI polish
+
+Status: 🟡 Partial
+
+Implemented: multiple connections with color/environment cues, connection/database/content tabs, command palette, light/dark/system themes, resizable panels, window-state persistence, query cancellation, and several keyboard shortcuts.
+
+Remaining: drag-reorderable tabs, the complete planned shortcut set, persisted tab/workspace state, saved-query integration in the command palette, and an EXPLAIN visualizer.
+
+### Phase 8 — Packaging and distribution
+
+Status: 🔴 Early
+
+Local Apple Silicon sidecar compilation and Tauri bundling are documented. Intel/universal macOS, Windows, Linux, signing/notarization, auto-update, and CI/CD release automation remain.
+
+## Recommended next work
+
+### 1. Add real schema selection to the browser
+
+This is the highest-leverage next fix. Add a schema level for PostgreSQL, carry the selected schema through table tabs and queries, and stop assuming `public`. This fixes access to non-public schemas and supplies the metadata model needed for autocomplete and future DDL tooling.
+
+Suggested acceptance criteria:
+
+- PostgreSQL schemas are listed per database and can be expanded or selected.
+- Tables and views load for the selected schema.
+- Opening two same-named tables from different schemas creates distinct tabs and queries the correct object.
+- MySQL and SQLite retain their simpler database/table behavior.
+
+### 2. Add table context actions
+
+Start with Copy qualified name and View DDL. They are bounded, high-frequency actions and naturally build on the schema identity work. Put Truncate and Drop behind explicit confirmation and environment-aware warnings.
+
+### 3. Add file export
+
+Reuse the existing CSV/JSON serializers, add a save-file flow, and distinguish selected rows/current page/all rows. “All rows” should stream or page through results instead of loading an unbounded table into memory.
+
+### 4. Add multi-result execution
+
+Split run-all execution into individual statements and retain one result or error panel per statement. This is higher value than migrating the working custom editor to Monaco solely to match the original stack choice.
+
+### 5. Make query history durable
+
+Log regardless of console visibility, cap entries, scope them per connection, persist them, and add the planned `Cmd/Ctrl+H` browser. Resolve the `Cmd/Ctrl+S` conflict before implementing saved queries.
+
+## Engineering gaps
+
+- `bun run build` succeeds.
+- A focused unit test covers schema-qualified table suggestions and alias-qualified column suggestions; broader database integration coverage is still absent.
+- The next feature should include focused tests for identifier quoting and schema-qualified object selection, because those paths vary by database dialect and are easy to regress.
