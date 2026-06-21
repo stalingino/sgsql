@@ -61,11 +61,32 @@
   cursor: text;
 }
 
+/* Selectable content must not highlight while a panel divider is dragged. */
+body.is-resizing,
+body.is-resizing * {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  cursor: inherit !important;
+}
+
 body {
   background: var(--color-bg-primary);
   color: var(--color-text-primary);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   overflow: hidden;
+}
+
+/* Enabled compact controls should remain legible at a glance. Disabled
+   controls retain their intentional faded state. */
+button:not(:disabled).text-text-muted,
+button:not(:disabled).text-text-secondary,
+button:not(:disabled) .text-text-muted,
+button:not(:disabled) .text-text-secondary {
+  color: var(--color-text-primary) !important;
+}
+
+button:not(:disabled).hover\:text-error:hover {
+  color: var(--color-error) !important;
 }
 
 .input-field {

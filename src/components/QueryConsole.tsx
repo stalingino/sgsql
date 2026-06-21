@@ -16,7 +16,7 @@ export function QueryConsole() {
   return (
     <div className="flex flex-col h-full min-h-0 selectable">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-1 border-b border-border bg-bg-secondary shrink-0">
+      <div className="flex items-center justify-between h-8 px-3 border-b border-border bg-bg-secondary shrink-0">
         <span className="text-[11px] font-semibold text-text-secondary uppercase tracking-wider">
           Query Log
         </span>
@@ -112,4 +112,3 @@ function LogEntry({ entry }: { entry: QueryLogEntry }) {
     </div>
   );
 }
-

@@ -1,40 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Save, Undo2, X, Loader2, Plus, Trash2 } from "lucide-react";
+import { useCallback, useState } from "react";
+import { Save, Undo2, Loader2, Plus, Trash2 } from "lucide-react";
 import { useEditStore, SqlExpression, type CellChange, type RowKey, type PendingInsert, type PendingDelete } from "../lib/editStore";
 import { useExecutionQueue } from "../lib/executionQueue";
 
-interface ChangeHistoryPopupProps {
-  onClose: () => void;
-}
-
-export function ChangeHistoryPopup({ onClose }: ChangeHistoryPopupProps) {
+export function ChangeHistoryPanel() {
   const changes = useEditStore((s) => s.changes);
   const inserts = useEditStore((s) => s.inserts);
   const deletes = useEditStore((s) => s.deletes);
   const allChanges = useEditStore.getState().getAllChanges();
-  const popupRef = useRef<HTMLDivElement>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Close on outside click
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (popupRef.current && !popupRef.current.contains(e.target as Node)) {
-        onClose();
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [onClose]);
-
-  // Close on Escape
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [onClose]);
 
   // Group cell changes by row
   const groupedByRow = groupChangesByRow(allChanges);
@@ -88,20 +63,13 @@ export function ChangeHistoryPopup({ onClose }: ChangeHistoryPopupProps) {
   }, []);
 
   const totalCount = changes.size + inserts.length + deletes.size;
-  if (totalCount === 0) {
-    onClose();
-    return null;
-  }
 
   return (
-    <div
-      ref={popupRef}
-      className="absolute right-12 top-10 w-[420px] max-h-[480px] rounded-lg border border-border bg-bg-primary shadow-2xl z-[100] flex flex-col"
-    >
+    <div className="flex flex-col h-full min-h-0 selectable bg-bg-primary">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-bg-secondary rounded-t-lg">
+      <div className="flex items-center justify-between h-8 px-3 border-b border-border bg-bg-secondary shrink-0">
         <div className="flex items-center gap-2">
-          <span className="text-[12px] font-semibold text-text-primary">
+          <span className="text-[11px] font-semibold text-text-secondary uppercase tracking-wider">
             Pending Changes
           </span>
           <span className="text-[10px] text-text-muted px-1.5 py-0.5 rounded-full bg-warning/15 text-warning font-semibold">
@@ -111,7 +79,7 @@ export function ChangeHistoryPopup({ onClose }: ChangeHistoryPopupProps) {
         <div className="flex items-center gap-1">
           <button
             onClick={handleRevertAll}
-            disabled={saving}
+            disabled={saving || totalCount === 0}
             className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer disabled:opacity-40"
           >
             <Undo2 size={10} />
@@ -119,17 +87,11 @@ export function ChangeHistoryPopup({ onClose }: ChangeHistoryPopupProps) {
           </button>
           <button
             onClick={handleSaveAll}
-            disabled={saving}
+            disabled={saving || totalCount === 0}
             className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium text-success hover:bg-success/10 transition-colors cursor-pointer disabled:opacity-40"
           >
             {saving ? <Loader2 size={10} className="animate-spin" /> : <Save size={10} />}
             Save All
-          </button>
-          <button
-            onClick={onClose}
-            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
-          >
-            <X size={12} />
           </button>
         </div>
       </div>
@@ -143,6 +105,11 @@ export function ChangeHistoryPopup({ onClose }: ChangeHistoryPopupProps) {
 
       {/* Changes list */}
       <div className="flex-1 overflow-y-auto min-h-0">
+        {totalCount === 0 && (
+          <div className="flex items-center justify-center h-full text-text-muted text-[11px]">
+            No pending changes
+          </div>
+        )}
         {/* Cell changes grouped by row */}
         {groupedByRow.map((group) => (
           <RowChangeGroup

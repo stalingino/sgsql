@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { Loader2, Play, Sparkles, ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
-import { type QueryResult } from "../lib/schema";
+import { fetchColumns, type QueryResult } from "../lib/schema";
 import { useQueryLog } from "../lib/queryLog";
 import { useExecutionQueue } from "../lib/executionQueue";
+import { useEditStore } from "../lib/editStore";
 import { HighlightedSQL } from "../lib/highlightSQL";
 import { ResultGrid, type CellSelection } from "./ResultGrid";
 
 interface QueryEditorProps {
   connectionId: string;
+  connectionType: "postgres" | "mysql" | "sqlite";
   activeDb: string;
   initialSql?: string;
   onSqlChange?: (sql: string) => void;
@@ -25,6 +27,13 @@ const ROW_LIMITS = [
   { value: 500, label: "500 rows" },
   { value: 0, label: "No limit" },
 ];
+
+type EditableTableContext = NonNullable<CellSelection["tableContext"]>;
+
+interface MysqlTableSource {
+  db: string;
+  table: string;
+}
 
 /* ── Helpers ────────────────────────────────────────────── */
 
@@ -83,6 +92,43 @@ function getStatementRange(sql: string, cursorPos: number): [number, number] {
   return [0, sql.length];
 }
 
+/**
+ * Resolve the one source table for a conservative subset of MySQL SELECTs.
+ * Anything ambiguous stays read-only; false negatives are safer than writing
+ * to the wrong table.
+ */
+function parseEditableMysqlSource(sql: string, activeDb: string): MysqlTableSource | null {
+  if (!/^\s*SELECT\b/i.test(sql)) return null;
+  if (/\b(?:JOIN|UNION|GROUP\s+BY|HAVING|DISTINCT|INTO|PROCEDURE)\b/i.test(sql)) return null;
+
+  const fromMatch = /\bFROM\b/i.exec(sql);
+  if (!fromMatch) return null;
+
+  const projection = sql.slice(sql.search(/\bSELECT\b/i) + 6, fromMatch.index);
+  if (/\bSELECT\b/i.test(projection)) return null;
+
+  const afterFrom = sql.slice(fromMatch.index + fromMatch[0].length);
+  const boundary = /\b(?:WHERE|ORDER\s+BY|LIMIT|OFFSET|FOR\s+UPDATE|LOCK\s+IN\s+SHARE\s+MODE)\b|;/i.exec(afterFrom);
+  const sourceClause = (boundary ? afterFrom.slice(0, boundary.index) : afterFrom).trim();
+  if (!sourceClause || sourceClause.startsWith("(") || sourceClause.includes(",")) return null;
+
+  const ident = "(?:`(?:``|[^`])+`|[A-Za-z_$][\\w$]*)";
+  const sourcePattern = new RegExp(
+    `^(${ident})(?:\\s*\\.\\s*(${ident}))?(?:\\s+(?:AS\\s+)?${ident})?$`,
+    "i",
+  );
+  const match = sourcePattern.exec(sourceClause);
+  if (!match) return null;
+
+  const unquote = (value: string) =>
+    value.startsWith("`") ? value.slice(1, -1).replace(/``/g, "`") : value;
+  const first = unquote(match[1]);
+  const second = match[2] ? unquote(match[2]) : null;
+  return second
+    ? { db: first, table: second }
+    : { db: activeDb, table: first };
+}
+
 /** Simple SQL beautifier — uppercase keywords, normalize whitespace. */
 function beautifySql(sql: string): string {
   const keywords = [
@@ -137,7 +183,7 @@ function beautifySql(sql: string): string {
 
 /* ── Component ──────────────────────────────────────────── */
 
-export function QueryEditor({ connectionId, activeDb, initialSql = "", onSqlChange, onCellSelect }: QueryEditorProps) {
+export function QueryEditor({ connectionId, connectionType, activeDb, initialSql = "", onSqlChange, onCellSelect }: QueryEditorProps) {
   const [sql, setSql] = useState(initialSql);
   const [result, setResult] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -147,6 +193,8 @@ export function QueryEditor({ connectionId, activeDb, initialSql = "", onSqlChan
   const [showLimitMenu, setShowLimitMenu] = useState(false);
   const [cursorPos, setCursorPos] = useState(0);
   const [editorHeight, setEditorHeight] = useState(120);
+  const [editableContext, setEditableContext] = useState<EditableTableContext | null>(null);
+  const dataRevision = useEditStore((s) => s.dataRevision);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const preRef = useRef<HTMLPreElement>(null);
@@ -155,6 +203,10 @@ export function QueryEditor({ connectionId, activeDb, initialSql = "", onSqlChan
   const execQueue = useExecutionQueue((s) => s.execute);
   const limitMenuRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
+  const lastExecutedQueryRef = useRef<string | null>(null);
+  const selectedResultRef = useRef<CellSelection | null>(null);
+  const lastDataRevisionRef = useRef(dataRevision);
+  const editableContextRef = useRef<EditableTableContext | null>(null);
 
   const addLogEntryRef = useRef(useQueryLog.getState().addEntry);
   addLogEntryRef.current = useQueryLog.getState().addEntry;
@@ -181,6 +233,95 @@ export function QueryEditor({ connectionId, activeDb, initialSql = "", onSqlChan
     if (!sql.trim()) return null;
     return getStatementRange(sql, cursorPos);
   }, [sql, cursorPos]);
+
+  const resolveEditableContext = useCallback(async (
+    executedSql: string,
+    queryResult: QueryResult,
+  ): Promise<EditableTableContext | null> => {
+    if (connectionType !== "mysql" || !queryResult.columns?.length) return null;
+    const source = parseEditableMysqlSource(executedSql, activeDb);
+    if (!source?.db) return null;
+
+    try {
+      const metadata = await fetchColumns(connectionId, source.db, "", source.table);
+      const sourceColumns = new Set(metadata.map((column) => column.name));
+      const resultColumns = queryResult.columns;
+      const pkColumns = metadata.filter((column) => column.isPk).map((column) => column.name);
+
+      // Aliases, expressions, duplicate names, and missing PK values make a
+      // result unsafe to map back to one source row.
+      if (pkColumns.length === 0) return null;
+      if (new Set(resultColumns).size !== resultColumns.length) return null;
+      if (resultColumns.some((column) => !sourceColumns.has(column))) return null;
+      if (pkColumns.some((column) => !resultColumns.includes(column))) return null;
+
+      return {
+        connectionId,
+        connectionType,
+        db: source.db,
+        schema: "",
+        table: source.table,
+        pkColumns,
+        columnMeta: metadata.map((column) => ({
+          name: column.name,
+          dataType: column.dataType,
+          udtName: column.udtName,
+          defaultValue: column.defaultValue,
+        })),
+      };
+    } catch {
+      return null;
+    }
+  }, [connectionId, connectionType, activeDb]);
+
+  const publishRefreshedSelection = useCallback((
+    queryResult: QueryResult,
+    context: EditableTableContext | null,
+  ) => {
+    const previous = selectedResultRef.current;
+    if (!previous || !context) return;
+
+    const oldPkIndexes = context.pkColumns.map((pk) => previous.columns.indexOf(pk));
+    const newPkIndexes = context.pkColumns.map((pk) => queryResult.columns.indexOf(pk));
+    if (oldPkIndexes.some((index) => index < 0) || newPkIndexes.some((index) => index < 0)) {
+      selectedResultRef.current = null;
+      onCellSelect?.(null);
+      return;
+    }
+
+    const pkValues = oldPkIndexes.map((index) => previous.row[index]);
+    const resultIndex = queryResult.rows.findIndex((row) =>
+      newPkIndexes.every((columnIndex, index) => Object.is(row[columnIndex], pkValues[index])),
+    );
+    if (resultIndex < 0) {
+      selectedResultRef.current = null;
+      onCellSelect?.(null);
+      return;
+    }
+
+    const refreshed: CellSelection = {
+      ...previous,
+      rowIndex: resultIndex - offset,
+      row: queryResult.rows[resultIndex],
+      columns: queryResult.columns,
+      tableContext: context,
+    };
+    selectedResultRef.current = refreshed;
+    onCellSelect?.(refreshed);
+  }, [offset, onCellSelect]);
+
+  const handleResultCellSelect = useCallback((selection: CellSelection | null) => {
+    if (!selection) {
+      selectedResultRef.current = null;
+      onCellSelect?.(null);
+      return;
+    }
+    const enriched = editableContext
+      ? { ...selection, tableContext: editableContext }
+      : selection;
+    selectedResultRef.current = enriched;
+    onCellSelect?.(enriched);
+  }, [editableContext, onCellSelect]);
 
   const runQuery = useCallback(async () => {
     if (loading) return;
@@ -211,11 +352,19 @@ export function QueryEditor({ connectionId, activeDb, initialSql = "", onSqlChan
     setLoading(true);
     setError(null);
     setResult(null);
+    setEditableContext(null);
+    editableContextRef.current = null;
+    selectedResultRef.current = null;
+    onCellSelect?.(null);
     setOffset(0);
 
     try {
       const res = await execQueue(connectionId, finalQuery, activeDb);
+      const context = await resolveEditableContext(finalQuery, res);
       setResult(res);
+      setEditableContext(context);
+      editableContextRef.current = context;
+      lastExecutedQueryRef.current = finalQuery;
       addLogEntryRef.current({
         timestamp: new Date(),
         query: finalQuery,
@@ -248,7 +397,46 @@ export function QueryEditor({ connectionId, activeDb, initialSql = "", onSqlChan
     } finally {
       setLoading(false);
     }
-  }, [sql, connectionId, loading, cursorPos, rowLimit]);
+  }, [sql, connectionId, loading, cursorPos, rowLimit, activeDb, execQueue, onCellSelect, resolveEditableContext]);
+
+  // Saving an editable query row increments the shared data revision. Rerun
+  // the exact executed query and keep the detail panel on the same primary key.
+  useEffect(() => {
+    if (lastDataRevisionRef.current === dataRevision) return;
+    lastDataRevisionRef.current = dataRevision;
+
+    const executedSql = lastExecutedQueryRef.current;
+    if (!executedSql || !editableContextRef.current) return;
+    let cancelled = false;
+
+    setLoading(true);
+    execQueue(connectionId, executedSql, activeDb)
+      .then(async (res) => {
+        const context = await resolveEditableContext(executedSql, res);
+        if (cancelled) return;
+        setResult(res);
+        setEditableContext(context);
+        editableContextRef.current = context;
+        publishRefreshedSelection(res, context);
+        addLogEntryRef.current({
+          timestamp: new Date(),
+          query: executedSql,
+          db: activeDb,
+          schema: context?.schema ?? "",
+          table: context?.table ?? "",
+          duration: res.duration,
+          rowCount: res.rowCount ?? res.affectedRows,
+        });
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [dataRevision, connectionId, activeDb, execQueue, resolveEditableContext, publishRefreshedSelection]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -429,12 +617,20 @@ export function QueryEditor({ connectionId, activeDb, initialSql = "", onSqlChan
                 offset={offset}
                 emptyMessage="Query returned no rows."
                 clientSort
-                onCellSelect={onCellSelect}
+                onCellSelect={handleResultCellSelect}
               />
             </div>
 
             {/* Pagination */}
             <div className="flex items-center justify-center px-3 py-1 border-t border-border bg-bg-secondary text-[11px] text-text-secondary gap-1 shrink-0">
+              <span
+                className={editableContext ? "text-success mr-2" : "text-text-muted mr-2"}
+                title={editableContext
+                  ? `Updates target ${editableContext.db}.${editableContext.table} by primary key`
+                  : "Editing requires a single-table MySQL SELECT containing every primary-key column and no ambiguous result columns"}
+              >
+                {editableContext ? "Editable" : "Read-only"}
+              </span>
               <span className="text-text-secondary mr-2">
                 {result.rows.length} row{result.rows.length !== 1 ? "s" : ""} ({Math.round(result.duration * 100) / 100}ms)
               </span>
@@ -469,7 +665,7 @@ export function QueryEditor({ connectionId, activeDb, initialSql = "", onSqlChan
         )}
 
         {/* Loading */}
-        {loading && (
+        {loading && !result && (
           <div className="flex-1 flex items-center justify-center text-text-muted text-sm gap-2">
             <Loader2 size={14} className="animate-spin" />
             Executing...

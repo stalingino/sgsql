@@ -36,7 +36,7 @@ import { QueryConsole } from "./components/QueryConsole";
 import { DetailPanel } from "./components/DetailPanel";
 import { SettingsModal } from "./components/SettingsModal";
 import { CommandPalette } from "./components/CommandPalette";
-import { ChangeHistoryPopup } from "./components/ChangeHistoryPopup";
+import { ChangeHistoryPanel } from "./components/ChangeHistoryPopup";
 import type { CellSelection } from "./components/ResultGrid";
 import type { ConnectionProfile } from "./lib/types";
 import { envBadgeStyle } from "./lib/types";
@@ -101,7 +101,6 @@ function App() {
   const [cellSelection, setCellSelection] = useState<CellSelection | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState<false | "all" | "db-only">(false);
-  const [changeHistoryOpen, setChangeHistoryOpen] = useState(false);
 
   // Execution queue — subscribe to the connections map for reactivity
   const execConnections = useExecutionQueue((s) => s.connections);
@@ -208,10 +207,10 @@ function App() {
         // 3. No open dbs — close the connection tab
         closeTabRef.current(curTabId);
       }
-      if ((e.metaKey || e.ctrlKey) && e.key === "z") {
-        // Only intercept if there are pending edit changes to revert
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
+        // Undo the latest pending database edit, including inserts and deletes.
         const editStore = useEditStore.getState();
-        if (editStore.changes.size > 0) {
+        if (editStore.changeCount() > 0) {
           e.preventDefault();
           editStore.revertLast();
         }
@@ -579,27 +578,6 @@ function App() {
 
         {/* Right toolbar */}
         <div className="flex items-center gap-0.5 mx-1 shrink-0 relative">
-          {/* Pending changes */}
-          {editChangeCount > 0 && (
-            <button
-              onClick={() => setChangeHistoryOpen((v) => !v)}
-              title={`${editChangeCount} pending change${editChangeCount !== 1 ? "s" : ""}`}
-              className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer border ${
-                changeHistoryOpen
-                  ? "text-warning bg-warning/15 border-warning/40"
-                  : "text-warning hover:bg-warning/10 border-warning/30"
-              }`}
-            >
-              <FilePenLine size={12} />
-              <span className="tabular-nums">{editChangeCount}</span>
-            </button>
-          )}
-
-          {/* Change history popup */}
-          {changeHistoryOpen && editChangeCount > 0 && (
-            <ChangeHistoryPopup onClose={() => setChangeHistoryOpen(false)} />
-          )}
-
           {/* Kill running query */}
           {isRunning && activeTab?.connectionId && (
             <button
@@ -630,23 +608,6 @@ function App() {
             }`}
           >
             <PanelLeft size={14} />
-          </button>
-
-          {/* Toggle console */}
-          <button
-            onClick={() => setConsoleVisible((v) => {
-              const next = !v;
-              saveConfig({ console: { ...getConfig().console, visible: next, height: getConfig().console?.height ?? 180 } });
-              return next;
-            })}
-            title={consoleVisible ? "Hide console" : "Show console"}
-            className={`flex items-center p-1.5 rounded-md transition-colors cursor-pointer ${
-              consoleVisible
-                ? "text-text-primary bg-bg-active"
-                : "text-text-muted hover:text-text-secondary hover:bg-bg-hover"
-            }`}
-          >
-            <PanelBottom size={14} />
           </button>
 
           {/* Toggle detail panel */}
@@ -787,6 +748,7 @@ function App() {
                       {ct.type === "query" ? (
                         <QueryEditor
                           connectionId={activeTab.connectionId!}
+                          connectionType={activeTab.profile.type}
                           activeDb={activeTab.activeDbName || ""}
                           initialSql={ct.sql || ""}
                           onCellSelect={handleCellSelection}
@@ -833,7 +795,10 @@ function App() {
               {/* Bottom console panel */}
               {consoleVisible && (
                 <ResizableConsole>
-                  <QueryConsole />
+                  <ResizableBottomSplit
+                    left={<QueryConsole />}
+                    right={<ChangeHistoryPanel />}
+                  />
                 </ResizableConsole>
               )}
             </main>
@@ -851,7 +816,16 @@ function App() {
       )}
 
       {/* ── Status bar ──────────────────────────────────────── */}
-      <StatusBar activeTab={activeTab} />
+      <StatusBar
+        activeTab={activeTab}
+        bottomPanelVisible={consoleVisible}
+        editChangeCount={editChangeCount}
+        onToggleBottomPanel={() => setConsoleVisible((visible) => {
+          const next = !visible;
+          saveConfig({ console: { ...getConfig().console, visible: next, height: getConfig().console?.height ?? 180 } });
+          return next;
+        })}
+      />
     </div>
   );
 }
@@ -969,6 +943,17 @@ function ContentTabItem({
 
 /* ── Resizable console (bottom panel) ──────────────────── */
 
+function beginResize(cursor: "row-resize" | "col-resize") {
+  window.getSelection()?.removeAllRanges();
+  document.body.style.cursor = cursor;
+  document.body.classList.add("is-resizing");
+}
+
+function endResize() {
+  document.body.style.cursor = "";
+  document.body.classList.remove("is-resizing");
+}
+
 function ResizableConsole({ children }: { children: React.ReactNode }) {
   const [height, setHeight] = useState(() => {
     const saved = getConfig().console?.height;
@@ -980,16 +965,17 @@ function ResizableConsole({ children }: { children: React.ReactNode }) {
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const onMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
     dragging.current = true;
     startY.current = e.clientY;
     startH.current = height;
-    document.body.style.cursor = "row-resize";
-    document.body.style.userSelect = "none";
+    beginResize("row-resize");
   };
 
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
       if (!dragging.current) return;
+      e.preventDefault();
       const delta = startY.current - e.clientY;
       const next = Math.min(500, Math.max(80, startH.current + delta));
       setHeight(next);
@@ -997,8 +983,7 @@ function ResizableConsole({ children }: { children: React.ReactNode }) {
     const onMouseUp = (e: MouseEvent) => {
       if (!dragging.current) return;
       dragging.current = false;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
+      endResize();
       const delta = startY.current - e.clientY;
       const finalHeight = Math.min(500, Math.max(80, startH.current + delta));
       clearTimeout(saveTimer.current);
@@ -1011,6 +996,7 @@ function ResizableConsole({ children }: { children: React.ReactNode }) {
     return () => {
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
+      if (dragging.current) endResize();
     };
   }, []);
 
@@ -1021,6 +1007,84 @@ function ResizableConsole({ children }: { children: React.ReactNode }) {
         className="h-[3px] shrink-0 cursor-row-resize hover:bg-accent/50 active:bg-accent transition-colors w-full"
       />
       <div className="flex-1 min-h-0">{children}</div>
+    </div>
+  );
+}
+
+/* ── Resizable split inside the bottom panel ───────────── */
+
+function ResizableBottomSplit({
+  left,
+  right,
+}: {
+  left: React.ReactNode;
+  right: React.ReactNode;
+}) {
+  const [leftPercent, setLeftPercent] = useState(() => {
+    const saved = getConfig().console?.split;
+    return saved === undefined ? 50 : Math.min(70, Math.max(30, saved));
+  });
+  const containerRef = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+  const startX = useRef(0);
+  const startPercent = useRef(50);
+  const currentPercent = useRef(leftPercent);
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    dragging.current = true;
+    startX.current = e.clientX;
+    startPercent.current = leftPercent;
+    currentPercent.current = leftPercent;
+    beginResize("col-resize");
+  };
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!dragging.current || !containerRef.current) return;
+      e.preventDefault();
+      const width = containerRef.current.clientWidth;
+      if (width === 0) return;
+      const next = Math.min(70, Math.max(30, startPercent.current + ((e.clientX - startX.current) / width) * 100));
+      currentPercent.current = next;
+      setLeftPercent(next);
+    };
+    const onMouseUp = () => {
+      if (!dragging.current) return;
+      dragging.current = false;
+      endResize();
+      saveConfig({
+        console: {
+          visible: getConfig().console?.visible ?? true,
+          height: getConfig().console?.height ?? 180,
+          split: currentPercent.current,
+        },
+      });
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      if (dragging.current) endResize();
+    };
+  }, []);
+
+  return (
+    <div ref={containerRef} className="flex h-full min-h-0">
+      <div className="min-w-0" style={{ width: `${leftPercent}%` }}>
+        {left}
+      </div>
+      <div
+        onMouseDown={onMouseDown}
+        title="Resize query log and pending changes"
+        className="group w-[5px] shrink-0 cursor-col-resize flex justify-center bg-border/30 hover:bg-accent/15 transition-colors"
+      >
+        <div className="w-px h-full bg-border group-hover:bg-accent/70 transition-colors" />
+      </div>
+      <div className="flex-1 min-w-0">
+        {right}
+      </div>
     </div>
   );
 }
@@ -1038,16 +1102,17 @@ function ResizableDetailPanel({ children }: { children: React.ReactNode }) {
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const onMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
     dragging.current = true;
     startX.current = e.clientX;
     startW.current = width;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
+    beginResize("col-resize");
   };
 
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
       if (!dragging.current) return;
+      e.preventDefault();
       const delta = startX.current - e.clientX;
       const next = Math.min(600, Math.max(200, startW.current + delta));
       setWidth(next);
@@ -1055,8 +1120,7 @@ function ResizableDetailPanel({ children }: { children: React.ReactNode }) {
     const onMouseUp = (e: MouseEvent) => {
       if (!dragging.current) return;
       dragging.current = false;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
+      endResize();
       const delta = startX.current - e.clientX;
       const finalWidth = Math.min(600, Math.max(200, startW.current + delta));
       clearTimeout(saveTimer.current);
@@ -1069,6 +1133,7 @@ function ResizableDetailPanel({ children }: { children: React.ReactNode }) {
     return () => {
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
+      if (dragging.current) endResize();
     };
   }, []);
 
@@ -1085,11 +1150,21 @@ function ResizableDetailPanel({ children }: { children: React.ReactNode }) {
 
 /* ── Status bar ─────────────────────────────────────────── */
 
-function StatusBar({ activeTab }: { activeTab: Tab | null }) {
+function StatusBar({
+  activeTab,
+  bottomPanelVisible,
+  editChangeCount,
+  onToggleBottomPanel,
+}: {
+  activeTab: Tab | null;
+  bottomPanelVisible: boolean;
+  editChangeCount: number;
+  onToggleBottomPanel: () => void;
+}) {
   const { mode, setMode } = useThemeStore();
 
   return (
-    <div className="flex items-center justify-between h-7 px-3 border-t border-border bg-bg-secondary shrink-0 text-xs text-text-secondary">
+    <div className="relative flex items-center justify-between h-7 px-3 border-t border-border bg-bg-secondary shrink-0 text-xs text-text-secondary">
       <div className="flex items-center gap-2">
         {activeTab?.connectionId && (
           <>
@@ -1111,6 +1186,27 @@ function StatusBar({ activeTab }: { activeTab: Tab | null }) {
           <span>Connection failed</span>
         )}
         {!activeTab && <span>Not connected</span>}
+      </div>
+      <div className="absolute left-1/2 -translate-x-1/2 flex items-center">
+        <button
+          onClick={onToggleBottomPanel}
+          title={bottomPanelVisible
+            ? "Hide bottom panel"
+            : `Show query log and ${editChangeCount} pending change${editChangeCount !== 1 ? "s" : ""}`}
+          className={`flex items-center gap-2 px-2 py-1 rounded transition-colors cursor-pointer ${
+            bottomPanelVisible
+              ? "text-text-primary bg-bg-active"
+              : "text-text-muted hover:text-text-secondary hover:bg-bg-hover"
+          }`}
+        >
+          <PanelBottom size={12} />
+          <span className={`flex items-center gap-1 text-[10px] font-medium tabular-nums ${
+            editChangeCount > 0 ? "text-warning" : "text-text-muted"
+          }`}>
+            <FilePenLine size={11} />
+            <span>{editChangeCount}</span>
+          </span>
+        </button>
       </div>
       <div className="flex items-center gap-0.5">
         <ThemeButton current={mode} value="light" setMode={setMode} icon={<Sun size={11} />} label="Light" />

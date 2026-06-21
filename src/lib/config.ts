@@ -13,7 +13,7 @@ export interface AppConfig {
   theme?: "dark" | "light" | "system";
   windows?: Record<string, WindowState>;
   sidebar?: { visible: boolean; width: number };
-  console?: { visible: boolean; height: number };
+  console?: { visible: boolean; height: number; split?: number };
   detailPanel?: { visible: boolean; width: number };
   queryStack?: string[]; // LIFO — last closed query on top
   settings?: AppSettings;
