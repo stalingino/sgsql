@@ -1,4 +1,4 @@
-import { sidecarFetch } from "./sidecar";
+import { SidecarHttpError, sidecarFetch } from "./sidecar";
 import type { ConnectionProfile } from "./types";
 
 /* ── Response / domain types ─────────────────────────────── */
@@ -35,6 +35,26 @@ export async function closeConnection(connectionId: string): Promise<void> {
     method: "POST",
     body: JSON.stringify({ connectionId }),
   });
+}
+
+export async function ensureConnection(
+  connectionId: string,
+): Promise<{ ok: boolean; reconnected: boolean }> {
+  try {
+    return await sidecarFetch<{ ok: boolean; reconnected: boolean }>("/connections/ensure", {
+      method: "POST",
+      body: JSON.stringify({ connectionId }),
+    });
+  } catch (error) {
+    // Vite can hot-reload a newer frontend while the already-running Tauri
+    // sidecar still serves the previous route set. Let the legacy /query path
+    // proceed until the application is restarted with the rebuilt sidecar.
+    if (error instanceof SidecarHttpError && error.status === 404) {
+      console.warn("[sidecar] running sidecar does not support connection preflight; restart SG SQL to activate it");
+      return { ok: true, reconnected: false };
+    }
+    throw error;
+  }
 }
 
 export async function cancelQuery(connectionId: string): Promise<{ ok: boolean; detail?: string }> {

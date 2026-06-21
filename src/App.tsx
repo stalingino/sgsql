@@ -20,7 +20,7 @@ import {
   StopCircle,
   FilePenLine,
 } from "lucide-react";
-import { waitForSidecar } from "./lib/sidecar";
+import { waitForSidecar, CONNECTION_RESTORED_EVENT } from "./lib/sidecar";
 import { openConnectionManager } from "./lib/openConnectionManager";
 import { closeConnection } from "./lib/schema";
 import { useThemeStore, type ThemeMode, initTheme } from "./lib/theme";
@@ -101,6 +101,7 @@ function App() {
   const [cellSelection, setCellSelection] = useState<CellSelection | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState<false | "all" | "db-only">(false);
+  const [reconnectNotice, setReconnectNotice] = useState<string | null>(null);
 
   // Execution queue — subscribe to the connections map for reactivity
   const execConnections = useExecutionQueue((s) => s.connections);
@@ -143,6 +144,22 @@ function App() {
   const closeContentTabRef = useRef<(id: string) => void>(() => {});
   const closeDbRef = useRef<(db: string) => void>(() => {});
   const closeTabRef = useRef<(id: string) => void>(() => {});
+
+  useEffect(() => {
+    let clearTimer: ReturnType<typeof setTimeout> | undefined;
+    const handleRestored = (event: Event) => {
+      const detail = (event as CustomEvent<{ connectionId?: string }>).detail;
+      const tab = tabsRef.current.find((candidate) => candidate.connectionId === detail?.connectionId);
+      setReconnectNotice(tab ? `Reconnected to ${tab.profile.name}` : "Database connection restored");
+      clearTimeout(clearTimer);
+      clearTimer = setTimeout(() => setReconnectNotice(null), 6_000);
+    };
+    window.addEventListener(CONNECTION_RESTORED_EVENT, handleRestored);
+    return () => {
+      window.removeEventListener(CONNECTION_RESTORED_EVENT, handleRestored);
+      clearTimeout(clearTimer);
+    };
+  }, []);
 
   /* ── Global keyboard shortcuts ────────────────────────── */
 
@@ -659,6 +676,13 @@ function App() {
           }}
           onClose={() => setCommandPaletteOpen(false)}
         />
+      )}
+
+      {reconnectNotice && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[10000] flex items-center gap-2 rounded-lg border border-success/30 bg-bg-primary px-4 py-2.5 text-xs text-success shadow-2xl">
+          <Cable size={13} />
+          {reconnectNotice}
+        </div>
       )}
 
       {/* ── Body ────────────────────────────────────────────── */}

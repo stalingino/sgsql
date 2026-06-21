@@ -11,9 +11,13 @@ export type PoolEntry =
 interface PoolRecord {
   entry: PoolEntry;
   profile: ConnectionProfile;
+  lastUsedAt: number;
 }
 
 const pool = new Map<string, PoolRecord>();
+const reconnecting = new Map<string, Promise<PoolEntry>>();
+const IDLE_CHECK_AFTER_MS = 30_000;
+const HEALTH_CHECK_TIMEOUT_MS = 3_000;
 
 export function getConnection(id: string): PoolEntry | undefined {
   return pool.get(id)?.entry;
@@ -24,7 +28,12 @@ export function getProfile(id: string): ConnectionProfile | undefined {
 }
 
 export function setConnection(id: string, entry: PoolEntry, profile: ConnectionProfile): void {
-  pool.set(id, { entry, profile });
+  pool.set(id, { entry, profile, lastUsedAt: Date.now() });
+}
+
+export function markConnectionUsed(id: string): void {
+  const record = pool.get(id);
+  if (record) record.lastUsedAt = Date.now();
 }
 
 export async function closeConnection(id: string): Promise<boolean> {
@@ -95,6 +104,15 @@ export function isConnectionError(e: unknown): boolean {
 
 /** Reconnect a dead connection using its stored profile. Returns new entry or throws. */
 export async function reconnect(id: string): Promise<PoolEntry> {
+  const active = reconnecting.get(id);
+  if (active) return active;
+
+  const attempt = reconnectInternal(id).finally(() => reconnecting.delete(id));
+  reconnecting.set(id, attempt);
+  return attempt;
+}
+
+async function reconnectInternal(id: string): Promise<PoolEntry> {
   const record = pool.get(id);
   if (!record) throw new Error("Connection not found");
 
@@ -104,8 +122,8 @@ export async function reconnect(id: string): Promise<PoolEntry> {
   // Try to close the old one silently
   try {
     switch (record.entry.type) {
-      case "postgres": await record.entry.client.end(); break;
-      case "mysql": await record.entry.client.end(); break;
+      case "postgres": await withTimeout(record.entry.client.end({ timeout: 1 }), 1_500, "Closing stale PostgreSQL connection timed out"); break;
+      case "mysql": record.entry.client.destroy(); break;
       case "sqlite": record.entry.client.close(); break;
     }
   } catch { /* ignore */ }
@@ -146,7 +164,57 @@ export async function reconnect(id: string): Promise<PoolEntry> {
     newEntry = { type: "sqlite", client: db };
   }
 
-  pool.set(id, { entry: newEntry, profile });
+  pool.set(id, { entry: newEntry, profile, lastUsedAt: Date.now() });
   console.log(`[pool] reconnected ${id} successfully`);
   return newEntry;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const error = new Error(message) as Error & { code?: string };
+      error.code = "ETIMEDOUT";
+      reject(error);
+    }, timeoutMs);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
+/**
+ * Check connections that have been idle long enough to plausibly have crossed
+ * a server timeout or device sleep. A stuck ping is bounded, then the existing
+ * profile is used to reconnect before the caller sends real work.
+ */
+export async function ensureConnectionAlive(
+  id: string,
+  force = false,
+): Promise<{ entry: PoolEntry; reconnected: boolean }> {
+  const record = pool.get(id);
+  if (!record) throw new Error("Connection not found");
+  if (record.entry.type === "sqlite") {
+    record.lastUsedAt = Date.now();
+    return { entry: record.entry, reconnected: false };
+  }
+
+  if (!force && Date.now() - record.lastUsedAt < IDLE_CHECK_AFTER_MS) {
+    record.lastUsedAt = Date.now();
+    return { entry: record.entry, reconnected: false };
+  }
+
+  try {
+    if (record.entry.type === "postgres") {
+      await withTimeout(record.entry.client`SELECT 1`, HEALTH_CHECK_TIMEOUT_MS, "PostgreSQL connection health check timed out");
+    } else {
+      await withTimeout(record.entry.client.ping(), HEALTH_CHECK_TIMEOUT_MS, "MySQL connection health check timed out");
+    }
+    record.lastUsedAt = Date.now();
+    return { entry: record.entry, reconnected: false };
+  } catch (error) {
+    console.log(`[pool] idle connection check failed for ${id}: ${error instanceof Error ? error.message : String(error)}`);
+    const entry = await reconnect(id);
+    return { entry, reconnected: true };
+  }
 }

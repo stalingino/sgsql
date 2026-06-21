@@ -232,6 +232,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   const onSqlChangeRef = useRef(onSqlChange);
   onSqlChangeRef.current = onSqlChange;
   const execQueue = useExecutionQueue((s) => s.execute);
+  const executionPhase = useExecutionQueue((s) => s.connections.get(connectionId)?.phase ?? "idle");
   const limitMenuRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
   const lastExecutedQueryRef = useRef<string | null>(null);
@@ -893,7 +894,11 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
         {loading && !result && (
           <div className="flex-1 flex items-center justify-center text-text-muted text-sm gap-2">
             <Loader2 size={14} className="animate-spin" />
-            Executing...
+            {executionPhase === "checking"
+              ? "Checking connection…"
+              : executionPhase === "cancelling"
+                ? "Cancelling…"
+                : "Executing…"}
           </div>
         )}
       </div>

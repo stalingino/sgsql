@@ -3,6 +3,7 @@ import { handleTestConnection } from "./routes/connections";
 import {
   handleOpenConnection,
   handleCloseConnection,
+  handleEnsureConnection,
   handleSchemaRequest,
   handleQuery,
   handleCancel,
@@ -59,6 +60,11 @@ async function main() {
         if (path === "/connections/close" && req.method === "POST") {
           console.log("[sidecar] closing connection");
           return handleCloseConnection(req, headers);
+        }
+
+        if (path === "/connections/ensure" && req.method === "POST") {
+          console.log("[sidecar] checking connection");
+          return handleEnsureConnection(req, headers);
         }
 
         if (path === "/query" && req.method === "POST") {

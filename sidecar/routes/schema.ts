@@ -7,6 +7,8 @@ import {
   hasConnection,
   isConnectionError,
   reconnect,
+  ensureConnectionAlive,
+  markConnectionUsed,
   type PoolEntry,
 } from "../lib/pool";
 
@@ -20,6 +22,16 @@ function json(data: unknown, headers: Record<string, string>, status = 200): Res
 
 function errorResponse(message: string, headers: Record<string, string>, status = 500): Response {
   return json({ error: message }, headers, status);
+}
+
+function withConnectionStatus<T extends object>(
+  data: T,
+  connectionId: string,
+  reconnected: boolean,
+): T & { _connection?: { connectionId: string; reconnected: true } } {
+  return reconnected
+    ? { ...data, _connection: { connectionId, reconnected: true } }
+    : data;
 }
 
 import { friendlyError } from "../lib/friendlyError";
@@ -146,6 +158,32 @@ export async function handleCloseConnection(
 }
 
 // ---------------------------------------------------------------------------
+// POST /connections/ensure — bounded idle health check + reconnect
+// ---------------------------------------------------------------------------
+
+export async function handleEnsureConnection(
+  req: Request,
+  headers: Record<string, string>,
+): Promise<Response> {
+  let body: { connectionId?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return errorResponse("Invalid JSON body", headers, 400);
+  }
+  if (!body.connectionId) return errorResponse("Missing connectionId", headers, 400);
+
+  try {
+    const ensured = await ensureConnectionAlive(body.connectionId);
+    return json(withConnectionStatus({ ok: true, reconnected: ensured.reconnected }, body.connectionId, ensured.reconnected), headers);
+  } catch (error) {
+    const message = friendlyError(error);
+    console.error(`[sidecar] connection ensure failed: ${message}`);
+    return errorResponse(message, headers);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // GET /schema/:connId/:action  — dispatcher
 // ---------------------------------------------------------------------------
 
@@ -208,8 +246,11 @@ export async function handleSchemaRequest(
   const where = url.searchParams.get("where") ?? undefined;
 
   try {
+    const ensured = await ensureConnectionAlive(connId);
+    entry = ensured.entry;
     const result = await dispatchSchemaAction(entry, action, db, schema, table, limit, offset, orderBy, where);
-    return json(result, headers);
+    markConnectionUsed(connId);
+    return json(withConnectionStatus(result, connId, ensured.reconnected), headers);
   } catch (e: unknown) {
     // Auto-reconnect once on connection errors
     if (isConnectionError(e)) {
@@ -217,7 +258,8 @@ export async function handleSchemaRequest(
       try {
         entry = await reconnect(connId);
         const result = await dispatchSchemaAction(entry, action, db, schema, table, limit, offset, orderBy, where);
-        return json(result, headers);
+        markConnectionUsed(connId);
+        return json(withConnectionStatus(result, connId, true), headers);
       } catch (retryErr: unknown) {
         const message = friendlyError(retryErr);
         console.error(`[sidecar] reconnect+retry failed for schema/${action}: ${message}`);
@@ -686,11 +728,14 @@ export async function handleQuery(
   const isSelect = SELECT_RE.test(sql);
 
   try {
+    const ensured = await ensureConnectionAlive(connectionId);
+    entry = ensured.entry;
     // Switch database context if requested
     if (db) await switchDb(entry, db);
     const t0 = performance.now();
     const result = await executeSQL(entry, sql, isSelect);
-    return json({ ...result, duration: performance.now() - t0 }, headers);
+    markConnectionUsed(connectionId);
+    return json(withConnectionStatus({ ...result, duration: performance.now() - t0 }, connectionId, ensured.reconnected), headers);
   } catch (e: unknown) {
     // Auto-reconnect once on connection errors
     if (isConnectionError(e)) {
@@ -700,7 +745,8 @@ export async function handleQuery(
         if (db) await switchDb(entry, db);
         const t0 = performance.now();
         const result = await executeSQL(entry, sql, isSelect);
-        return json({ ...result, duration: performance.now() - t0 }, headers);
+        markConnectionUsed(connectionId);
+        return json(withConnectionStatus({ ...result, duration: performance.now() - t0 }, connectionId, true), headers);
       } catch (retryErr: unknown) {
         const message = friendlyError(retryErr);
         console.error(`[sidecar] reconnect+retry failed: ${message}`);

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { executeQuery as rawExecuteQuery, cancelQuery, type QueryResult } from "./schema";
+import { executeQuery as rawExecuteQuery, cancelQuery, ensureConnection, type QueryResult } from "./schema";
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -12,6 +12,7 @@ interface QueueItem {
 
 interface ConnectionQueue {
   running: boolean;
+  phase: "idle" | "checking" | "executing" | "cancelling";
   abortController: AbortController | null;
   queue: QueueItem[];
   lastCancelDetail: string | null;
@@ -33,7 +34,7 @@ export const useExecutionQueue = create<ExecutionQueueState>((set, get) => {
   function getQueue(connectionId: string): ConnectionQueue {
     const q = get().connections.get(connectionId);
     if (q) return q;
-    const fresh: ConnectionQueue = { running: false, abortController: null, queue: [], lastCancelDetail: null };
+    const fresh: ConnectionQueue = { running: false, phase: "idle", abortController: null, queue: [], lastCancelDetail: null };
     get().connections.set(connectionId, fresh);
     return fresh;
   }
@@ -41,7 +42,7 @@ export const useExecutionQueue = create<ExecutionQueueState>((set, get) => {
   function updateQueue(connectionId: string, updates: Partial<ConnectionQueue>) {
     set((state) => {
       const next = new Map(state.connections);
-      const existing = next.get(connectionId) ?? { running: false, abortController: null, queue: [], lastCancelDetail: null };
+      const existing = next.get(connectionId) ?? { running: false, phase: "idle", abortController: null, queue: [], lastCancelDetail: null };
       next.set(connectionId, { ...existing, ...updates });
       return { connections: next };
     });
@@ -50,15 +51,17 @@ export const useExecutionQueue = create<ExecutionQueueState>((set, get) => {
   async function drainNext(connectionId: string) {
     const q = get().connections.get(connectionId);
     if (!q || q.queue.length === 0) {
-      updateQueue(connectionId, { running: false, abortController: null });
+      updateQueue(connectionId, { running: false, phase: "idle", abortController: null });
       return;
     }
 
     const [item, ...rest] = q.queue;
     const controller = new AbortController();
-    updateQueue(connectionId, { queue: rest, abortController: controller, running: true });
+    updateQueue(connectionId, { queue: rest, abortController: controller, running: true, phase: "checking" });
 
     try {
+      await ensureConnection(connectionId);
+      updateQueue(connectionId, { phase: "executing" });
       const result = await rawExecuteQuery(connectionId, item.sql, item.db, controller.signal);
       item.resolve(result);
     } catch (err) {
@@ -79,9 +82,13 @@ export const useExecutionQueue = create<ExecutionQueueState>((set, get) => {
         if (!q.running) {
           // Execute immediately
           const controller = new AbortController();
-          updateQueue(connectionId, { running: true, abortController: controller, queue: [] });
+          updateQueue(connectionId, { running: true, phase: "checking", abortController: controller, queue: [] });
 
-          rawExecuteQuery(connectionId, sql, db, controller.signal)
+          ensureConnection(connectionId)
+            .then(() => {
+              updateQueue(connectionId, { phase: "executing" });
+              return rawExecuteQuery(connectionId, sql, db, controller.signal);
+            })
             .then((result) => {
               resolve(result);
               drainNext(connectionId);
@@ -102,13 +109,16 @@ export const useExecutionQueue = create<ExecutionQueueState>((set, get) => {
     async cancel(connectionId: string) {
       const q = get().connections.get(connectionId);
       if (!q) return;
+      updateQueue(connectionId, { phase: "cancelling" });
 
       // Kill the query on the server first and capture detail
       let detail: string | null = null;
-      try {
-        const res = await cancelQuery(connectionId);
-        detail = res.detail ?? null;
-      } catch { /* ignore */ }
+      if (q.phase === "executing") {
+        try {
+          const res = await cancelQuery(connectionId);
+          detail = res.detail ?? null;
+        } catch { /* ignore */ }
+      }
 
       // Store the detail before aborting so it's available in catch blocks
       if (detail) {
@@ -123,7 +133,7 @@ export const useExecutionQueue = create<ExecutionQueueState>((set, get) => {
         item.reject(new Error("Cancelled"));
       }
 
-      updateQueue(connectionId, { running: false, abortController: null, queue: [] });
+      updateQueue(connectionId, { running: false, phase: "idle", abortController: null, queue: [] });
     },
 
     isRunning(connectionId: string): boolean {
