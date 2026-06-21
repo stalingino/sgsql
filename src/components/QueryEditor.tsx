@@ -199,7 +199,7 @@ function completionPopupPosition(textarea: HTMLTextAreaElement, value: string, c
   const before = value.slice(0, cursor);
   const lines = before.split("\n");
   const column = (lines[lines.length - 1] ?? "").replace(/\t/g, "  ").length;
-  const left = Math.max(8, Math.min(textarea.clientWidth - 270, 12 + column * 7.8 - textarea.scrollLeft));
+  const left = Math.max(8, Math.min(textarea.clientWidth - 380, 12 + column * 7.8 - textarea.scrollLeft));
   const naturalTop = 12 + lines.length * 19 - textarea.scrollTop;
   const top = Math.max(26, Math.min(textarea.clientHeight - 150, naturalTop));
   return { left, top };
@@ -222,7 +222,6 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [columnRevision, setColumnRevision] = useState(0);
   const [completionOpen, setCompletionOpen] = useState(false);
-  const [completionForced, setCompletionForced] = useState(false);
   const [completionIndex, setCompletionIndex] = useState(0);
   const [completionPosition, setCompletionPosition] = useState({ left: 12, top: 32 });
   const dataRevision = useEditStore((s) => s.dataRevision);
@@ -334,8 +333,8 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   }, [connectionId, tableReferences]);
 
   const completionTarget = useMemo(
-    () => getCompletionTarget(sql, cursorPos, completionForced),
-    [sql, cursorPos, completionForced],
+    () => getCompletionTarget(sql, cursorPos),
+    [sql, cursorPos],
   );
   const completions = useMemo(
     () => buildSqlCompletions({
@@ -563,7 +562,6 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
     setSql(nextSql);
     setCursorPos(nextCursor);
     setCompletionOpen(false);
-    setCompletionForced(false);
     onSqlChangeRef.current?.(nextSql);
     requestAnimationFrame(() => {
       const textarea = textareaRef.current;
@@ -580,15 +578,6 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
       runQuery();
       return;
     }
-    if ((e.metaKey || e.ctrlKey) && e.key === " ") {
-      e.preventDefault();
-      const textarea = textareaRef.current;
-      if (textarea) setCompletionPosition(completionPopupPosition(textarea, sql, textarea.selectionStart));
-      setCompletionForced(true);
-      setCompletionOpen(true);
-      setCompletionIndex(0);
-      return;
-    }
     if (!completionOpen) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -602,29 +591,28 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
     } else if (e.key === "Escape") {
       e.preventDefault();
       setCompletionOpen(false);
-      setCompletionForced(false);
     }
-  }, [runQuery, completionOpen, completions, completionIndex, applyCompletion, sql]);
+  }, [runQuery, completionOpen, completions, completionIndex, applyCompletion]);
 
   const handleBeautify = useCallback(() => {
     const beautified = beautifySql(sql);
     setSql(beautified);
     setCompletionOpen(false);
-    setCompletionForced(false);
     onSqlChangeRef.current?.(beautified);
   }, [sql]);
 
-  const handleCursorChange = useCallback(() => {
+  const handleSelectionChange = useCallback(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
     const position = textarea.selectionStart;
-    const target = getCompletionTarget(sql, position);
     setCursorPos(position);
-    setCompletionForced(false);
-    setCompletionOpen(target.shouldOpen);
-    setCompletionIndex(0);
     setCompletionPosition(completionPopupPosition(textarea, sql, position));
   }, [sql]);
+
+  const handleEditorClick = useCallback(() => {
+    handleSelectionChange();
+    setCompletionOpen(false);
+  }, [handleSelectionChange]);
 
   // Resizable editor pane
   const onDragStart = useCallback((e: React.MouseEvent) => {
@@ -685,7 +673,6 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
               setSql(val);
               onSqlChangeRef.current?.(val);
               setCursorPos(position);
-              setCompletionForced(false);
               setCompletionOpen(target.shouldOpen);
               setCompletionIndex(0);
               setCompletionPosition(completionPopupPosition(e.target, val, position));
@@ -697,26 +684,22 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
               if (preRef.current) preRef.current.scrollTop = textarea.scrollTop;
               setCompletionPosition(completionPopupPosition(textarea, sql, textarea.selectionStart));
             }}
-            onClick={handleCursorChange}
-            onKeyUp={(e) => {
-              if (["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape", " "].includes(e.key)) return;
-              handleCursorChange();
-            }}
+            onClick={handleEditorClick}
+            onSelect={handleSelectionChange}
             onKeyDown={handleKeyDown}
             onBlur={(e) => {
               if ((e.relatedTarget as HTMLElement | null)?.closest("[data-sql-completion]")) return;
               setCompletionOpen(false);
-              setCompletionForced(false);
             }}
             placeholder="Enter SQL query... (Ctrl+Enter to run)"
             spellCheck={false}
             className="absolute inset-0 w-full h-full bg-transparent text-text-primary caret-text-primary text-[13px] font-mono p-3 outline-none placeholder-text-muted z-10 resize-none"
             style={{ caretColor: "var(--color-text-primary)", color: "transparent" }}
           />
-          {completionOpen && (completions.length > 0 || completionForced || catalogLoading) && (
+          {completionOpen && (completions.length > 0 || catalogLoading) && (
             <div
               data-sql-completion
-              className="absolute z-30 w-[270px] max-h-52 overflow-y-auto rounded-md border border-border bg-bg-primary shadow-2xl py-1 text-[12px] no-select"
+              className="absolute z-30 w-[380px] max-w-[calc(100%-16px)] max-h-64 overflow-y-auto rounded-lg border border-border-light bg-bg-primary shadow-2xl py-1.5 text-[12px] no-select"
               style={{ left: completionPosition.left, top: completionPosition.top }}
               onMouseDown={(e) => e.preventDefault()}
             >
@@ -724,21 +707,23 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
                 <button
                   key={completion.key}
                   type="button"
-                  className={`flex items-center gap-2 w-full px-2.5 py-1.5 text-left cursor-pointer ${
+                  className={`flex items-start gap-2.5 w-full px-3 py-2 text-left cursor-pointer ${
                     index === completionIndex ? "bg-accent/15 text-text-primary" : "hover:bg-bg-hover text-text-secondary"
                   }`}
                   onMouseEnter={() => setCompletionIndex(index)}
                   onClick={() => applyCompletion(completion)}
                 >
                   {completion.kind === "column" ? (
-                    <Columns3 size={12} className="shrink-0 text-accent" />
+                    <Columns3 size={13} className="shrink-0 mt-0.5 text-accent" />
                   ) : completion.kind === "schema" ? (
-                    <Layers3 size={12} className="shrink-0 text-purple-400" />
+                    <Layers3 size={13} className="shrink-0 mt-0.5 text-purple-400" />
                   ) : (
-                    <Table2 size={12} className="shrink-0 text-sky-400" />
+                    <Table2 size={13} className="shrink-0 mt-0.5 text-sky-400" />
                   )}
-                  <span className="min-w-0 flex-1 truncate font-mono">{completion.label}</span>
-                  <span className="max-w-[110px] truncate text-[10px] text-text-muted">{completion.detail}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-mono text-[12px] text-text-primary">{completion.label}</span>
+                    <span className="block truncate text-[10px] text-text-muted mt-0.5">{completion.detail}</span>
+                  </span>
                 </button>
               ))}
               {completions.length === 0 && (
@@ -748,8 +733,8 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
                 </div>
               )}
               {completions.length > 0 && (
-                <div className="px-2.5 pt-1.5 pb-1 text-[9px] text-text-muted border-t border-border mt-1">
-                  ↑↓ select · Enter/Tab insert · Esc close · Ctrl+Space open
+                <div className="px-3 pt-2 pb-1 text-[9px] text-text-muted border-t border-border mt-1">
+                  <span>↑↓ Navigate · Enter/Tab Insert · Esc Close</span>
                 </div>
               )}
             </div>

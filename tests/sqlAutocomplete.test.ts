@@ -60,4 +60,5 @@ describe("SQL autocomplete", () => {
     expect(quoteCompletionIdentifier("order", "postgres")).toBe('"order"');
     expect(quoteCompletionIdentifier("order", "mysql")).toBe("`order`");
   });
+
 });

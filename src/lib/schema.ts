@@ -89,7 +89,10 @@ export async function fetchTables(
   const res = await sidecarFetch<{ tables: TableInfo[] }>(
     `/schema/${connId}/tables?db=${encodeURIComponent(db)}&schema=${encodeURIComponent(schema)}`,
   );
-  return res.tables;
+  return res.tables.map((table) => ({
+    ...table,
+    type: String(table.type).toUpperCase().includes("VIEW") ? "view" : "table",
+  }));
 }
 
 export interface TableRowsResult {
