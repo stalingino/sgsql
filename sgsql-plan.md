@@ -562,12 +562,12 @@ Right-click any table → "View DDL" — shows the `CREATE TABLE` statement as r
 Syntax highlighted, copyable.
 
 ### Deliverables
-- [ ] Column editor (add, edit type, set nullable/default/PK)
-- [ ] Generates correct ALTER TABLE SQL per dialect
-- [ ] SQLite table-recreation workaround
-- [ ] Index manager
-- [ ] FK editor
-- [ ] View DDL modal
+- [x] Column editor (add, edit type, set nullable/default/PK)
+- [x] Generates correct ALTER TABLE SQL per dialect
+- [x] SQLite table-recreation workaround
+- [x] Index manager
+- [x] FK editor
+- [x] View DDL modal
 
 ---
 

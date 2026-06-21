@@ -2,20 +2,20 @@
 
 Updated: 2026-06-21
 
-Scope: implementation compared with `sgsql-plan.md`. Status is based on source inspection and a successful `bun run build`; database-specific behavior was not exercised against live PostgreSQL, MySQL, or SQLite instances.
+Scope: implementation compared with `sgsql-plan.md`. Status is based on source inspection, a successful production build, generator tests, and SQLite schema-apply integration tests. Live PostgreSQL and MySQL integration coverage is still absent.
 
 ## Summary
 
-Phases 1 and 2 are substantially complete. Phase 4 has also progressed significantly and now contains the core staged CRUD workflow. The largest product gaps are the incomplete schema hierarchy in Phase 3, file export and JSON expansion in Phase 4, and most of the planned editor workflow in Phase 5.
+Phases 1, 2, and 6 are substantially complete. Phase 4 has also progressed significantly and now contains the core staged CRUD workflow. The largest product gaps are table context actions in Phase 3, file export and JSON expansion in Phase 4, and most of the planned editor workflow in Phase 5.
 
 | Phase | Status | Main remaining gap |
 |---|---|---|
 | 1 — Scaffold and sidecar | ✅ Substantially complete | Cross-platform sidecar packaging belongs to Phase 8 |
 | 2 — Connection manager | ✅ Substantially complete | Runtime coverage across all database types is not automated |
-| 3 — Schema browser | 🟡 Partial | No schema level or table context actions |
+| 3 — Schema browser | 🟡 Partial | Table context actions remain limited |
 | 4 — Table data viewer | 🟢 Mostly complete | No downloadable export or JSON expand modal |
 | 5 — SQL editor | 🟡 Partial | No Monaco, multi-result tabs, error markers, or saved queries |
-| 6 — Schema editor | 🔴 Not started | DDL editing and management UI are absent |
+| 6 — Schema editor | ✅ Substantially complete | Live PostgreSQL/MySQL integration coverage remains |
 | 7 — UI polish | 🟡 Partial | Tab reordering, full shortcuts, and EXPLAIN are absent |
 | 8 — Distribution | 🔴 Early | Apple Silicon local build only; no release pipeline |
 
@@ -117,9 +117,11 @@ Gaps:
 
 ### Phase 6 — Schema editor
 
-Status: 🔴 Not started
+Status: ✅ Substantially complete
 
-There is a read-only Structure view, but no column editor, ALTER TABLE generation, index manager, foreign-key editor, or View DDL modal.
+Implemented: create-table flow, editable columns with dialect-aware DDL, atomic PostgreSQL/SQLite schema batches, guarded MySQL partial-commit reporting, SQLite table recreation with preservation of raw indexes/triggers/table options, editable indexes, composite foreign keys with actions, schema-aware cache invalidation, PostgreSQL schema selection, and copyable DDL/review modals.
+
+PostgreSQL physical column reordering is intentionally disabled because PostgreSQL has no safe generic operation for it. Live PostgreSQL/MySQL integration tests remain the principal validation gap.
 
 ### Phase 7 — UI polish
 

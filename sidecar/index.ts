@@ -5,6 +5,7 @@ import {
   handleCloseConnection,
   handleEnsureConnection,
   handleSchemaRequest,
+  handleSchemaApply,
   handleQuery,
   handleCancel,
 } from "./routes/schema";
@@ -80,6 +81,11 @@ async function main() {
         if (path.startsWith("/schema/") && req.method === "GET") {
           console.log(`[sidecar] schema request: ${path}`);
           return handleSchemaRequest(req, path, headers);
+        }
+
+        if (path.startsWith("/schema/") && path.endsWith("/apply") && req.method === "POST") {
+          console.log(`[sidecar] schema apply: ${path}`);
+          return handleSchemaApply(req, path, headers);
         }
 
         console.log(`[sidecar] route not found: ${req.method} ${path}`);

@@ -14,6 +14,7 @@ import {
 } from "../lib/sqlAutocomplete";
 import { HighlightedSQL } from "../lib/highlightSQL";
 import { ResultGrid, type CellSelection } from "./ResultGrid";
+import { useSchemaRevision } from "../lib/schemaRevision";
 
 interface QueryEditorProps {
   connectionId: string;
@@ -225,6 +226,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   const [completionIndex, setCompletionIndex] = useState(0);
   const [completionPosition, setCompletionPosition] = useState({ left: 12, top: 32 });
   const dataRevision = useEditStore((s) => s.dataRevision);
+  const schemaRevision = useSchemaRevision(connectionId);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const preRef = useRef<HTMLPreElement>(null);
@@ -287,7 +289,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
     });
 
     return () => { cancelled = true; };
-  }, [connectionId, connectionType, activeDb]);
+  }, [connectionId, connectionType, activeDb, schemaRevision]);
 
   // Close limit menu on outside click
   useEffect(() => {

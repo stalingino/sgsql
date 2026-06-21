@@ -8,10 +8,13 @@ import {
   X,
 } from "lucide-react";
 import {
+  fetchSchemas,
   fetchTables,
   type TableInfo,
 } from "../lib/schema";
 import { getConfig, saveConfig } from "../lib/config";
+import { useSchemaRevision } from "../lib/schemaRevision";
+import { CreateTableModal } from "./CreateTableModal";
 
 /* ── Props ──────────────────────────────────────────────── */
 
@@ -50,16 +53,27 @@ export function SchemaTree({
   tableListVisible = true,
 }: SchemaTreeProps) {
   const cacheRef = useRef<SchemaCache>(new Map());
-  const schema = defaultSchema(connectionType);
+  const schemaRevision = useSchemaRevision(connectionId);
+  const [schemas, setSchemas] = useState<string[]>([defaultSchema(connectionType)]);
+  const [selectedSchemas, setSelectedSchemas] = useState<Record<string, string>>({});
+  const [createOpen, setCreateOpen] = useState(false);
+  const schema = activeDb ? selectedSchemas[activeDb] ?? defaultSchema(connectionType) : defaultSchema(connectionType);
 
   // Reset cache when connection changes
   useEffect(() => {
     cacheRef.current = new Map();
-  }, [connectionId]);
+  }, [connectionId, schemaRevision]);
+
+  useEffect(() => {
+    if (!activeDb || connectionType !== "postgres") { setSchemas([defaultSchema(connectionType)]); return; }
+    let cancelled = false;
+    fetchSchemas(connectionId, activeDb).then((items) => { if (!cancelled) { const next = items.length ? items : ["public"]; setSchemas(next); setSelectedSchemas((current) => next.includes(current[activeDb]) ? current : { ...current, [activeDb]: next[0] }); } }).catch(() => { if (!cancelled) setSchemas(["public"]); });
+    return () => { cancelled = true; };
+  }, [connectionId, connectionType, activeDb, schemaRevision]);
 
   const isSqlite = connectionType === "sqlite";
 
-  return (
+  return (<>
     <div className="flex h-full min-h-0">
       {/* ── Left: database tab strip ──────────────────────── */}
       <div className="flex flex-col w-[90px] shrink-0 border-r border-border bg-bg-primary overflow-y-auto">
@@ -96,11 +110,16 @@ export function SchemaTree({
             connectionType={connectionType}
             cacheRef={cacheRef}
             onTableSelect={onTableSelect}
+            schemaRevision={schemaRevision}
+            schemas={schemas}
+            onSchemaChange={(nextSchema) => activeDb && setSelectedSchemas((current) => ({ ...current, [activeDb]: nextSchema }))}
+            onCreate={() => setCreateOpen(true)}
           />
         </ResizableTableList>
       )}
     </div>
-  );
+    {createOpen && activeDb && <CreateTableModal connectionId={connectionId} dialect={connectionType} db={activeDb} schema={schema} onClose={() => setCreateOpen(false)} onCreated={(table) => { setCreateOpen(false); onTableSelect?.(activeDb, schema, table, "table"); }} />}
+  </>);
 }
 
 /* ── Database tab ───────────────────────────────────────── */
@@ -211,6 +230,10 @@ function TableList({
   connectionType,
   cacheRef,
   onTableSelect,
+  schemaRevision,
+  schemas,
+  onSchemaChange,
+  onCreate,
 }: {
   db: string;
   schema: string;
@@ -218,6 +241,10 @@ function TableList({
   connectionType: "postgres" | "mysql" | "sqlite";
   cacheRef: React.RefObject<SchemaCache>;
   onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view") => void;
+  schemaRevision: number;
+  schemas: string[];
+  onSchemaChange: (schema: string) => void;
+  onCreate: () => void;
 }) {
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -225,6 +252,7 @@ function TableList({
   const [query, setQuery] = useState("");
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const filterInputRef = useRef<HTMLInputElement>(null);
+  const revisionRef = useRef(schemaRevision);
 
   // Clear search when db changes
   useEffect(() => { setQuery(""); setSelectedIdx(-1); }, [db]);
@@ -244,6 +272,10 @@ function TableList({
 
     (async () => {
       try {
+        if (revisionRef.current !== schemaRevision) {
+          cacheRef.current?.clear();
+          revisionRef.current = schemaRevision;
+        }
         const cached = cacheRef.current?.get(db)?.get(schema);
         if (cached) {
           if (!cancelled) { setTables(cached); setLoading(false); }
@@ -268,7 +300,7 @@ function TableList({
     })();
 
     return () => { cancelled = true; };
-  }, [connectionId, connectionType, db, schema, cacheRef]);
+  }, [connectionId, connectionType, db, schema, cacheRef, schemaRevision]);
 
   const filtered = query
     ? tables
@@ -303,6 +335,10 @@ function TableList({
     <div className="flex flex-col flex-1 min-h-0">
       {/* Search input */}
       <div className="px-2 py-1.5 border-b border-border shrink-0">
+        <div className="flex items-center gap-1 mb-1.5">
+          {connectionType === "postgres" && <select value={schema} onChange={(event) => onSchemaChange(event.target.value)} className="min-w-0 flex-1 bg-bg-hover text-text-primary text-[11px] px-1.5 py-1 rounded border border-border outline-none" title="Schema">{schemas.map((item) => <option key={item}>{item}</option>)}</select>}
+          <button onClick={onCreate} className="flex items-center gap-1 px-2 py-1 rounded border border-border text-[10px] hover:bg-bg-hover whitespace-nowrap" title="Create table"><Plus size={10} />Table</button>
+        </div>
         <input
           ref={filterInputRef}
           type="text"

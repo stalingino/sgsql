@@ -17,6 +17,9 @@ export interface ColumnInfo {
   isPk: boolean;
   isFk: boolean;
   position: number;
+  unique?: boolean;
+  extra?: string;
+  comment?: string;
 }
 
 export interface IndexInfo {
@@ -25,6 +28,10 @@ export interface IndexInfo {
   unique: boolean;
   definition?: string;
   primary?: boolean;
+  method?: string;
+  predicate?: string;
+  includeColumns?: string[];
+  expressionSql?: string;
 }
 
 export interface ForeignKeyInfo {
@@ -33,6 +40,8 @@ export interface ForeignKeyInfo {
   foreignSchema: string;
   foreignTable: string;
   foreignColumn: string;
+  columns?: string[];
+  foreignColumns?: string[];
   onUpdate?: string;
   onDelete?: string;
 }
@@ -176,6 +185,9 @@ export async function fetchColumns(
     isPk: c.column_key === "PRI" || c.isPk === true,
     isFk: c.column_key === "MUL" || c.isFk === true,
     position: c.ordinal_position ?? c.position ?? 0,
+    unique: c.column_key === "UNI" || c.isUnique === true,
+    extra: c.extra ?? [c.collation_name ? `COLLATE ${c.collation_name}` : "", c.identity_clause ?? "", c.generation_clause ?? ""].filter(Boolean).join(" "),
+    comment: c.comment ?? c.column_comment ?? "",
   }));
 }
 
@@ -196,6 +208,10 @@ export async function fetchIndexes(connId: string, db: string, schema: string, t
       unique: index.unique === true || index.Non_unique === 0 || /CREATE\s+UNIQUE\s+INDEX/i.test(definition ?? ""),
       primary: index.primary === true || index.Key_name === "PRIMARY" || index.origin === "pk",
       definition,
+      method: index.method ?? index.Index_type ?? (typeof definition === "string" ? /\bUSING\s+(\w+)/i.exec(definition)?.[1] : undefined),
+      predicate: index.predicate ?? (typeof definition === "string" ? /\bWHERE\s+([\s\S]+)$/i.exec(definition)?.[1] : undefined),
+      includeColumns: index.include_columns ?? (typeof definition === "string" ? /\bINCLUDE\s*\(([^)]+)\)/i.exec(definition)?.[1]?.split(",").map((part: string) => part.trim().replace(/^['"`]|['"`]$/g, "")) : undefined),
+      expressionSql: index.expression_sql ?? index.Expression ?? undefined,
     };
   }).reduce<IndexInfo[]>((all, index) => {
     const existing = all.find((item) => item.name === index.name);
@@ -208,17 +224,37 @@ export async function fetchIndexes(connId: string, db: string, schema: string, t
 export async function fetchForeignKeys(connId: string, db: string, schema: string, table: string): Promise<ForeignKeyInfo[]> {
   const res = await sidecarFetch<{ foreignKeys: any[] }>(schemaUrl(connId, "fks", db, schema, table));
   return res.foreignKeys.map((fk: any) => ({
-    name: fk.constraint_name ?? `fk_${table}_${fk.column_name}_${fk.id ?? ""}`,
+    name: fk.constraint_name ?? `fk_${table}_${fk.id ?? fk.column_name ?? ""}`,
     column: fk.column_name ?? "",
     foreignSchema: fk.foreign_table_schema ?? schema,
     foreignTable: fk.foreign_table_name ?? "",
     foreignColumn: fk.foreign_column_name ?? "",
     onUpdate: fk.on_update,
     onDelete: fk.on_delete,
-  }));
+  })).reduce<ForeignKeyInfo[]>((all, fk) => {
+    const existing = all.find((item) => item.name === fk.name);
+    if (existing) {
+      existing.columns = [...(existing.columns ?? [existing.column]), fk.column];
+      existing.foreignColumns = [...(existing.foreignColumns ?? [existing.foreignColumn]), fk.foreignColumn];
+    } else {
+      all.push({ ...fk, columns: [fk.column], foreignColumns: [fk.foreignColumn] });
+    }
+    return all;
+  }, []);
 }
 
 export async function fetchTableDdl(connId: string, db: string, schema: string, table: string): Promise<string> {
   const res = await sidecarFetch<{ ddl: string }>(schemaUrl(connId, "ddl", db, schema, table));
   return res.ddl;
+}
+
+export async function fetchTableArtifacts(connId: string, db: string, schema: string, table: string): Promise<{ triggers: string[] }> {
+  return sidecarFetch(schemaUrl(connId, "artifacts", db, schema, table));
+}
+
+export async function applySchemaChanges(connId: string, db: string, statements: string[], disableForeignKeys = false): Promise<{ ok: boolean; applied: number; atomic: boolean; duration: number }> {
+  return sidecarFetch(`/schema/${connId}/apply`, {
+    method: "POST",
+    body: JSON.stringify({ statements, db, disableForeignKeys }),
+  });
 }

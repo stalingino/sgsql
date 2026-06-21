@@ -5,6 +5,8 @@ import {
   buildCreateIndex,
   buildDropIndex,
   buildEditIndex,
+  buildCreateTable,
+  buildCreateTableStatements,
   quoteIdent,
   type EditableColumn,
 } from "../src/lib/schemaDdl";
@@ -46,19 +48,17 @@ describe("schema DDL generation", () => {
     ]);
   });
 
-  test("uses transactional table recreation for SQLite", () => {
+  test("generates SQLite table recreation statements for atomic sidecar execution", () => {
     const original = [column("id", { isPk: true }), column("legacy", { type: "text", nullable: true })];
     const columns = [column("id", { isPk: true }), { ...column("title", { type: "text", nullable: true }), originalName: null }];
     const sql = buildColumnMigration({
       dialect: "sqlite", db: "main", schema: "main", table: "notes", original, columns,
       indexes: [{ name: "notes_title_idx", columns: ["title"], unique: false }],
     });
-    expect(sql[0]).toBe("PRAGMA foreign_keys = OFF");
-    expect(sql).toContain("BEGIN IMMEDIATE");
+    expect(sql[0].startsWith('CREATE TABLE "__sgsql_notes_')).toBe(true);
     expect(sql.some((statement) => statement.startsWith('INSERT INTO "__sgsql_notes_') && statement.includes('SELECT "id" FROM "notes"'))).toBe(true);
     expect(sql).toContain('CREATE INDEX "notes_title_idx" ON "notes" ("title")');
-    expect(sql.at(-2)).toBe("COMMIT");
-    expect(sql.at(-1)).toBe("PRAGMA foreign_keys = ON");
+    expect(sql.at(-1)).toBe('CREATE INDEX "notes_title_idx" ON "notes" ("title")');
   });
 
   test("recreates a SQLite table for foreign-key-only changes", () => {
@@ -85,9 +85,65 @@ describe("schema DDL generation", () => {
 
   test("edits an index by dropping and recreating it", () => {
     expect(buildEditIndex("mysql", "app", "", "events", "old_idx", "new_idx", ["kind", "created_at"], true)).toEqual([
-      "DROP INDEX `old_idx` ON `app`.`events`",
       "CREATE UNIQUE INDEX `new_idx` ON `app`.`events` (`kind`, `created_at`)",
+      "DROP INDEX `old_idx` ON `app`.`events`",
     ]);
+  });
+
+  test("generates physical column positioning for MySQL", () => {
+    const original = [column("first"), column("second")];
+    const sql = buildColumnMigration({ dialect: "mysql", db: "app", schema: "", table: "items", original, columns: [column("second"), column("first")] });
+    expect(sql).toEqual([
+      "ALTER TABLE `app`.`items` MODIFY COLUMN `second` integer NOT NULL FIRST",
+      "ALTER TABLE `app`.`items` MODIFY COLUMN `first` integer NOT NULL AFTER `second`",
+    ]);
+  });
+
+  test("rejects unsafe PostgreSQL physical reordering", () => {
+    const original = [column("first"), column("second")];
+    expect(() => buildColumnMigration({ dialect: "postgres", db: "app", schema: "public", table: "items", original, columns: [column("second"), column("first")] })).toThrow("does not support safely reordering");
+  });
+
+  test("preserves advanced SQLite DDL, indexes, triggers, and table options", () => {
+    const original = [column("id", { isPk: true }), column("name", { type: "TEXT", nullable: true })];
+    const columns = [...original, { ...column("created_at", { type: "TEXT", nullable: true }), originalName: null }];
+    const sql = buildColumnMigration({
+      dialect: "sqlite", db: "main", schema: "main", table: "notes", original, columns,
+      originalDdl: 'CREATE TABLE "notes" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "name" TEXT COLLATE NOCASE, CHECK(length(name) > 0)) STRICT;',
+      indexes: [{ name: "notes_lower_idx", columns: [], unique: false, definition: "CREATE INDEX notes_lower_idx ON notes(lower(name)) WHERE name IS NOT NULL" }],
+      triggers: ["CREATE TRIGGER notes_touch AFTER UPDATE ON notes BEGIN UPDATE notes SET name = new.name WHERE id = new.id; END"],
+    });
+    expect(sql[0]).toContain('"id" INTEGER PRIMARY KEY AUTOINCREMENT');
+    expect(sql[0]).toContain('"name" TEXT COLLATE NOCASE');
+    expect(sql[0]).toContain("CHECK(length(name) > 0)");
+    expect(sql[0]).toEndWith("STRICT");
+    expect(sql).toContain("CREATE INDEX notes_lower_idx ON notes(lower(name)) WHERE name IS NOT NULL");
+    expect(sql.at(-1)).toStartWith("CREATE TRIGGER notes_touch");
+  });
+
+  test("creates tables with composite keys and advanced index options", () => {
+    const columns = [column("tenant_id", { isPk: true }), column("id", { isPk: true }), column("email", { type: "text", unique: true })];
+    expect(buildCreateTable("postgres", "app", "audit", "events", columns)).toContain('PRIMARY KEY ("tenant_id", "id")');
+    expect(buildCreateIndex("postgres", "app", "audit", "events", "events_email_idx", ["email"], true, { method: "btree", includeColumns: ["id"], predicate: "email IS NOT NULL" })).toBe(
+      'CREATE UNIQUE INDEX "events_email_idx" ON "audit"."events" USING btree ("email") INCLUDE ("id") WHERE email IS NOT NULL',
+    );
+    expect(buildCreateIndex("postgres", "app", "audit", "events", "events_lower_email_idx", [], false, { expressionSql: "lower(email)" })).toBe(
+      'CREATE INDEX "events_lower_email_idx" ON "audit"."events" (lower(email))',
+    );
+  });
+
+  test("emits PostgreSQL comments as part of create-table batches", () => {
+    const statements = buildCreateTableStatements("postgres", "app", "public", "users", [column("id", { comment: "Stable identifier" })]);
+    expect(statements).toEqual([
+      'CREATE TABLE "public"."users" (\n  "id" integer NOT NULL\n)',
+      `COMMENT ON COLUMN "public"."users"."id" IS 'Stable identifier'`,
+    ]);
+  });
+
+  test("generates composite foreign keys with actions", () => {
+    expect(buildAddForeignKey("postgres", "app", "public", "orders", {
+      name: "orders_tenant_user_fk", column: "tenant_id", columns: ["tenant_id", "user_id"], foreignSchema: "identity", foreignTable: "users", foreignColumn: "tenant_id", foreignColumns: ["tenant_id", "id"], onUpdate: "CASCADE", onDelete: "SET NULL",
+    })).toBe('ALTER TABLE "public"."orders" ADD CONSTRAINT "orders_tenant_user_fk" FOREIGN KEY ("tenant_id", "user_id") REFERENCES "identity"."users" ("tenant_id", "id") ON UPDATE CASCADE ON DELETE SET NULL');
   });
 
   test("rejects duplicate column names", () => {

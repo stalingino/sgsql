@@ -214,12 +214,21 @@ async function dispatchSchemaAction(
     case "ddl":
       if (!table) throw new Error("Missing ?table= param");
       return getTableDdl(entry, db, schema, table);
+    case "artifacts":
+      if (!table) throw new Error("Missing ?table= param");
+      return getTableArtifacts(entry, db, schema, table);
     case "rows":
       if (!table) throw new Error("Missing ?table= param");
       return getRows(entry, db, schema, table, limit, offset, orderBy, where);
     default:
       throw new Error(`Unknown schema action: ${action}`);
   }
+}
+
+async function getTableArtifacts(entry: PoolEntry, _db?: string, _schema?: string, table?: string): Promise<{ triggers: string[] }> {
+  if (entry.type !== "sqlite") return { triggers: [] };
+  const rows = entry.client.query("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? AND sql IS NOT NULL ORDER BY name").all(table) as any[];
+  return { triggers: rows.map((row) => String(row.sql)) };
 }
 
 async function getTableDdl(
@@ -257,11 +266,54 @@ async function getTableDdl(
         JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = ${s} AND c.relname = ${table!}
       `;
+      const indexes = await entry.client`
+        SELECT pg_get_indexdef(i.indexrelid) AS definition
+        FROM pg_index i
+        JOIN pg_class rel ON rel.oid = i.indrelid
+        JOIN pg_namespace n ON n.oid = rel.relnamespace
+        LEFT JOIN pg_constraint con ON con.conindid = i.indexrelid
+        WHERE n.nspname = ${s} AND rel.relname = ${table!} AND con.oid IS NULL
+      `;
+      const triggers = await entry.client`
+        SELECT pg_get_triggerdef(t.oid, true) AS definition
+        FROM pg_trigger t JOIN pg_class rel ON rel.oid = t.tgrelid JOIN pg_namespace n ON n.oid = rel.relnamespace
+        WHERE n.nspname = ${s} AND rel.relname = ${table!} AND NOT t.tgisinternal
+      `;
+      const comments = await entry.client`
+        SELECT a.attname, col_description(rel.oid, a.attnum) AS comment
+        FROM pg_class rel JOIN pg_namespace n ON n.oid = rel.relnamespace
+        LEFT JOIN pg_attribute a ON a.attrelid = rel.oid AND a.attnum > 0 AND NOT a.attisdropped
+        WHERE n.nspname = ${s} AND rel.relname = ${table!}
+      `;
+      const [tableMeta] = await entry.client`
+        SELECT obj_description(rel.oid, 'pg_class') AS comment,
+          CASE WHEN rel.relkind = 'p' THEN pg_get_partkeydef(rel.oid) END AS partition_key,
+          rel.reloptions, ts.spcname AS tablespace
+        FROM pg_class rel JOIN pg_namespace n ON n.oid = rel.relnamespace
+        LEFT JOIN pg_tablespace ts ON ts.oid = rel.reltablespace
+        WHERE n.nspname = ${s} AND rel.relname = ${table!}
+      `;
+      const grants = await entry.client`
+        SELECT grantee, string_agg(privilege_type, ', ' ORDER BY privilege_type) AS privileges
+        FROM information_schema.role_table_grants
+        WHERE table_schema = ${s} AND table_name = ${table!}
+        GROUP BY grantee
+      `;
       const lines = [
         ...columns.map((column: any) => `  "${String(column.attname).replace(/"/g, '""')}" ${column.type}${column.default_value ? ` DEFAULT ${column.default_value}` : ""}${column.attnotnull ? " NOT NULL" : ""}`),
         ...constraints.map((constraint: any) => `  CONSTRAINT "${String(constraint.conname).replace(/"/g, '""')}" ${constraint.definition}`),
       ];
-      return { ddl: `CREATE TABLE "${s.replace(/"/g, '""')}"."${table!.replace(/"/g, '""')}" (\n${lines.join(",\n")}\n);` };
+      const qualified = `"${s.replace(/"/g, '""')}"."${table!.replace(/"/g, '""')}"`;
+      const suffix = `${tableMeta?.partition_key ? ` PARTITION BY ${tableMeta.partition_key}` : ""}${tableMeta?.reloptions?.length ? ` WITH (${tableMeta.reloptions.join(", ")})` : ""}${tableMeta?.tablespace ? ` TABLESPACE "${String(tableMeta.tablespace).replace(/"/g, '""')}"` : ""}`;
+      const quoteLiteral = (value: unknown) => `'${String(value).replace(/'/g, "''")}'`;
+      const extras = [
+        ...indexes.map((row: any) => `${row.definition};`),
+        ...triggers.map((row: any) => `${row.definition};`),
+        ...(tableMeta?.comment ? [`COMMENT ON TABLE ${qualified} IS ${quoteLiteral(tableMeta.comment)};`] : []),
+        ...comments.filter((row: any) => row.comment).map((row: any) => `COMMENT ON COLUMN ${qualified}."${String(row.attname).replace(/"/g, '""')}" IS ${quoteLiteral(row.comment)};`),
+        ...grants.map((row: any) => `GRANT ${row.privileges} ON TABLE ${qualified} TO "${String(row.grantee).replace(/"/g, '""')}";`),
+      ];
+      return { ddl: `CREATE TABLE ${qualified} (\n${lines.join(",\n")}\n)${suffix};${extras.length ? `\n\n${extras.join("\n")}` : ""}` };
     }
     case "mysql": {
       const d = db || "information_schema";
@@ -326,6 +378,73 @@ export async function handleSchemaRequest(
     const message = e instanceof Error ? e.message : "Unknown error";
     console.error(`[sidecar] schema/${action} error: ${message}`);
     return errorResponse(message, headers);
+  }
+}
+
+export async function handleSchemaApply(
+  req: Request,
+  path: string,
+  headers: Record<string, string>,
+): Promise<Response> {
+  const connectionId = extractConnId(path);
+  if (!connectionId) return errorResponse("Invalid schema path", headers, 400);
+
+  let body: { statements?: string[]; db?: string; disableForeignKeys?: boolean };
+  try { body = await req.json(); } catch { return errorResponse("Invalid JSON body", headers, 400); }
+  const statements = body.statements?.map((statement) => statement.trim()).filter(Boolean) ?? [];
+  if (statements.length === 0) return errorResponse("No DDL statements supplied", headers, 400);
+  if (statements.length > 100) return errorResponse("Schema batches are limited to 100 statements", headers, 400);
+
+  let entry = getConnection(connectionId);
+  if (!entry) return errorResponse("Connection not found. Call /connections/open first.", headers, 404);
+
+  const started = performance.now();
+  let applied = 0;
+  try {
+    const ensured = await ensureConnectionAlive(connectionId);
+    entry = ensured.entry;
+    if (body.db) await switchDb(entry, body.db);
+
+    if (entry.type === "postgres") {
+      await entry.client.begin(async (transaction) => {
+        for (const statement of statements) {
+          await transaction.unsafe(statement);
+          applied += 1;
+        }
+      });
+    } else if (entry.type === "sqlite") {
+      if (body.disableForeignKeys) entry.client.run("PRAGMA foreign_keys = OFF");
+      try {
+        const apply = entry.client.transaction((batch: string[]) => {
+          for (const statement of batch) {
+            entry.client.run(statement);
+            applied += 1;
+          }
+          if (body.disableForeignKeys) {
+            const violations = entry.client.query("PRAGMA foreign_key_check").all() as any[];
+            if (violations.length > 0) throw new Error(`Foreign-key validation failed for ${violations.length} row${violations.length === 1 ? "" : "s"}`);
+          }
+        });
+        apply(statements);
+      } finally {
+        if (body.disableForeignKeys) entry.client.run("PRAGMA foreign_keys = ON");
+      }
+    } else {
+      // MySQL implicitly commits most DDL. Execute in order and report exactly
+      // how many statements committed if a later statement fails.
+      for (const statement of statements) {
+        await entry.client.query(statement);
+        applied += 1;
+      }
+    }
+
+    markConnectionUsed(connectionId);
+    return json(withConnectionStatus({ ok: true, applied, atomic: entry.type !== "mysql", duration: performance.now() - started }, connectionId, ensured.reconnected), headers);
+  } catch (cause) {
+    const message = friendlyError(cause);
+    const suffix = entry.type === "mysql" && applied > 0 ? ` (${applied} statement${applied === 1 ? "" : "s"} already committed)` : "";
+    console.error(`[sidecar] schema apply failed after ${applied} statements: ${message}`);
+    return errorResponse(`${message}${suffix}`, headers);
   }
 }
 
@@ -455,8 +574,12 @@ async function getColumns(
           pg_catalog.format_type(a.atttypid, a.atttypmod) AS formatted_type,
           c.is_nullable,
           c.column_default,
+          col_description(cls.oid, a.attnum) AS comment,
+          c.collation_name,
+          CASE WHEN c.is_identity = 'YES' THEN 'GENERATED ' || c.identity_generation || ' AS IDENTITY' ELSE '' END AS identity_clause,
+          CASE WHEN c.is_generated <> 'NEVER' THEN 'GENERATED ALWAYS AS (' || c.generation_expression || ') STORED' ELSE '' END AS generation_clause,
           c.ordinal_position,
-          CASE WHEN pk.column_name IS NOT NULL THEN 'PRI' ELSE '' END AS column_key
+          CASE WHEN pk.column_name IS NOT NULL THEN 'PRI' WHEN uq.column_name IS NOT NULL THEN 'UNI' ELSE '' END AS column_key
         FROM information_schema.columns c
         JOIN pg_namespace ns ON ns.nspname = c.table_schema
         JOIN pg_class cls ON cls.relnamespace = ns.oid AND cls.relname = c.table_name
@@ -471,6 +594,15 @@ async function getColumns(
             AND tc.table_schema = ${s}
             AND tc.table_name = ${table!}
         ) pk ON pk.column_name = c.column_name
+        LEFT JOIN (
+          SELECT max(kcu.column_name) AS column_name
+          FROM information_schema.table_constraints tc
+          JOIN information_schema.key_column_usage kcu
+            ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+          WHERE tc.constraint_type = 'UNIQUE' AND tc.table_schema = ${s} AND tc.table_name = ${table!}
+          GROUP BY tc.constraint_name
+          HAVING COUNT(*) = 1
+        ) uq ON uq.column_name = c.column_name
         WHERE c.table_schema = ${s} AND c.table_name = ${table!}
         ORDER BY c.ordinal_position
       `;
@@ -479,7 +611,7 @@ async function getColumns(
     case "mysql": {
       const d = db || "information_schema";
       const [rows] = await entry.client.query(
-        `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, ORDINAL_POSITION, COLUMN_KEY, EXTRA
+        `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, ORDINAL_POSITION, COLUMN_KEY, EXTRA, COLLATION_NAME, GENERATION_EXPRESSION, COLUMN_COMMENT
          FROM information_schema.COLUMNS
          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
          ORDER BY ORDINAL_POSITION`,
@@ -494,7 +626,10 @@ async function getColumns(
           column_default: r.COLUMN_DEFAULT,
           ordinal_position: r.ORDINAL_POSITION,
           column_key: r.COLUMN_KEY,
-          extra: r.EXTRA,
+          extra: [r.COLLATION_NAME ? `COLLATE ${r.COLLATION_NAME}` : "", r.GENERATION_EXPRESSION ? `GENERATED ALWAYS AS (${r.GENERATION_EXPRESSION}) STORED` : r.EXTRA].filter(Boolean).join(" "),
+          collation_name: r.COLLATION_NAME,
+          generation_expression: r.GENERATION_EXPRESSION,
+          column_comment: r.COLUMN_COMMENT,
         })),
       };
     }
@@ -528,16 +663,18 @@ async function getIndexes(
     case "postgres": {
       const s = schema || "public";
       const rows = await entry.client`
-        SELECT p.indexname, p.indexdef,
-          EXISTS (
-            SELECT 1 FROM pg_constraint con
-            JOIN pg_class rel ON rel.oid = con.conrelid
-            JOIN pg_namespace ns ON ns.oid = rel.relnamespace
-            WHERE con.contype = 'p' AND con.conname = p.indexname
-              AND ns.nspname = p.schemaname AND rel.relname = p.tablename
-          ) AS primary
-        FROM pg_indexes p
-        WHERE p.schemaname = ${s} AND p.tablename = ${table!}
+        SELECT idx.relname AS indexname, pg_get_indexdef(idx.oid) AS indexdef,
+          ix.indisprimary AS primary, am.amname AS method,
+          pg_get_expr(ix.indexprs, ix.indrelid) AS expression_sql,
+          pg_get_expr(ix.indpred, ix.indrelid) AS predicate,
+          ARRAY(SELECT att.attname FROM unnest(ix.indkey) WITH ORDINALITY AS key(attnum, ord) JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = key.attnum WHERE key.attnum > 0 AND key.ord <= ix.indnkeyatts ORDER BY key.ord) AS columns,
+          ARRAY(SELECT att.attname FROM unnest(ix.indkey) WITH ORDINALITY AS key(attnum, ord) JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = key.attnum WHERE key.attnum > 0 AND key.ord > ix.indnkeyatts ORDER BY key.ord) AS include_columns
+        FROM pg_class rel
+        JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+        JOIN pg_index ix ON ix.indrelid = rel.oid
+        JOIN pg_class idx ON idx.oid = ix.indexrelid
+        JOIN pg_am am ON am.oid = idx.relam
+        WHERE ns.nspname = ${s} AND rel.relname = ${table!}
       `;
       return { indexes: rows.map((r: any) => ({ ...r })) };
     }
@@ -562,6 +699,7 @@ async function getIndexes(
           unique: idx.unique === 1,
           primary: idx.origin === "pk",
           columns: cols.map((c: any) => c.name),
+          definition: (entry.client.query("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").get(idx.name) as any)?.sql ?? undefined,
         });
       }
       return { indexes };
@@ -586,19 +724,26 @@ async function getForeignKeys(
         SELECT
           tc.constraint_name,
           kcu.column_name,
-          ccu.table_schema AS foreign_table_schema,
-          ccu.table_name AS foreign_table_name,
-          ccu.column_name AS foreign_column_name
+          ref.table_schema AS foreign_table_schema,
+          ref.table_name AS foreign_table_name,
+          ref.column_name AS foreign_column_name,
+          rc.update_rule AS on_update,
+          rc.delete_rule AS on_delete,
+          kcu.ordinal_position
         FROM information_schema.table_constraints AS tc
         JOIN information_schema.key_column_usage AS kcu
           ON tc.constraint_name = kcu.constraint_name
           AND tc.table_schema = kcu.table_schema
-        JOIN information_schema.constraint_column_usage AS ccu
-          ON ccu.constraint_name = tc.constraint_name
-          AND ccu.table_schema = tc.table_schema
+        JOIN information_schema.referential_constraints rc
+          ON rc.constraint_name = tc.constraint_name AND rc.constraint_schema = tc.table_schema
+        JOIN information_schema.key_column_usage ref
+          ON ref.constraint_schema = rc.unique_constraint_schema
+          AND ref.constraint_name = rc.unique_constraint_name
+          AND ref.ordinal_position = kcu.position_in_unique_constraint
         WHERE tc.constraint_type = 'FOREIGN KEY'
           AND tc.table_schema = ${s}
           AND tc.table_name = ${table!}
+        ORDER BY tc.constraint_name, kcu.ordinal_position
       `;
       return { foreignKeys: rows.map((r: any) => ({ ...r })) };
     }
@@ -606,13 +751,19 @@ async function getForeignKeys(
       const d = db || "information_schema";
       const [rows] = await entry.client.query(
         `SELECT
-           CONSTRAINT_NAME,
-           COLUMN_NAME,
-           REFERENCED_TABLE_SCHEMA,
-           REFERENCED_TABLE_NAME,
-           REFERENCED_COLUMN_NAME
+           kcu.CONSTRAINT_NAME,
+           kcu.COLUMN_NAME,
+           kcu.REFERENCED_TABLE_SCHEMA,
+           kcu.REFERENCED_TABLE_NAME,
+           kcu.REFERENCED_COLUMN_NAME,
+           rc.UPDATE_RULE,
+           rc.DELETE_RULE,
+           kcu.ORDINAL_POSITION
          FROM information_schema.KEY_COLUMN_USAGE
-         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL`,
+         AS kcu JOIN information_schema.REFERENTIAL_CONSTRAINTS rc
+           ON rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+         WHERE kcu.TABLE_SCHEMA = ? AND kcu.TABLE_NAME = ? AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+         ORDER BY kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION`,
         [d, table],
       );
       return {
@@ -622,6 +773,8 @@ async function getForeignKeys(
           foreign_table_schema: r.REFERENCED_TABLE_SCHEMA,
           foreign_table_name: r.REFERENCED_TABLE_NAME,
           foreign_column_name: r.REFERENCED_COLUMN_NAME,
+          on_update: r.UPDATE_RULE,
+          on_delete: r.DELETE_RULE,
         })),
       };
     }
