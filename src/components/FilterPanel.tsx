@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   X,
   Code2,
+  Plus,
+  RotateCcw,
 } from "lucide-react";
 
 /* ── Types ──────────────────────────────────────────────── */
@@ -29,16 +31,10 @@ interface FilterPanelProps {
   filters: FilterRow[];
   onFiltersChange: (filters: FilterRow[]) => void;
   onApply: () => void;
+  onShowSql: () => void;
+  onClear: () => void;
+  canClear: boolean;
   onClose: () => void;
-  connectionType: "postgres" | "mysql" | "sqlite";
-  /** Render slot for action buttons (Add Filter, SQL, Apply) rendered in parent footer */
-  footerActionsRef?: React.MutableRefObject<FilterPanelActions | null>;
-}
-
-export interface FilterPanelActions {
-  addFilter: () => void;
-  allWhere: string;
-  checkedWhere: string;
 }
 
 /* ── Fuzzy ──────────────────────────────────────────────── */
@@ -116,9 +112,10 @@ export function FilterPanel({
   filters,
   onFiltersChange,
   onApply,
+  onShowSql,
+  onClear,
+  canClear,
   onClose,
-  connectionType,
-  footerActionsRef,
 }: FilterPanelProps) {
   const firstInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -156,31 +153,42 @@ export function FilterPanel({
     onFiltersChange([...filters, createFilter()]);
   }, [filters, onFiltersChange]);
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        onApply();
-      }
-    },
-    [onApply],
-  );
-
-  const allWhere = buildWhereClause(filters, connectionType, false);
-  const checkedWhere = buildWhereClause(filters, connectionType, true);
-
-  // Expose actions to parent
-  useEffect(() => {
-    if (footerActionsRef) {
-      footerActionsRef.current = { addFilter, allWhere, checkedWhere };
-    }
-  });
-
   return (
-    <div
-      className="border-t border-border bg-bg-secondary px-3 py-2 text-[11px] shrink-0"
-      onKeyDown={handleKeyDown}
-    >
+    <div className="border-t border-border bg-bg-secondary px-3 py-2.5 text-[11px] shrink-0 shadow-[0_-4px_16px_rgba(0,0,0,0.08)]">
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <div className="text-[11px] font-semibold text-text-primary uppercase tracking-wider">Filter conditions</div>
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={addFilter}
+            className="flex items-center gap-1 px-2 py-1 rounded border border-border bg-bg-primary text-text-primary hover:border-accent/50 hover:bg-bg-hover transition-colors cursor-pointer"
+          >
+            <Plus size={10} />
+            Add
+          </button>
+          <button
+            onClick={onShowSql}
+            className="flex items-center gap-1 px-2 py-1 rounded border border-border bg-bg-primary text-text-primary hover:border-accent/50 hover:bg-bg-hover transition-colors cursor-pointer"
+          >
+            <Code2 size={10} />
+            SQL
+          </button>
+          <button
+            onClick={onClear}
+            disabled={!canClear}
+            className="flex items-center gap-1 px-2 py-1 rounded border border-border bg-bg-primary text-text-primary hover:border-accent/50 hover:bg-bg-hover transition-colors cursor-pointer disabled:opacity-35 disabled:cursor-default"
+          >
+            <RotateCcw size={10} />
+            Clear
+          </button>
+          <button
+            onClick={onApply}
+            className="flex items-center gap-1 px-3 py-1 rounded bg-accent text-white hover:bg-accent-hover transition-colors cursor-pointer font-medium"
+          >
+            Apply
+          </button>
+        </div>
+      </div>
+
       {/* Filter rows */}
       <div className="flex flex-col gap-1.5 max-h-[200px] overflow-y-auto">
         {filters.map((f, i) => (
@@ -190,6 +198,7 @@ export function FilterPanel({
             columns={columns}
             onChange={(patch) => updateFilter(f.id, patch)}
             onRemove={() => removeFilter(f.id)}
+            onApply={onApply}
             inputRef={i === 0 ? firstInputRef : undefined}
           />
         ))}
@@ -206,16 +215,24 @@ function FilterRowItem({
   columns,
   onChange,
   onRemove,
+  onApply,
   inputRef,
 }: {
   filter: FilterRow;
   columns: string[];
   onChange: (patch: Partial<FilterRow>) => void;
   onRemove: () => void;
+  onApply: () => void;
   inputRef?: React.Ref<HTMLInputElement>;
 }) {
+  const applyOnEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    onApply();
+  };
+
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex items-center gap-1.5 rounded-md border border-border bg-bg-primary/70 px-2 py-1.5">
       {/* Checkbox */}
       <input
         type="checkbox"
@@ -240,6 +257,7 @@ function FilterRowItem({
           type="text"
           value={filter.rawSql}
           onChange={(e) => onChange({ rawSql: e.target.value })}
+          onKeyDown={applyOnEnter}
           placeholder="e.g. age > 18 AND status = 'active'"
           className="flex-1 px-2 py-1 text-[11px] font-mono bg-bg-primary border border-border rounded outline-none focus:border-accent transition-colors min-w-0"
         />
@@ -261,6 +279,7 @@ function FilterRowItem({
               type="text"
               value={filter.value}
               onChange={(e) => onChange({ value: e.target.value })}
+              onKeyDown={applyOnEnter}
               placeholder={
                 filter.operator === "contains"
                   ? "search text..."

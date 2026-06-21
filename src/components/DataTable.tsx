@@ -13,6 +13,7 @@ import {
   Code2,
   Copy,
   Check,
+  X,
 } from "lucide-react";
 import {
   fetchTableRows,
@@ -24,7 +25,8 @@ import { useQueryLog } from "../lib/queryLog";
 import { useEditStore, buildRowKey } from "../lib/editStore";
 import { ResultGrid, type SortState, type CellSelection } from "./ResultGrid";
 import { getConfig } from "../lib/config";
-import { FilterPanel, type FilterRow, type FilterPanelActions, createFilter, buildWhereClause } from "./FilterPanel";
+import { HighlightedSQL } from "../lib/highlightSQL";
+import { FilterPanel, type FilterRow, createFilter, buildWhereClause } from "./FilterPanel";
 
 interface DataTableProps {
   connectionId: string;
@@ -36,6 +38,38 @@ interface DataTableProps {
 }
 
 const PAGE_SIZE = 50;
+
+function quotePreviewIdent(type: "postgres" | "mysql" | "sqlite", value: string): string {
+  if (type === "mysql") return `\`${value.replace(/`/g, "``")}\``;
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function buildPreviewSql({
+  connectionType,
+  db,
+  schema,
+  table,
+  where,
+  sort,
+}: {
+  connectionType: "postgres" | "mysql" | "sqlite";
+  db: string;
+  schema: string;
+  table: string;
+  where: string;
+  sort: SortState | null;
+}): string {
+  const tableRef = connectionType === "mysql"
+    ? `${quotePreviewIdent(connectionType, db || "information_schema")}.${quotePreviewIdent(connectionType, table)}`
+    : connectionType === "postgres"
+      ? `${quotePreviewIdent(connectionType, schema || "public")}.${quotePreviewIdent(connectionType, table)}`
+      : quotePreviewIdent(connectionType, table);
+  const whereClause = where ? ` WHERE ${where}` : "";
+  const orderClause = sort
+    ? ` ORDER BY ${quotePreviewIdent(connectionType, sort.column)} ${sort.dir}`
+    : "";
+  return `SELECT * FROM ${tableRef}${whereClause}${orderClause} LIMIT ${PAGE_SIZE} OFFSET 0`;
+}
 
 type ViewMode = "data" | "structure";
 
@@ -236,9 +270,9 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState<FilterRow[]>([]);
   const [appliedWhere, setAppliedWhere] = useState<string>("");
+  const [filterRefreshRevision, setFilterRefreshRevision] = useState(0);
   const [sqlPreview, setSqlPreview] = useState(false);
   const [copied, setCopied] = useState(false);
-  const filterActionsRef = useRef<FilterPanelActions | null>(null);
   const [sort, setSort] = useState<SortState | null>(() => {
     // Initialize from settings default
     const defaultOrder = getConfig().settings?.defaultOrderBy?.trim();
@@ -354,6 +388,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     setFiltersOpen(false);
     setFilters([]);
     setAppliedWhere("");
+    setSqlPreview(false);
     // Re-apply default sort from settings
     const defaultOrder = getConfig().settings?.defaultOrderBy?.trim();
     if (defaultOrder) {
@@ -425,7 +460,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
       });
 
     return () => { cancelled = true; };
-  }, [connectionId, db, schema, table, offset, sort, appliedWhere, dataRevision]);
+  }, [connectionId, db, schema, table, offset, sort, appliedWhere, dataRevision, filterRefreshRevision]);
 
   const page = Math.floor(offset / PAGE_SIZE) + 1;
   const totalEstimate = data?.totalEstimate ?? 0;
@@ -440,6 +475,17 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     setAppliedWhere(where);
     setOffset(0);
   }, [filters, connectionType]);
+
+  const handleClearFilters = useCallback(() => {
+    setFilters([]);
+    setAppliedWhere("");
+    setOffset(0);
+    setFiltersOpen(false);
+    setFilterRefreshRevision((revision) => revision + 1);
+  }, []);
+
+  const previewWhere = buildWhereClause(filters, connectionType, true);
+  const previewSql = buildPreviewSql({ connectionType, db, schema, table, where: previewWhere, sort });
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -479,9 +525,13 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
           filters={filters}
           onFiltersChange={setFilters}
           onApply={handleApplyFilters}
+          onShowSql={() => {
+            setCopied(false);
+            setSqlPreview(true);
+          }}
+          onClear={handleClearFilters}
+          canClear={filters.length > 0 || !!appliedWhere}
           onClose={() => setFiltersOpen(false)}
-          connectionType={connectionType}
-          footerActionsRef={filterActionsRef}
         />
       )}
 
@@ -575,36 +625,8 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
           )}
         </div>
 
-        {/* Right: filters + filter actions */}
+        {/* Right: filter toggle */}
         <div className="flex items-center gap-1">
-          {filtersOpen && mode === "data" && (
-            <>
-              <button
-                onClick={() => filterActionsRef.current?.addFilter()}
-                className="flex items-center gap-1 px-2 py-0.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
-              >
-                <Plus size={10} />
-                Add
-              </button>
-              <button
-                onClick={() => setSqlPreview(!sqlPreview)}
-                className={`flex items-center gap-1 px-2 py-0.5 rounded transition-colors cursor-pointer ${
-                  sqlPreview ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text-primary hover:bg-bg-hover"
-                }`}
-              >
-                <Code2 size={10} />
-                SQL
-              </button>
-              <button
-                onClick={handleApplyFilters}
-                className="flex items-center gap-1 px-3 py-0.5 rounded bg-accent text-white hover:bg-accent/90 transition-colors cursor-pointer font-medium"
-              >
-                Apply
-              </button>
-              <div className="w-px h-4 bg-border mx-0.5" />
-            </>
-          )}
-
           {mode === "data" && (
             <button
               onClick={() => {
@@ -632,41 +654,89 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
         </div>
       </div>
 
-      {/* SQL Preview — below footer */}
-      {sqlPreview && filtersOpen && (
-        <div className="border-t border-border bg-bg-secondary px-3 py-2 text-[11px]">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-[10px] font-semibold text-text-muted uppercase tracking-wider">Generated WHERE clause</span>
-            <button
-              onClick={async () => {
-                const text = filterActionsRef.current?.checkedWhere || filterActionsRef.current?.allWhere || "";
-                await navigator.clipboard.writeText(text);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1500);
-              }}
-              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
-            >
-              {copied ? <Check size={10} className="text-success" /> : <Copy size={10} />}
-              {copied ? "Copied" : "Copy"}
-            </button>
+      <SqlPreviewModal
+        open={sqlPreview}
+        sql={previewSql}
+        copied={copied}
+        onCopy={async () => {
+          await navigator.clipboard.writeText(previewSql);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        }}
+        onClose={() => setSqlPreview(false)}
+      />
+    </div>
+  );
+}
+
+function SqlPreviewModal({
+  open,
+  sql,
+  copied,
+  onCopy,
+  onClose,
+}: {
+  open: boolean;
+  sql: string;
+  copied: boolean;
+  onCopy: () => void;
+  onClose: () => void;
+}) {
+  const backdropRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", handler, true);
+    return () => document.removeEventListener("keydown", handler, true);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      ref={backdropRef}
+      className="fixed inset-0 z-[250] flex items-center justify-center bg-black/50 backdrop-blur-[1px]"
+      onMouseDown={(e) => {
+        if (e.target === backdropRef.current) onClose();
+      }}
+    >
+      <div className="w-[min(720px,calc(100vw-48px))] rounded-xl border border-border bg-bg-primary shadow-2xl overflow-hidden no-select">
+        <div className="flex items-center justify-between h-10 px-4 border-b border-border bg-bg-secondary">
+          <div className="flex items-center gap-2">
+            <Code2 size={13} className="text-accent" />
+            <h2 className="text-xs font-semibold text-text-primary">Generated SQL</h2>
           </div>
-          {filterActionsRef.current?.checkedWhere && (
-            <div className="mb-1">
-              <span className="text-[9px] text-text-muted uppercase mr-1">Checked:</span>
-              <code className="text-[11px] font-mono text-accent select-all break-all">{filterActionsRef.current.checkedWhere}</code>
-            </div>
-          )}
-          {filterActionsRef.current?.allWhere && filterActionsRef.current.allWhere !== filterActionsRef.current.checkedWhere && (
-            <div>
-              <span className="text-[9px] text-text-muted uppercase mr-1">All:</span>
-              <code className="text-[11px] font-mono text-text-secondary select-all break-all">{filterActionsRef.current.allWhere}</code>
-            </div>
-          )}
-          {!filterActionsRef.current?.allWhere && (
-            <div className="text-text-muted italic">No filters defined.</div>
-          )}
+          <button
+            onClick={onClose}
+            title="Close"
+            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+          >
+            <X size={14} />
+          </button>
         </div>
-      )}
+        <div className="p-4 selectable">
+          <div className="min-h-24 max-h-[50vh] overflow-auto rounded-lg border border-border bg-bg-secondary p-4 text-[12px] font-mono leading-relaxed whitespace-pre-wrap break-words">
+            <HighlightedSQL sql={sql} />
+          </div>
+        </div>
+        <div className="flex items-center justify-between px-4 py-3 border-t border-border bg-bg-secondary">
+          <span className="text-[10px] text-text-secondary">Enabled filters · first page preview</span>
+          <button
+            onClick={onCopy}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border bg-bg-primary text-text-primary hover:bg-bg-hover transition-colors cursor-pointer text-[11px]"
+          >
+            {copied ? <Check size={11} className="text-success" /> : <Copy size={11} />}
+            {copied ? "Copied" : "Copy SQL"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
