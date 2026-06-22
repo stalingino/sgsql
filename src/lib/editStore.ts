@@ -22,6 +22,17 @@ export interface CellChange {
   timestamp: number;
 }
 
+export interface TableRefreshTarget {
+  connectionId: string;
+  db: string;
+  schema: string;
+  table: string;
+}
+
+export function tableRefreshKey(target: TableRefreshTarget): string {
+  return `${target.connectionId}\u0000${target.db}\u0000${target.schema}\u0000${target.table}`;
+}
+
 /** Serialize a RowKey into a stable string for Map keys */
 export function rowKeyId(rk: RowKey): string {
   const pkStr = Object.entries(rk.pkValues)
@@ -83,8 +94,11 @@ interface EditStoreState {
   /** Incremented after mutations so visible table data is refetched. */
   dataRevision: number;
 
-  /** Request a refetch of visible table data. */
-  requestDataRefresh: () => void;
+  /** Per-table revisions used to refetch only open tables affected by a commit. */
+  tableRevisions: Map<string, number>;
+
+  /** Request a refetch of every open instance of the affected tables. */
+  requestDataRefresh: (targets: TableRefreshTarget[]) => void;
 
   /** Set a cell change. If newValue equals originalValue, removes the change. */
   setChange: (rowKey: RowKey, column: string, originalValue: unknown, newValue: unknown) => void;
@@ -219,9 +233,16 @@ export const useEditStore = create<EditStoreState>((set, get) => ({
   inserts: [],
   deletes: new Map(),
   dataRevision: 0,
+  tableRevisions: new Map(),
 
-  requestDataRefresh() {
-    set((state) => ({ dataRevision: state.dataRevision + 1 }));
+  requestDataRefresh(targets) {
+    set((state) => {
+      const tableRevisions = new Map(state.tableRevisions);
+      for (const key of new Set(targets.map(tableRefreshKey))) {
+        tableRevisions.set(key, (tableRevisions.get(key) ?? 0) + 1);
+      }
+      return { dataRevision: state.dataRevision + 1, tableRevisions };
+    });
   },
 
   setChange(rowKey, column, originalValue, newValue) {

@@ -25,6 +25,7 @@ export function ChangeHistoryPanel() {
     try {
       await execQueue(rowKey.connectionId, sql, rowKey.db);
       store.removeRow(rowKey);
+      store.requestDataRefresh([rowKey]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -37,8 +38,9 @@ export function ChangeHistoryPanel() {
     if (statements.length === 0) return;
     setSaving(true);
     setError(null);
+    const refreshedTables = [];
     try {
-      for (const { sql, type, id, connectionId, db, rowKey } of statements) {
+      for (const { sql, type, id, connectionId, db, schema, table, rowKey } of statements) {
         const s = useEditStore.getState();
         await execQueue(connectionId, sql, db);
 
@@ -50,10 +52,14 @@ export function ChangeHistoryPanel() {
         } else if (type === "delete") {
           if (rowKey) s.removeDelete(rowKey);
         }
+        refreshedTables.push({ connectionId, db, schema, table });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
+      if (refreshedTables.length > 0) {
+        useEditStore.getState().requestDataRefresh(refreshedTables);
+      }
       setSaving(false);
     }
   }, [execQueue]);

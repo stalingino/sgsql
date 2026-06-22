@@ -471,7 +471,7 @@ function App() {
     const statements = store.buildAllSql();
     if (statements.length === 0) return;
 
-    let savedAny = false;
+    const refreshedTables = [];
     for (const { sql, type, id, connectionId, db, schema, table, rowKey } of statements) {
       const startedAt = performance.now();
       try {
@@ -493,7 +493,7 @@ function App() {
         } else if (type === "delete") {
           if (rowKey) store.removeDelete(rowKey);
         }
-        savedAny = true;
+        refreshedTables.push({ connectionId, db, schema, table });
       } catch (err) {
         useQueryLog.getState().addEntry({
           timestamp: new Date(),
@@ -508,7 +508,7 @@ function App() {
         break; // Stop on first error
       }
     }
-    if (savedAny) store.requestDataRefresh();
+    if (refreshedTables.length > 0) store.requestDataRefresh(refreshedTables);
   }, [execQueue]);
   saveAllChangesRef.current = saveAllChanges;
 

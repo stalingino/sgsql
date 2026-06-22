@@ -13,6 +13,7 @@ import {
   Code2,
   Copy,
   Check,
+  RefreshCw,
   X,
 } from "lucide-react";
 import {
@@ -22,7 +23,7 @@ import {
   type ColumnInfo,
 } from "../lib/schema";
 import { useQueryLog } from "../lib/queryLog";
-import { useEditStore, buildRowKey } from "../lib/editStore";
+import { useEditStore, buildRowKey, tableRefreshKey } from "../lib/editStore";
 import { ResultGrid, type SortState, type CellSelection } from "./ResultGrid";
 import { getConfig } from "../lib/config";
 import { HighlightedSQL } from "../lib/highlightSQL";
@@ -295,7 +296,8 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   });
 
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
-  const dataRevision = useEditStore((s) => s.dataRevision);
+  const refreshKey = tableRefreshKey({ connectionId, db, schema, table });
+  const tableRevision = useEditStore((s) => s.tableRevisions.get(refreshKey) ?? 0);
 
   const addLogEntryRef = useRef(useQueryLog.getState().addEntry);
   addLogEntryRef.current = useQueryLog.getState().addEntry;
@@ -483,7 +485,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
       });
 
     return () => { cancelled = true; };
-  }, [connectionId, db, schema, table, offset, sort, appliedWhere, dataRevision, filterRefreshRevision]);
+  }, [connectionId, db, schema, table, offset, sort, appliedWhere, tableRevision, filterRefreshRevision]);
 
   const page = Math.floor(offset / PAGE_SIZE) + 1;
   const totalEstimate = data?.totalEstimate ?? 0;
@@ -673,28 +675,39 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
         {/* Right: filter toggle */}
         <div className="flex items-center gap-1">
           {mode === "data" && (
-            <button
-              onClick={() => {
-                setFiltersOpen((prev) => {
-                  if (!prev) setFilters((f) => (f.length === 0 ? [createFilter()] : f));
-                  return !prev;
-                });
-              }}
-              className={`flex items-center gap-1 px-2 py-0.5 rounded transition-colors cursor-pointer ${
-                filtersOpen
-                  ? "bg-accent/15 text-accent"
-                  : appliedWhere
-                    ? "bg-warning/15 text-warning"
-                    : "hover:bg-bg-hover text-text-muted"
-              }`}
-              title="Toggle filters (⌘F)"
-            >
-              <Filter size={11} />
-              Filters
-              {activeFilterCount > 0 && appliedWhere && (
-                <span className="text-[9px] bg-accent/20 text-accent px-1 rounded-full font-medium">{activeFilterCount}</span>
-              )}
-            </button>
+            <>
+              <button
+                onClick={() => setFilterRefreshRevision((revision) => revision + 1)}
+                disabled={loading}
+                className="flex items-center gap-1 px-2 py-0.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-default"
+                title="Reload current table"
+              >
+                <RefreshCw size={11} className={loading ? "animate-spin" : ""} />
+                Reload
+              </button>
+              <button
+                onClick={() => {
+                  setFiltersOpen((prev) => {
+                    if (!prev) setFilters((f) => (f.length === 0 ? [createFilter()] : f));
+                    return !prev;
+                  });
+                }}
+                className={`flex items-center gap-1 px-2 py-0.5 rounded transition-colors cursor-pointer ${
+                  filtersOpen
+                    ? "bg-accent/15 text-accent"
+                    : appliedWhere
+                      ? "bg-warning/15 text-warning"
+                      : "hover:bg-bg-hover text-text-muted"
+                }`}
+                title="Toggle filters (⌘F)"
+              >
+                <Filter size={11} />
+                Filters
+                {activeFilterCount > 0 && appliedWhere && (
+                  <span className="text-[9px] bg-accent/20 text-accent px-1 rounded-full font-medium">{activeFilterCount}</span>
+                )}
+              </button>
+            </>
           )}
         </div>
       </div>

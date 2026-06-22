@@ -157,7 +157,7 @@ function SaveRowButton({ rowKey }: { rowKey: RowKey }) {
         rowCount: result.affectedRows ?? result.rowCount,
       });
       removeRow(rowKey);
-      requestDataRefresh();
+      requestDataRefresh([rowKey]);
     } catch (err) {
       useQueryLog.getState().addEntry({
         timestamp: new Date(),

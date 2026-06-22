@@ -779,7 +779,7 @@ export function ResultGrid({
     >
       <table
         ref={tableRef}
-        className="text-[12px] font-mono border-collapse select-none"
+        className="text-[12px] font-mono border-collapse border-b border-border select-none"
         style={{ tableLayout: "fixed", width: tableW }}
       >
         <colgroup>
