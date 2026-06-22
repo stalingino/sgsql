@@ -18,6 +18,10 @@
   --color-warning: #facc15;
   --color-row-insert: #4ade80;
   --color-row-delete: #c084a0;
+  --color-syntax-keyword: #c084fc;
+  --color-syntax-string: #4ade80;
+  --color-syntax-identifier: #38bdf8;
+  --color-syntax-number: #ff4d5e;
 }
 
 /* ── Dark theme (default) ───────────────────────────────── */
@@ -35,6 +39,10 @@
   --color-text-muted: #8491a2;
   --color-accent: #ff4d5e;
   --color-accent-hover: #ff6675;
+  --color-syntax-keyword: #c084fc;
+  --color-syntax-string: #4ade80;
+  --color-syntax-identifier: #38bdf8;
+  --color-syntax-number: #ff4d5e;
 }
 
 /* ── Light theme ────────────────────────────────────────── */
@@ -56,6 +64,10 @@
   --color-warning: #a16207;
   --color-row-insert: #15803d;
   --color-row-delete: #9d174d;
+  --color-syntax-keyword: #6d28d9;
+  --color-syntax-string: #047857;
+  --color-syntax-identifier: #0369a1;
+  --color-syntax-number: #be123c;
 }
 
 /* Only disable selection on UI chrome — content areas are selectable by default */

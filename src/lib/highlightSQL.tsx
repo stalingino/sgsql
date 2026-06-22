@@ -24,19 +24,19 @@ function colorizeToken(token: string, i: number): ReactNode {
     (token.startsWith("'") && token.endsWith("'")) ||
     (token.startsWith('"') && token.endsWith('"'))
   ) {
-    return <span key={i} className="text-green-400">{token}</span>;
+    return <span key={i} className="text-syntax-string">{token}</span>;
   }
   if (token.startsWith("`") && token.endsWith("`")) {
-    return <span key={i} className="text-sky-400">{token}</span>;
+    return <span key={i} className="text-syntax-identifier">{token}</span>;
   }
   if (SQL_KEYWORDS.has(token.toUpperCase())) {
-    return <span key={i} className="text-purple-400 font-semibold">{token}</span>;
+    return <span key={i} className="text-syntax-keyword font-semibold">{token}</span>;
   }
   if (/^\d+(\.\d+)?$/.test(token)) {
-    return <span key={i} className="text-accent">{token}</span>;
+    return <span key={i} className="text-syntax-number">{token}</span>;
   }
   if (token === "*") {
-    return <span key={i} className="text-accent font-bold">{token}</span>;
+    return <span key={i} className="text-syntax-number font-bold">{token}</span>;
   }
   if (token.startsWith("--")) {
     return <span key={i} className="text-text-muted italic">{token}</span>;
