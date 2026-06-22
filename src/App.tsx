@@ -666,6 +666,7 @@ function App() {
           connectionId={activeTab.connectionId}
           connectionType={activeTab.profile.type}
           connectionDatabase={activeTab.profile.database}
+          cacheKey={activeTab.profile.id}
           mode={commandPaletteOpen}
           onSelectDb={(db) => {
             openDb(db);

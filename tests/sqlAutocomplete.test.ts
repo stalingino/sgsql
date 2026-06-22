@@ -61,4 +61,12 @@ describe("SQL autocomplete", () => {
     expect(quoteCompletionIdentifier("order", "mysql")).toBe("`order`");
   });
 
+  test("opens completion when explicitly forced at an empty prefix", () => {
+    const sql = "SELECT * FROM ";
+    const target = getCompletionTarget(sql, sql.length, true);
+
+    expect(target.shouldOpen).toBe(true);
+    expect(target.relationPosition).toBe(true);
+  });
+
 });

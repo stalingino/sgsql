@@ -223,6 +223,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [columnRevision, setColumnRevision] = useState(0);
   const [completionOpen, setCompletionOpen] = useState(false);
+  const [completionForced, setCompletionForced] = useState(false);
   const [completionIndex, setCompletionIndex] = useState(0);
   const [completionPosition, setCompletionPosition] = useState({ left: 12, top: 32 });
   const dataRevision = useEditStore((s) => s.dataRevision);
@@ -335,8 +336,8 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   }, [connectionId, tableReferences]);
 
   const completionTarget = useMemo(
-    () => getCompletionTarget(sql, cursorPos),
-    [sql, cursorPos],
+    () => getCompletionTarget(sql, cursorPos, completionForced),
+    [sql, cursorPos, completionForced],
   );
   const completions = useMemo(
     () => buildSqlCompletions({
@@ -564,6 +565,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
     setSql(nextSql);
     setCursorPos(nextCursor);
     setCompletionOpen(false);
+    setCompletionForced(false);
     onSqlChangeRef.current?.(nextSql);
     requestAnimationFrame(() => {
       const textarea = textareaRef.current;
@@ -580,6 +582,19 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
       runQuery();
       return;
     }
+    if ((e.ctrlKey || e.metaKey) && (e.key === " " || e.code === "Space")) {
+      e.preventDefault();
+      const textarea = textareaRef.current;
+      if (textarea) {
+        const position = textarea.selectionStart;
+        setCursorPos(position);
+        setCompletionPosition(completionPopupPosition(textarea, sql, position));
+      }
+      setCompletionForced(true);
+      setCompletionOpen(true);
+      setCompletionIndex(0);
+      return;
+    }
     if (!completionOpen) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -593,13 +608,15 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
     } else if (e.key === "Escape") {
       e.preventDefault();
       setCompletionOpen(false);
+      setCompletionForced(false);
     }
-  }, [runQuery, completionOpen, completions, completionIndex, applyCompletion]);
+  }, [runQuery, completionOpen, completions, completionIndex, applyCompletion, sql]);
 
   const handleBeautify = useCallback(() => {
     const beautified = beautifySql(sql);
     setSql(beautified);
     setCompletionOpen(false);
+    setCompletionForced(false);
     onSqlChangeRef.current?.(beautified);
   }, [sql]);
 
@@ -614,6 +631,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   const handleEditorClick = useCallback(() => {
     handleSelectionChange();
     setCompletionOpen(false);
+    setCompletionForced(false);
   }, [handleSelectionChange]);
 
   // Resizable editor pane
@@ -675,6 +693,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
               setSql(val);
               onSqlChangeRef.current?.(val);
               setCursorPos(position);
+              setCompletionForced(false);
               setCompletionOpen(target.shouldOpen);
               setCompletionIndex(0);
               setCompletionPosition(completionPopupPosition(e.target, val, position));
@@ -692,13 +711,14 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
             onBlur={(e) => {
               if ((e.relatedTarget as HTMLElement | null)?.closest("[data-sql-completion]")) return;
               setCompletionOpen(false);
+              setCompletionForced(false);
             }}
             placeholder="Enter SQL query... (Ctrl+Enter to run)"
             spellCheck={false}
             className="absolute inset-0 w-full h-full bg-transparent text-text-primary caret-text-primary text-[13px] font-mono p-3 outline-none placeholder-text-muted z-10 resize-none"
             style={{ caretColor: "var(--color-text-primary)", color: "transparent" }}
           />
-          {completionOpen && (completions.length > 0 || catalogLoading) && (
+          {completionOpen && (completions.length > 0 || completionForced || catalogLoading) && (
             <div
               data-sql-completion
               className="absolute z-30 w-[380px] max-w-[calc(100%-16px)] max-h-64 overflow-y-auto rounded-lg border border-border-light bg-bg-primary shadow-2xl py-1.5 text-[12px] no-select"
@@ -736,7 +756,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
               )}
               {completions.length > 0 && (
                 <div className="px-3 pt-2 pb-1 text-[9px] text-text-muted border-t border-border mt-1">
-                  <span>↑↓ Navigate · Enter/Tab Insert · Esc Close</span>
+                  <span>↑↓ Navigate · Enter/Tab Insert · Esc Close · Ctrl+Space Open</span>
                 </div>
               )}
             </div>

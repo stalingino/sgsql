@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Database, Table2, Eye, Loader2, Search } from "lucide-react";
 import { fetchDatabases, fetchTables } from "../lib/schema";
+import { getSearchLru, touchSearchLru } from "../lib/searchLru";
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -16,6 +17,7 @@ interface CommandPaletteProps {
   connectionId: string;
   connectionType: "postgres" | "mysql" | "sqlite";
   connectionDatabase: string;
+  cacheKey?: string;
   mode?: "all" | "db-only";
   onSelectDb: (db: string) => void;
   onSelectTable: (db: string, schema: string, table: string, type: "table" | "view") => void;
@@ -58,6 +60,7 @@ export function CommandPalette({
   connectionId,
   connectionType,
   connectionDatabase,
+  cacheKey,
   mode = "all",
   onSelectDb,
   onSelectTable,
@@ -67,6 +70,8 @@ export function CommandPalette({
   const [items, setItems] = useState<PaletteItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedIdx, setSelectedIdx] = useState(0);
+  const lruScope = cacheKey || connectionId;
+  const [recentItems, setRecentItems] = useState(() => getSearchLru(lruScope));
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -125,28 +130,44 @@ export function CommandPalette({
     inputRef.current?.focus();
   }, []);
 
-  // Filter and sort
-  const filtered = query.trim()
-    ? items
-        .map((item) => {
-          const label = item.kind === "db" ? item.name : `${item.db}.${item.name}`;
-          const m = fuzzyMatch(query.trim(), label);
-          // Also try matching just the name
-          const m2 = fuzzyMatch(query.trim(), item.name);
-          const bestScore = Math.max(m.score, m2.score);
-          return { item, match: m.match || m2.match, score: bestScore };
-        })
-        .filter((r) => r.match)
-        .sort((a, b) => b.score - a.score)
-        .map((r) => r.item)
-    : items;
+  const itemKey = useCallback(
+    (item: PaletteItem) => `${item.kind}\u0000${item.db}\u0000${item.schema}\u0000${item.name}`,
+    [],
+  );
 
-  // Sort: tables/views first, databases last
-  const sortedFiltered = [...filtered].sort((a, b) => {
-    if (a.kind === "db" && b.kind !== "db") return 1;
-    if (a.kind !== "db" && b.kind === "db") return -1;
-    return 0;
-  });
+  // Keep fuzzy relevance primary while searching, then use recency. With an
+  // empty query, recently opened objects are shown first.
+  const sortedFiltered = useMemo(() => {
+    const search = query.trim();
+    const recency = new Map(recentItems.map((key, index) => [key, index]));
+
+    return items
+      .map((item, sourceIndex) => {
+        if (!search) return { item, sourceIndex, match: true, score: 0 };
+        const label = item.kind === "db" ? item.name : `${item.db}.${item.name}`;
+        const fullMatch = fuzzyMatch(search, label);
+        const nameMatch = fuzzyMatch(search, item.name);
+        return {
+          item,
+          sourceIndex,
+          match: fullMatch.match || nameMatch.match,
+          score: Math.max(fullMatch.score, nameMatch.score),
+        };
+      })
+      .filter((result) => result.match)
+      .sort((a, b) => {
+        if (search && a.score !== b.score) return b.score - a.score;
+
+        const aRecent = recency.get(itemKey(a.item)) ?? Number.MAX_SAFE_INTEGER;
+        const bRecent = recency.get(itemKey(b.item)) ?? Number.MAX_SAFE_INTEGER;
+        if (aRecent !== bRecent) return aRecent - bRecent;
+
+        if (a.item.kind === "db" && b.item.kind !== "db") return 1;
+        if (a.item.kind !== "db" && b.item.kind === "db") return -1;
+        return a.sourceIndex - b.sourceIndex;
+      })
+      .map((result) => result.item);
+  }, [items, itemKey, query, recentItems]);
 
   // Reset selection when query changes
   useEffect(() => {
@@ -163,6 +184,7 @@ export function CommandPalette({
 
   const handleSelect = useCallback(
     (item: PaletteItem) => {
+      setRecentItems(touchSearchLru(lruScope, itemKey(item)));
       if (item.kind === "db") {
         onSelectDb(item.db);
       } else {
@@ -170,7 +192,7 @@ export function CommandPalette({
       }
       onClose();
     },
-    [onSelectDb, onSelectTable, onClose],
+    [itemKey, lruScope, onSelectDb, onSelectTable, onClose],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

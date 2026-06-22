@@ -16,6 +16,7 @@ export interface AppConfig {
   console?: { visible: boolean; height: number; split?: number };
   detailPanel?: { visible: boolean; width: number };
   queryStack?: string[]; // LIFO — last closed query on top
+  searchLru?: Record<string, string[]>; // Most-recently selected palette item first
   settings?: AppSettings;
 }
 
