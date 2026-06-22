@@ -1,5 +1,6 @@
 import type { ConnectionProfile } from "../lib/types";
 import { friendlyError } from "../lib/friendlyError";
+import { createSshTunnel } from "../lib/sshTunnel";
 
 export async function handleTestConnection(
   req: Request,
@@ -7,6 +8,7 @@ export async function handleTestConnection(
 ): Promise<Response> {
   const profile: ConnectionProfile = await req.json();
   const start = performance.now();
+  let tunnel = null as Awaited<ReturnType<typeof createSshTunnel>>;
 
   try {
     if (profile.type === "sqlite") {
@@ -18,11 +20,15 @@ export async function handleTestConnection(
       return jsonResponse({ ok: true, latency: elapsed(start) }, headers);
     }
 
+    tunnel = await createSshTunnel(profile);
+    const connectHost = tunnel?.host ?? profile.host;
+    const connectPort = tunnel?.port ?? profile.port;
+
     if (profile.type === "mysql") {
       const mysql = await import("mysql2/promise");
       const conn = await mysql.createConnection({
-        host: profile.host,
-        port: profile.port,
+        host: connectHost,
+        port: connectPort,
         user: profile.username,
         password: profile.password,
         database: profile.database,
@@ -31,14 +37,15 @@ export async function handleTestConnection(
       });
       await conn.query("SELECT 1");
       await conn.end();
+      await tunnel?.close();
       return jsonResponse({ ok: true, latency: elapsed(start) }, headers);
     }
 
     // PostgreSQL
     const postgres = (await import("postgres")).default;
     const sql = postgres({
-      hostname: profile.host,
-      port: profile.port,
+      hostname: connectHost,
+      port: connectPort,
       database: profile.database,
       username: profile.username,
       password: profile.password,
@@ -48,8 +55,10 @@ export async function handleTestConnection(
     });
     await sql`SELECT 1`;
     await sql.end();
+    await tunnel?.close();
     return jsonResponse({ ok: true, latency: elapsed(start) }, headers);
   } catch (e: unknown) {
+    await tunnel?.close().catch(() => {});
     const message = friendlyError(e);
     console.error(`[sidecar] connection test failed: ${message}`);
     return jsonResponse({ ok: false, error: message, latency: elapsed(start) }, headers);

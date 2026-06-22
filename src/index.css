@@ -120,6 +120,10 @@ button:not(:disabled).hover\:text-error:hover {
   color: var(--color-text-primary);
   outline: none;
   transition: border-color 0.15s;
+  box-sizing: border-box;
+}
+.input-field:not([multiple]) {
+  height: 34px;
 }
 .input-field:focus {
   border-color: var(--color-accent);

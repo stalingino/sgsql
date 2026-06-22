@@ -17,7 +17,7 @@
         "title": "SG SQL Connections",
         "width": 740,
         "height": 540,
-        "resizable": false,
+        "resizable": true,
         "center": true,
         "decorations": true
       },

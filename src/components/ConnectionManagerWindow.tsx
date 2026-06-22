@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useMemo } from "react";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import {
   Plus,
   Trash2,
@@ -11,6 +12,8 @@ import {
   Database,
   Loader2,
   Search,
+  Copy,
+  Network,
 } from "lucide-react";
 import { useConnectionsStore } from "../stores/connections";
 import {
@@ -21,14 +24,13 @@ import {
   CONNECTION_COLORS,
   ENV_LABELS,
 } from "../lib/types";
-import { isConnectionUrl, parseConnectionUrl } from "../lib/parseConnectionUrl";
-import { keychainGet } from "../lib/keychain";
+import { formatConnectionUrl, isConnectionUrl, parseConnectionUrl } from "../lib/parseConnectionUrl";
 import { openConnection } from "../lib/schema";
 import { useWindowPersist } from "../lib/useWindowPersist";
 
 export function ConnectionManagerWindow() {
   useWindowPersist();
-  const { profiles, loaded, loadProfiles, addProfile, updateProfile, deleteProfile, testConnection } =
+  const { profiles, loaded, loadProfiles, addProfile, updateProfile, deleteProfile, testConnection, getProfileWithPassword } =
     useConnectionsStore();
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -39,8 +41,73 @@ export function ConnectionManagerWindow() {
   const [connecting, setConnecting] = useState(false);
   const [statusMsg, setStatusMsg] = useState<{ type: "url" | "ok" | "error"; text: string } | null>(null);
   const [filter, setFilter] = useState("");
+  const [contextMenu, setContextMenu] = useState<{ profile: ConnectionProfile; x: number; y: number } | null>(null);
 
   const filterRef = useRef<HTMLInputElement>(null);
+  const privateKeyRef = useRef<HTMLInputElement>(null);
+  const compactHeightRef = useRef<number | null>(null);
+  const resizeAnimationRef = useRef(0);
+
+  useEffect(() => () => {
+    resizeAnimationRef.current += 1;
+  }, []);
+
+  async function animateWindowHeight(resolveHeight: (currentHeight: number) => number) {
+    const animation = ++resizeAnimationRef.current;
+    const win = getCurrentWindow();
+    const scaleFactor = await win.scaleFactor();
+    const physicalSize = await win.outerSize();
+    const width = physicalSize.width / scaleFactor;
+    const startHeight = physicalSize.height / scaleFactor;
+
+    const desiredHeight = resolveHeight(startHeight);
+    const startedAt = performance.now();
+    const duration = 240;
+
+    const frame = async (now: number) => {
+      if (animation !== resizeAnimationRef.current) return;
+      const progress = Math.min(1, (now - startedAt) / duration);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const height = startHeight + (desiredHeight - startHeight) * eased;
+      try {
+        await win.setSize(new LogicalSize(width, height));
+      } catch {
+        return; // Window closed during the animation.
+      }
+      if (progress < 1 && animation === resizeAnimationRef.current) {
+        requestAnimationFrame((time) => void frame(time));
+      }
+    };
+    requestAnimationFrame((time) => void frame(time));
+  }
+
+  async function resizeForSsh(enabled: boolean) {
+    await animateWindowHeight((startHeight) => {
+      if (enabled) compactHeightRef.current = startHeight;
+      const compactHeight = compactHeightRef.current ?? Math.max(540, startHeight - 280);
+      const sshHeight = 280 + (draft.sshUsePrivateKey ? 72 : 0);
+      return enabled
+        ? Math.min(startHeight + sshHeight, window.screen.availHeight - 24)
+        : compactHeight;
+    });
+  }
+
+  function handleSshToggle(enabled: boolean) {
+    updateDraft({ useSsh: enabled });
+    void resizeForSsh(enabled).catch(() => {
+      // The window may be closing while an animation frame is pending.
+    });
+  }
+
+  function handlePrivateKeyToggle(enabled: boolean) {
+    updateDraft({ sshUsePrivateKey: enabled });
+    void animateWindowHeight((startHeight) => enabled
+      ? Math.min(startHeight + 72, window.screen.availHeight - 24)
+      : Math.max(compactHeightRef.current ?? 540, startHeight - 72)
+    ).catch(() => {
+      // The window may be closing while an animation frame is pending.
+    });
+  }
 
   // Auto-focus filter input on launch
   useEffect(() => {
@@ -48,6 +115,20 @@ export function ConnectionManagerWindow() {
       filterRef.current?.focus();
     }
   }, [loaded, profiles.length > 0]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") close(); };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("blur", close);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("blur", close);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [contextMenu]);
 
   const filteredProfiles = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -74,9 +155,8 @@ export function ConnectionManagerWindow() {
     setSelectedId(p.id);
     setIsNew(false);
     setStatusMsg(null);
-    // Hydrate password from keychain
-    const password = await keychainGet(p.id).catch(() => "");
-    setDraft({ ...p, password });
+    const hydrated = await getProfileWithPassword(p.id);
+    setDraft(hydrated ?? p);
     // Keep focus on filter so Enter/Tab keep working
     filterRef.current?.focus();
   }
@@ -117,7 +197,7 @@ export function ConnectionManagerWindow() {
       if (isNew) {
         const created = await addProfile(draft);
         setSelectedId(created.id);
-        setDraft(created);
+        setDraft({ ...created, password: draft.password, sshPassword: draft.sshPassword });
         setIsNew(false);
         setStatusMsg({ type: "ok", text: "Connection saved" });
       } else if (selectedId) {
@@ -173,7 +253,7 @@ export function ConnectionManagerWindow() {
         setSelectedId(created.id);
         setDraft(created);
         setIsNew(false);
-        profile = { ...created, password: draft.password };
+        profile = { ...created, password: draft.password, sshPassword: draft.sshPassword };
       } catch (e: unknown) {
         setStatusMsg({ type: "error", text: e instanceof Error ? e.message : "Save failed" });
         setSaving(false);
@@ -206,6 +286,20 @@ export function ConnectionManagerWindow() {
     // Pass the profile, connectionId, and server version to the main window.
     await emit("connection-selected", { profile, connectionId, serverVersion });
     getCurrentWindow().close();
+  }
+
+  async function handleCopyAsUrl(profile: ConnectionProfile) {
+    const hydrated = await getProfileWithPassword(profile.id);
+    const fullProfile = selectedId === profile.id
+      ? {
+          ...(hydrated ?? profile),
+          password: draft.password || hydrated?.password || "",
+          sshPassword: draft.sshPassword || hydrated?.sshPassword || "",
+        }
+      : hydrated ?? profile;
+    await navigator.clipboard.writeText(formatConnectionUrl(fullProfile));
+    setStatusMsg({ type: "ok", text: "Connection URL copied" });
+    setContextMenu(null);
   }
 
   // Keyboard: Tab through connections, Enter to connect
@@ -268,6 +362,14 @@ export function ConnectionManagerWindow() {
               <button
                 key={p.id}
                 onClick={() => selectProfile(p)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setContextMenu({
+                    profile: p,
+                    x: Math.min(event.clientX, window.innerWidth - 160),
+                    y: Math.min(event.clientY, window.innerHeight - 44),
+                  });
+                }}
                 className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-sm transition-colors cursor-pointer ${
                   selectedId === p.id
                     ? "bg-bg-hover text-text-primary"
@@ -304,6 +406,21 @@ export function ConnectionManagerWindow() {
             </div>
           )}
         </div>
+        {contextMenu && (
+          <div
+            className="fixed z-[1000] min-w-36 rounded-md border border-border bg-bg-primary p-1 shadow-2xl"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <button
+              onClick={() => handleCopyAsUrl(contextMenu.profile)}
+              className="w-full flex items-center gap-2 rounded px-2.5 py-1.5 text-xs text-text-primary hover:bg-bg-hover cursor-pointer"
+            >
+              <Copy size={12} />
+              Copy as URL
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Right panel — form */}
@@ -436,15 +553,94 @@ export function ConnectionManagerWindow() {
               </div>
 
               {/* SSL */}
-              <label className="flex items-center gap-2 text-sm text-text-secondary cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={draft.ssl}
-                  onChange={(e) => updateDraft({ ssl: e.target.checked })}
-                  className="rounded border-border-light"
-                />
-                Use SSL
-              </label>
+              <div className="flex items-center gap-5">
+                <label className="flex items-center gap-2 text-sm text-text-secondary cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={draft.ssl}
+                    onChange={(e) => updateDraft({ ssl: e.target.checked })}
+                    className="rounded border-border-light"
+                  />
+                  Use SSL
+                </label>
+                <label className="flex items-center gap-2 text-sm text-text-secondary cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={draft.useSsh}
+                    onChange={(e) => handleSshToggle(e.target.checked)}
+                    className="rounded border-border-light"
+                  />
+                  Connect over SSH
+                </label>
+              </div>
+
+              {draft.useSsh && (
+                <div className="rounded-lg border border-border bg-bg-primary p-3 space-y-3">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-text-primary">
+                    <Network size={13} className="text-accent" />
+                    SSH Tunnel
+                  </div>
+                  <div className="flex gap-3">
+                    <Field label="Server" className="flex-1">
+                      <input value={draft.sshHost} onChange={(e) => updateDraft({ sshHost: e.target.value })} placeholder="127.0.0.1" className="input-field" />
+                    </Field>
+                    <Field label="Port" className="w-[100px]">
+                      <input type="number" value={draft.sshPort} onChange={(e) => updateDraft({ sshPort: parseInt(e.target.value) || 22 })} className="input-field" />
+                    </Field>
+                  </div>
+                  <Field label="User">
+                    <input value={draft.sshUsername} onChange={(e) => updateDraft({ sshUsername: e.target.value })} placeholder="SSH username" className="input-field" />
+                  </Field>
+                  <div className="flex gap-3">
+                    <Field label={draft.sshUsePrivateKey ? "Key passphrase" : "Password"} className="flex-1">
+                      <input
+                        type="password"
+                        value={draft.sshPassword}
+                        disabled={draft.sshAuthMode === "none"}
+                        onChange={(e) => updateDraft({ sshPassword: e.target.value })}
+                        placeholder={draft.sshAuthMode === "none" ? "No password" : "••••••••"}
+                        className="input-field disabled:opacity-50"
+                      />
+                    </Field>
+                    <Field label="Password handling" className="w-[150px]">
+                      <select value={draft.sshAuthMode} onChange={(e) => updateDraft({ sshAuthMode: e.target.value as ConnectionProfile["sshAuthMode"] })} className="input-field">
+                        <option value="keychain">Store in keychain</option>
+                        <option value="ask">Ask every time</option>
+                        <option value="none">No password</option>
+                      </select>
+                    </Field>
+                  </div>
+                  <label className="flex items-center gap-2 text-sm text-text-secondary cursor-pointer">
+                    <input type="checkbox" checked={draft.sshUsePrivateKey} onChange={(e) => handlePrivateKeyToggle(e.target.checked)} className="rounded border-border-light" />
+                    Use SSH private key
+                  </label>
+                  {draft.sshUsePrivateKey && (
+                    <Field label="Private key file">
+                      <div className="flex items-center gap-2">
+                        <input
+                          ref={privateKeyRef}
+                          type="file"
+                          className="hidden"
+                          onChange={async (event) => {
+                            const file = event.target.files?.[0];
+                            if (file) updateDraft({ sshPrivateKey: await file.text() });
+                            event.target.value = "";
+                          }}
+                        />
+                        <button type="button" onClick={() => privateKeyRef.current?.click()} className="px-3 py-1.5 rounded-md border border-border-light text-xs text-text-secondary hover:text-text-primary hover:bg-bg-hover cursor-pointer">
+                          Import private key…
+                        </button>
+                        <span className="min-w-0 flex-1 truncate text-xs text-text-muted">
+                          {draft.sshPrivateKey ? "Private key imported" : "No key selected"}
+                        </span>
+                        {draft.sshPrivateKey && (
+                          <button type="button" onClick={() => updateDraft({ sshPrivateKey: "" })} className="text-xs text-text-muted hover:text-error cursor-pointer">Clear</button>
+                        )}
+                      </div>
+                    </Field>
+                  )}
+                </div>
+              )}
             </>
           )}
 

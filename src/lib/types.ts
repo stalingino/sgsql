@@ -12,6 +12,14 @@ export interface ConnectionProfile {
   ssl: boolean;
   color: string;
   env: ConnectionEnv;
+  useSsh: boolean;
+  sshHost: string;
+  sshPort: number;
+  sshUsername: string;
+  sshPassword: string;
+  sshAuthMode: "keychain" | "ask" | "none";
+  sshUsePrivateKey: boolean;
+  sshPrivateKey: string;
 }
 
 export type ConnectionTestResult = {
@@ -33,6 +41,14 @@ export function createDefaultProfile(): ConnectionProfile {
     ssl: false,
     color: "#ff4d4d",
     env: "",
+    useSsh: false,
+    sshHost: "127.0.0.1",
+    sshPort: 22,
+    sshUsername: "",
+    sshPassword: "",
+    sshAuthMode: "keychain",
+    sshUsePrivateKey: false,
+    sshPrivateKey: "",
   };
 }
 

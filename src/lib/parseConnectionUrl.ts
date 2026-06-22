@@ -9,11 +9,19 @@ const PROTOCOL_MAP: Record<string, ConnectionProfile["type"]> = {
   sqlite3: "sqlite",
 };
 
+function decode(value: string): string {
+  try { return decodeURIComponent(value); } catch { return value; }
+}
+
+function encode(value: string): string {
+  return encodeURIComponent(value);
+}
+
 /**
  * Returns true if the string looks like a connection URL we can parse.
  */
 export function isConnectionUrl(value: string): boolean {
-  return /^(postgres(?:ql)?|mysql|sqlite3?):\/{2}/i.test(value.trim());
+  return /^(postgres(?:ql)?|mysql|sqlite3?)(?:\+ssh)?:\/{2}/i.test(value.trim());
 }
 
 /**
@@ -34,7 +42,9 @@ export function parseConnectionUrl(
     return {};
   }
 
-  const protocol = parsed.protocol.replace(":", "").toLowerCase();
+  const rawProtocol = parsed.protocol.replace(":", "").toLowerCase();
+  const useSsh = rawProtocol.endsWith("+ssh");
+  const protocol = rawProtocol.replace(/\+ssh$/, "");
   const type = PROTOCOL_MAP[protocol];
   if (!type) return {};
 
@@ -61,19 +71,65 @@ export function parseConnectionUrl(
     ? (rawEnv as ConnectionEnv)
     : "";
 
+  if (useSsh) {
+    const route = parsed.pathname.replace(/^\//, "");
+    const match = route.match(/^([^:]*):([^@]*)@([^/]+)\/(.*)$/);
+    if (!match) return {};
+    const dbAuthority = match[3];
+    const lastColon = dbAuthority.lastIndexOf(":");
+    const hasPort = lastColon > -1 && /^\d+$/.test(dbAuthority.slice(lastColon + 1));
+    const host = decode(hasPort ? dbAuthority.slice(0, lastColon) : dbAuthority) || existing.host;
+    const port = hasPort ? parseInt(dbAuthority.slice(lastColon + 1), 10) : DB_TYPE_PORTS[type];
+    const sshPassword = parsed.password ? decode(parsed.password) : existing.sshPassword;
+    const rawSshAuthMode = params.get("sshAuthMode");
+    const sshAuthMode: ConnectionProfile["sshAuthMode"] = sshPassword
+      ? "keychain"
+      : rawSshAuthMode === "ask" || rawSshAuthMode === "none" ? rawSshAuthMode : "none";
+    return {
+      type, host, port,
+      username: decode(match[1]),
+      password: decode(match[2]),
+      database: decode(match[4]),
+      ssl, color, name, env,
+      useSsh: true,
+      sshHost: parsed.hostname || existing.sshHost,
+      sshPort: parsed.port ? parseInt(parsed.port, 10) : 22,
+      sshUsername: parsed.username ? decode(parsed.username) : existing.sshUsername,
+      sshPassword,
+      sshAuthMode,
+      sshUsePrivateKey: params.get("usePrivateKey") === "true",
+      sshPrivateKey: params.get("privateKey") ?? existing.sshPrivateKey,
+    };
+  }
+
   const host = parsed.hostname || existing.host;
-  const portStr = parsed.port;
-  const port = portStr ? parseInt(portStr, 10) : DB_TYPE_PORTS[type];
+  const port = parsed.port ? parseInt(parsed.port, 10) : DB_TYPE_PORTS[type];
+  const username = parsed.username ? decode(parsed.username) : existing.username;
+  const password = parsed.password ? decode(parsed.password) : existing.password;
+  const database = decode(parsed.pathname.replace(/^\//, "")) || existing.database;
 
-  const username = parsed.username
-    ? decodeURIComponent(parsed.username)
-    : existing.username;
-  const password = parsed.password
-    ? decodeURIComponent(parsed.password)
-    : existing.password;
+  return { type, host, port, username, password, database, ssl, color, name, env, useSsh: false };
+}
 
-  // Database: strip leading slash
-  const database = parsed.pathname.replace(/^\//, "") || existing.database;
+export function formatConnectionUrl(profile: ConnectionProfile): string {
+  const params = new URLSearchParams();
+  params.set("statusColor", profile.color.replace(/^#/, ""));
+  if (profile.env) params.set("env", profile.env);
+  if (profile.name) params.set("name", profile.name);
+  params.set("tLSMode", profile.ssl ? "1" : "0");
 
-  return { type, host, port, username, password, database, ssl, color, name, env };
+  const defaultPort = DB_TYPE_PORTS[profile.type];
+  const dbPort = profile.port && profile.port !== defaultPort ? `:${profile.port}` : "";
+  const database = encode(profile.database);
+  if (profile.useSsh && profile.type !== "sqlite") {
+    params.set("usePrivateKey", String(profile.sshUsePrivateKey));
+    params.set("sshAuthMode", profile.sshAuthMode);
+    const sshPassword = profile.sshAuthMode === "none" ? "" : profile.sshPassword;
+    return `${profile.type}+ssh://${encode(profile.sshUsername)}:${encode(sshPassword)}@${profile.sshHost}:${profile.sshPort}/${encode(profile.username)}:${encode(profile.password)}@${profile.host}${dbPort}/${database}?${params}`;
+  }
+
+  if (profile.type === "sqlite") {
+    return `sqlite:///${database}?${params}`;
+  }
+  return `${profile.type}://${encode(profile.username)}:${encode(profile.password)}@${profile.host}${dbPort}/${database}?${params}`;
 }

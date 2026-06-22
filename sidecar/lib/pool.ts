@@ -2,11 +2,12 @@ import type { Sql } from "postgres";
 import type { Connection } from "mysql2/promise";
 import { Database } from "bun:sqlite";
 import type { ConnectionProfile } from "./types";
+import { createSshTunnel, type SshTunnel } from "./sshTunnel";
 
 export type PoolEntry =
-  | { type: "postgres"; client: Sql }
-  | { type: "mysql"; client: Connection }
-  | { type: "sqlite"; client: Database };
+  | { type: "postgres"; client: Sql; tunnel?: SshTunnel }
+  | { type: "mysql"; client: Connection; tunnel?: SshTunnel }
+  | { type: "sqlite"; client: Database; tunnel?: never };
 
 interface PoolRecord {
   entry: PoolEntry;
@@ -55,6 +56,8 @@ export async function closeConnection(id: string): Promise<boolean> {
   } catch (e) {
     console.error(`[pool] error closing connection ${id}:`, e);
   }
+
+  await record.entry.tunnel?.close().catch(() => {});
 
   pool.delete(id);
   return true;
@@ -127,41 +130,50 @@ async function reconnectInternal(id: string): Promise<PoolEntry> {
       case "sqlite": record.entry.client.close(); break;
     }
   } catch { /* ignore */ }
+  await record.entry.tunnel?.close().catch(() => {});
 
   // Create new connection
   let newEntry: PoolEntry;
+  const tunnel = await createSshTunnel(profile);
+  const connectHost = tunnel?.host ?? profile.host;
+  const connectPort = tunnel?.port ?? profile.port;
 
-  if (profile.type === "postgres") {
-    const postgres = (await import("postgres")).default;
-    const sql = postgres({
-      hostname: profile.host,
-      port: profile.port,
-      database: profile.database,
-      username: profile.username,
-      password: profile.password,
-      ssl: profile.ssl ? "require" : false,
-      connect_timeout: 5,
-      max: 4,
-    });
-    // Verify connection is alive
-    await sql`SELECT 1`;
-    newEntry = { type: "postgres", client: sql };
-  } else if (profile.type === "mysql") {
-    const mysql = await import("mysql2/promise");
-    const conn = await mysql.createConnection({
-      host: profile.host,
-      port: profile.port,
-      user: profile.username,
-      password: profile.password,
-      database: profile.database,
-      ssl: profile.ssl ? {} : undefined,
-      connectTimeout: 5000,
-    });
-    newEntry = { type: "mysql", client: conn };
-  } else {
-    const { Database } = await import("bun:sqlite");
-    const db = new Database(profile.database, { readonly: false });
-    newEntry = { type: "sqlite", client: db };
+  try {
+    if (profile.type === "postgres") {
+      const postgres = (await import("postgres")).default;
+      const sql = postgres({
+        hostname: connectHost,
+        port: connectPort,
+        database: profile.database,
+        username: profile.username,
+        password: profile.password,
+        ssl: profile.ssl ? "require" : false,
+        connect_timeout: 5,
+        max: 4,
+      });
+      // Verify connection is alive
+      await sql`SELECT 1`;
+      newEntry = { type: "postgres", client: sql, tunnel: tunnel ?? undefined };
+    } else if (profile.type === "mysql") {
+      const mysql = await import("mysql2/promise");
+      const conn = await mysql.createConnection({
+        host: connectHost,
+        port: connectPort,
+        user: profile.username,
+        password: profile.password,
+        database: profile.database,
+        ssl: profile.ssl ? {} : undefined,
+        connectTimeout: 5000,
+      });
+      newEntry = { type: "mysql", client: conn, tunnel: tunnel ?? undefined };
+    } else {
+      const { Database } = await import("bun:sqlite");
+      const db = new Database(profile.database, { readonly: false });
+      newEntry = { type: "sqlite", client: db };
+    }
+  } catch (error) {
+    await tunnel?.close().catch(() => {});
+    throw error;
   }
 
   pool.set(id, { entry: newEntry, profile, lastUsedAt: Date.now() });

@@ -1,4 +1,5 @@
 import type { ConnectionProfile } from "../lib/types";
+import { createSshTunnel, type SshTunnel } from "../lib/sshTunnel";
 import {
   getConnection,
   getProfile,
@@ -80,14 +81,19 @@ export async function handleOpenConnection(
     await closeConnection(profile.id);
   }
 
+  let tunnel: SshTunnel | null = null;
   try {
     let serverVersion = "";
+
+    tunnel = await createSshTunnel(profile);
+    const connectHost = tunnel?.host ?? profile.host;
+    const connectPort = tunnel?.port ?? profile.port;
 
     if (profile.type === "postgres") {
       const postgres = (await import("postgres")).default;
       const sql = postgres({
-        hostname: profile.host,
-        port: profile.port,
+        hostname: connectHost,
+        port: connectPort,
         database: profile.database,
         username: profile.username,
         password: profile.password,
@@ -97,12 +103,12 @@ export async function handleOpenConnection(
       });
       const [row] = await sql`SHOW server_version`;
       serverVersion = row?.server_version ?? "";
-      setConnection(profile.id, { type: "postgres", client: sql }, profile);
+      setConnection(profile.id, { type: "postgres", client: sql, tunnel: tunnel ?? undefined }, profile);
     } else if (profile.type === "mysql") {
       const mysql = await import("mysql2/promise");
       const conn = await mysql.createConnection({
-        host: profile.host,
-        port: profile.port,
+        host: connectHost,
+        port: connectPort,
         user: profile.username,
         password: profile.password,
         database: profile.database,
@@ -111,7 +117,7 @@ export async function handleOpenConnection(
       });
       const [rows] = await conn.query("SELECT version() AS v");
       serverVersion = (rows as any)?.[0]?.v ?? "";
-      setConnection(profile.id, { type: "mysql", client: conn }, profile);
+      setConnection(profile.id, { type: "mysql", client: conn, tunnel: tunnel ?? undefined }, profile);
     } else if (profile.type === "sqlite") {
       const { Database } = await import("bun:sqlite");
       const db = new Database(profile.database, { readonly: false });
@@ -124,6 +130,7 @@ export async function handleOpenConnection(
 
     return json({ connectionId: profile.id, serverVersion }, headers);
   } catch (e: unknown) {
+    await tunnel?.close().catch(() => {});
     const message = friendlyError(e);
     console.error(`[sidecar] open connection failed: ${message}`);
     return errorResponse(message, headers);

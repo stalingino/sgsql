@@ -10,4 +10,12 @@ export interface ConnectionProfile {
   ssl: boolean;
   color: string;
   env?: string;
+  useSsh?: boolean;
+  sshHost?: string;
+  sshPort?: number;
+  sshUsername?: string;
+  sshPassword?: string;
+  sshAuthMode?: "keychain" | "ask" | "none";
+  sshUsePrivateKey?: boolean;
+  sshPrivateKey?: string;
 }
