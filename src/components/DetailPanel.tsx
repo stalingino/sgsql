@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Save, Undo2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Save, Search, Undo2, X } from "lucide-react";
 import type { CellSelection } from "./ResultGrid";
 import { useEditStore, buildRowKey, SqlExpression, type RowKey } from "../lib/editStore";
 import { useExecutionQueue } from "../lib/executionQueue";
@@ -20,6 +20,7 @@ export function DetailPanel({ selection, wasAlreadyOpen }: DetailPanelProps) {
   void _editChanges; // subscribe for re-render
   void _editInserts;
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [filter, setFilter] = useState("");
 
   const isInsertRow = !!selection?.insertId;
 
@@ -49,6 +50,22 @@ export function DetailPanel({ selection, wasAlreadyOpen }: DetailPanelProps) {
 
   // Build column meta lookup
   const columnMeta = selection?.tableContext?.columnMeta;
+  const normalizedFilter = filter.trim().toLowerCase();
+  const visibleFieldIndexes = useMemo(() => {
+    if (!selection || !normalizedFilter) return selection?.columns.map((_, index) => index) ?? [];
+    return selection.columns.flatMap((column, index) => {
+      const meta = selection.tableContext?.columnMeta?.find((candidate) => candidate.name === column);
+      const originalValue = isInsertRow && insertData
+        ? insertData.values[column] ?? null
+        : selection.row[index];
+      const pendingChange = rowKey
+        ? useEditStore.getState().getChange(rowKey, column)
+        : undefined;
+      const value = pendingChange ? pendingChange.newValue : originalValue;
+      const searchable = `${column} ${meta?.udtName || meta?.dataType || ""} ${formatFilterValue(value)}`.toLowerCase();
+      return searchable.includes(normalizedFilter) ? [index] : [];
+    });
+  }, [selection, normalizedFilter, isInsertRow, insertData, rowKey, _editChanges, _editInserts]);
 
   // Scroll to selected column field
   useEffect(() => {
@@ -109,9 +126,30 @@ export function DetailPanel({ selection, wasAlreadyOpen }: DetailPanelProps) {
         )}
       </div>
 
+      <div className="relative shrink-0 px-3 py-2 border-b border-border-light bg-bg-secondary/50">
+        <Search size={12} className="absolute left-5 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
+        <input
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          placeholder="Filter fields"
+          aria-label="Filter row detail fields"
+          className="w-full h-7 pl-7 pr-7 rounded-md border border-border-light bg-bg-primary text-[11px] text-text-primary placeholder:text-text-muted outline-none focus:border-accent focus:ring-1 focus:ring-accent/30"
+        />
+        {filter && (
+          <button
+            onClick={() => setFilter("")}
+            title="Clear filter"
+            className="absolute right-5 top-1/2 -translate-y-1/2 p-0.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover cursor-pointer"
+          >
+            <X size={11} />
+          </button>
+        )}
+      </div>
+
       {/* Field list */}
       <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 pb-4 selectable">
-        {columns.map((col, i) => {
+        {visibleFieldIndexes.map((i) => {
+          const col = columns[i];
           const value = (row as unknown[])[i];
           const meta = columnMeta?.find((m) => m.name === col);
           return (
@@ -128,6 +166,9 @@ export function DetailPanel({ selection, wasAlreadyOpen }: DetailPanelProps) {
             />
           );
         })}
+        {visibleFieldIndexes.length === 0 && (
+          <div className="px-4 py-8 text-center text-xs text-text-muted">No matching fields</div>
+        )}
       </div>
     </div>
   );
@@ -462,4 +503,9 @@ function formatValue(value: unknown): string {
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "object") return JSON.stringify(value, null, 2);
   return String(value);
+}
+
+function formatFilterValue(value: unknown): string {
+  if (value instanceof SqlExpression) return value.label;
+  return formatValue(value);
 }

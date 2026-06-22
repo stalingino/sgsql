@@ -19,10 +19,11 @@ import {
   Settings,
   StopCircle,
   FilePenLine,
+  RefreshCw,
 } from "lucide-react";
 import { waitForSidecar, CONNECTION_RESTORED_EVENT } from "./lib/sidecar";
 import { openConnectionManager } from "./lib/openConnectionManager";
-import { closeConnection } from "./lib/schema";
+import { closeConnection, reloadConnection } from "./lib/schema";
 import { useThemeStore, type ThemeMode, initTheme } from "./lib/theme";
 import { useWindowPersist } from "./lib/useWindowPersist";
 import { loadConfig, getConfig, saveConfig, queryStackPop, queryStackPush } from "./lib/config";
@@ -103,6 +104,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState<false | "all" | "db-only">(false);
   const [reconnectNotice, setReconnectNotice] = useState<string | null>(null);
+  const [reloadingConnection, setReloadingConnection] = useState(false);
 
   // Execution queue — subscribe to the connections map for reactivity
   const execConnections = useExecutionQueue((s) => s.connections);
@@ -145,6 +147,7 @@ function App() {
   const closeContentTabRef = useRef<(id: string) => void>(() => {});
   const closeDbRef = useRef<(db: string) => void>(() => {});
   const closeTabRef = useRef<(id: string) => void>(() => {});
+  const reloadActiveConnectionRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     let clearTimer: ReturnType<typeof setTimeout> | undefined;
@@ -186,13 +189,17 @@ function App() {
           return next;
         });
       }
-      if ((e.metaKey || e.ctrlKey) && e.key === "r") {
+      if ((e.metaKey || e.ctrlKey) && e.key === "o") {
         e.preventDefault();
         setDetailPanelVisible((v) => {
           const next = !v;
           saveConfig({ detailPanel: { ...getConfig().detailPanel, visible: next, width: getConfig().detailPanel?.width ?? 300 } });
           return next;
         });
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "r") {
+        e.preventDefault();
+        reloadActiveConnectionRef.current?.();
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
@@ -564,6 +571,33 @@ function App() {
     ? (execConnections.get(activeTab.connectionId)?.running ?? false)
     : false;
 
+  const reloadActiveConnection = async () => {
+    if (!activeTab?.connectionId || reloadingConnection) return;
+    setReloadingConnection(true);
+    try {
+      await reloadConnection(activeTab.connectionId);
+      setReconnectNotice(`Reloaded ${activeTab.profile.name}`);
+      window.setTimeout(() => setReconnectNotice(null), 6_000);
+      const openTables = Object.values(activeTab.workspaces).flatMap((workspace) =>
+        workspace.contentTabs
+          .filter((contentTab) => contentTab.type !== "query")
+          .map((contentTab) => ({
+            connectionId: activeTab.connectionId!,
+            db: contentTab.db,
+            schema: contentTab.schema,
+            table: contentTab.table,
+          })),
+      );
+      if (openTables.length > 0) useEditStore.getState().requestDataRefresh(openTables);
+    } catch (error) {
+      setReconnectNotice(error instanceof Error ? error.message : "Failed to reload connection");
+      window.setTimeout(() => setReconnectNotice(null), 6_000);
+    } finally {
+      setReloadingConnection(false);
+    }
+  };
+  reloadActiveConnectionRef.current = reloadActiveConnection;
+
   return (
     <div className="flex flex-col h-screen bg-bg-primary no-select">
       {/* ── Tab bar ─────────────────────────────────────────── */}
@@ -612,6 +646,16 @@ function App() {
           {/* Spacer */}
           <div className="w-px h-4 bg-border mx-1" />
 
+          {/* Reload active connection */}
+          <button
+            onClick={reloadActiveConnection}
+            disabled={!activeTab?.connectionId || reloadingConnection}
+            title="Reload connection (Cmd+R)"
+            className="flex items-center p-1.5 rounded-md transition-colors cursor-pointer text-text-muted hover:text-text-secondary hover:bg-bg-hover disabled:opacity-35 disabled:cursor-default disabled:hover:bg-transparent"
+          >
+            <RefreshCw size={14} className={reloadingConnection ? "animate-spin" : ""} />
+          </button>
+
           {/* Toggle sidebar */}
           <button
             onClick={() => setSidebarVisible((v) => {
@@ -636,7 +680,7 @@ function App() {
               saveConfig({ detailPanel: { ...getConfig().detailPanel, visible: next, width: getConfig().detailPanel?.width ?? 300 } });
               return next;
             })}
-            title={detailPanelVisible ? "Hide detail panel" : "Show detail panel"}
+            title={`${detailPanelVisible ? "Hide" : "Show"} detail panel (Cmd+O)`}
             className={`flex items-center p-1.5 rounded-md transition-colors cursor-pointer ${
               detailPanelVisible
                 ? "text-text-primary bg-bg-active"

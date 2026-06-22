@@ -184,6 +184,32 @@ export async function handleEnsureConnection(
 }
 
 // ---------------------------------------------------------------------------
+// POST /connections/reload — force a fresh connection using the saved profile
+// ---------------------------------------------------------------------------
+
+export async function handleReloadConnection(
+  req: Request,
+  headers: Record<string, string>,
+): Promise<Response> {
+  let body: { connectionId?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return errorResponse("Invalid JSON body", headers, 400);
+  }
+  if (!body.connectionId) return errorResponse("Missing connectionId", headers, 400);
+
+  try {
+    await reconnect(body.connectionId);
+    return json({ ok: true }, headers);
+  } catch (error) {
+    const message = friendlyError(error);
+    console.error(`[sidecar] connection reload failed: ${message}`);
+    return errorResponse(message, headers);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // GET /schema/:connId/:action  — dispatcher
 // ---------------------------------------------------------------------------
 

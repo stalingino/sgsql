@@ -64,6 +64,13 @@ export async function closeConnection(connectionId: string): Promise<void> {
   });
 }
 
+export async function reloadConnection(connectionId: string): Promise<void> {
+  await sidecarFetch("/connections/reload", {
+    method: "POST",
+    body: JSON.stringify({ connectionId }),
+  });
+}
+
 export async function ensureConnection(
   connectionId: string,
 ): Promise<{ ok: boolean; reconnected: boolean }> {

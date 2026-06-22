@@ -4,6 +4,7 @@ import {
   handleOpenConnection,
   handleCloseConnection,
   handleEnsureConnection,
+  handleReloadConnection,
   handleSchemaRequest,
   handleSchemaApply,
   handleQuery,
@@ -66,6 +67,11 @@ async function main() {
         if (path === "/connections/ensure" && req.method === "POST") {
           console.log("[sidecar] checking connection");
           return handleEnsureConnection(req, headers);
+        }
+
+        if (path === "/connections/reload" && req.method === "POST") {
+          console.log("[sidecar] reloading connection");
+          return handleReloadConnection(req, headers);
         }
 
         if (path === "/query" && req.method === "POST") {
