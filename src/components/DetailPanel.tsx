@@ -88,11 +88,11 @@ export function DetailPanel({ selection, wasAlreadyOpen }: DetailPanelProps) {
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Header */}
-      <div className="flex items-center h-8 px-3 border-b border-border bg-bg-secondary shrink-0">
-        <span className={`text-[11px] font-semibold ${isInsertRow ? "text-row-insert" : "text-text-secondary"}`}>
+      <div className="flex items-center h-9 px-3 border-b border-border-light bg-bg-secondary shrink-0">
+        <span className={`text-[12px] font-bold ${isInsertRow ? "text-row-insert" : "text-text-primary"}`}>
           {isInsertRow ? "New Row" : "Row Details"}
         </span>
-        <span className="ml-2 text-[10px] text-text-muted">
+        <span className="ml-2 text-[10px] font-medium text-text-secondary">
           ({columns.length} fields)
         </span>
         {rowDirty && (
@@ -110,7 +110,7 @@ export function DetailPanel({ selection, wasAlreadyOpen }: DetailPanelProps) {
       </div>
 
       {/* Field list */}
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 py-1 pb-4 selectable">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 pb-4 selectable">
         {columns.map((col, i) => {
           const value = (row as unknown[])[i];
           const meta = columnMeta?.find((m) => m.name === col);
@@ -352,19 +352,19 @@ function FieldRow({
     handleChange(newVal);
   }, [handleChange]);
 
-  const fieldClasses = `px-3 py-1.5 ${isDirty ? (insertId ? "bg-row-insert/8 border-l-2 border-l-row-insert" : "bg-warning/8 border-l-2 border-l-warning") : ""}`;
-  const inputBorder = isDirty ? (insertId ? "border-row-insert/50" : "border-warning/50") : "border-border";
+  const fieldClasses = `px-3 py-2 border-b border-border/70 ${isDirty ? (insertId ? "bg-row-insert/8 border-l-2 border-l-row-insert" : "bg-warning/8 border-l-2 border-l-warning") : ""}`;
+  const inputBorder = isDirty ? (insertId ? "border-row-insert/60" : "border-warning/60") : "border-border-light";
 
   return (
     <div className={fieldClasses} data-field-index={index}>
       {/* Column name + quick-set */}
       <div className="flex items-center gap-1 min-w-0">
         <div className="flex items-baseline gap-1 min-w-0 flex-1 overflow-hidden">
-          <span className={`text-[11px] font-semibold cursor-text truncate shrink-0 ${isDirty ? (insertId ? "text-row-insert" : "text-warning") : "text-text-muted"}`}>
+          <span className={`text-[12px] font-bold cursor-text truncate shrink-0 ${isDirty ? (insertId ? "text-row-insert" : "text-warning") : "text-text-primary"}`}>
             {name}
             {isDirty && !insertId && <span className="ml-1 text-[9px] text-warning/70">modified</span>}
           </span>
-          <span className="text-[9px] text-text-muted/40 font-mono truncate">{dataType}</span>
+          <span className="text-[10px] font-medium text-text-secondary font-mono truncate">{dataType}</span>
         </div>
         {canEdit && (rowKey || insertId) && (
           <QuickSetSelect
@@ -379,7 +379,7 @@ function FieldRow({
       </div>
 
       {/* Value — editable */}
-      <div className="mt-0.5">
+      <div className="mt-1">
         {isSqlExpr ? (
           /* Show SQL expression as read-only styled badge */
           <div
@@ -395,7 +395,7 @@ function FieldRow({
             onFocus={handleNullFocus}
             onChange={(e) => handleNullChange(e.target.value)}
             readOnly={!canEdit}
-            className={`w-full px-2 py-1 text-[12px] font-mono italic placeholder:text-text-muted/60 text-text-muted bg-bg-secondary border rounded outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors ${inputBorder}`}
+            className={`w-full px-2.5 py-1.5 text-[12px] font-mono italic placeholder:text-text-muted text-text-secondary bg-bg-primary border rounded-md outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors ${inputBorder}`}
           />
         ) : nullEditing ? (
           <input
@@ -404,14 +404,14 @@ function FieldRow({
             onChange={(e) => handleNullChange(e.target.value)}
             onBlur={handleNullBlur}
             autoFocus
-            className={`w-full px-2 py-1 text-[12px] font-mono text-text-primary bg-bg-secondary border rounded outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors ${inputBorder}`}
+            className={`w-full px-2.5 py-1.5 text-[12px] font-mono text-text-primary bg-bg-primary border rounded-md outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors ${inputBorder}`}
           />
         ) : isBoolean ? (
           <select
             value={displayValue}
             onChange={(e) => handleChange(e.target.value)}
             disabled={!canEdit}
-            className={`w-full px-2 py-1 text-[12px] font-mono text-text-primary bg-bg-secondary border rounded outline-none cursor-pointer focus:border-accent transition-colors ${inputBorder}`}
+            className={`w-full px-2.5 py-1.5 text-[12px] font-mono text-text-primary bg-bg-primary border rounded-md outline-none cursor-pointer focus:border-accent transition-colors ${inputBorder}`}
           >
             <option value="true">true</option>
             <option value="false">false</option>
@@ -422,7 +422,7 @@ function FieldRow({
             onChange={(e) => handleChange(e.target.value)}
             readOnly={!canEdit}
             style={{ fieldSizing: "content" as any, minHeight: "2lh", maxHeight: "12lh" }}
-            className={`w-full px-2 py-1 text-[12px] font-mono text-text-primary bg-bg-secondary border rounded outline-none resize-y focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors ${inputBorder}`}
+            className={`w-full px-2.5 py-1.5 text-[12px] font-mono text-text-primary bg-bg-primary border rounded-md outline-none resize-y focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors ${inputBorder}`}
           />
         ) : typeof value === "number" || (!insertId && typeof pendingChange?.originalValue === "number") ? (
           <input
@@ -430,7 +430,7 @@ function FieldRow({
             value={displayValue}
             onChange={(e) => handleChange(e.target.value)}
             readOnly={!canEdit}
-            className={`w-full px-2 py-1 text-[12px] font-mono tabular-nums text-accent bg-bg-secondary border rounded outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors ${inputBorder}`}
+            className={`w-full px-2.5 py-1.5 text-[12px] font-mono font-medium tabular-nums text-accent bg-bg-primary border rounded-md outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors ${inputBorder}`}
           />
         ) : (
           /* String / default */
@@ -440,7 +440,7 @@ function FieldRow({
               onChange={(e) => handleChange(e.target.value)}
               readOnly={!canEdit}
               style={{ fieldSizing: "content" as any, minHeight: "2lh", maxHeight: "12lh" }}
-              className={`w-full px-2 py-1 text-[12px] font-mono text-text-primary bg-bg-secondary border rounded outline-none resize-y focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors ${inputBorder}`}
+              className={`w-full px-2.5 py-1.5 text-[12px] font-mono text-text-primary bg-bg-primary border rounded-md outline-none resize-y focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors ${inputBorder}`}
             />
           ) : (
             <input
@@ -448,7 +448,7 @@ function FieldRow({
               value={displayValue}
               onChange={(e) => handleChange(e.target.value)}
               readOnly={!canEdit}
-              className={`w-full px-2 py-1 text-[12px] font-mono text-text-primary bg-bg-secondary border rounded outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors ${inputBorder}`}
+              className={`w-full px-2.5 py-1.5 text-[12px] font-mono text-text-primary bg-bg-primary border rounded-md outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors ${inputBorder}`}
             />
           )
         )}

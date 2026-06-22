@@ -23,30 +23,39 @@
 /* ── Dark theme (default) ───────────────────────────────── */
 :root,
 [data-theme="dark"] {
-  --color-bg-primary: #1c1c1e;
-  --color-bg-secondary: #232325;
-  --color-bg-tertiary: #2c2c2e;
-  --color-bg-hover: #363638;
-  --color-bg-active: #424244;
-  --color-border: #3a3a3c;
-  --color-border-light: #48484a;
-  --color-text-primary: #e8e8ea;
-  --color-text-secondary: #9a9a9e;
-  --color-text-muted: #636366;
+  --color-bg-primary: #171b22;
+  --color-bg-secondary: #1e242d;
+  --color-bg-tertiary: #28313d;
+  --color-bg-hover: #333e4c;
+  --color-bg-active: #414e60;
+  --color-border: #3a4656;
+  --color-border-light: #506075;
+  --color-text-primary: #f1f5f9;
+  --color-text-secondary: #b8c2cf;
+  --color-text-muted: #8491a2;
+  --color-accent: #ff4d5e;
+  --color-accent-hover: #ff6675;
 }
 
 /* ── Light theme ────────────────────────────────────────── */
 [data-theme="light"] {
-  --color-bg-primary: #ffffff;
-  --color-bg-secondary: #f4f4f5;
-  --color-bg-tertiary: #e9e9eb;
-  --color-bg-hover: #e4e4e7;
-  --color-bg-active: #d4d4d8;
-  --color-border: #e4e4e7;
-  --color-border-light: #d4d4d8;
-  --color-text-primary: #18181b;
-  --color-text-secondary: #52525b;
-  --color-text-muted: #a1a1aa;
+  --color-bg-primary: #f8f8f7;
+  --color-bg-secondary: #f0f0ef;
+  --color-bg-tertiary: #e4e4e2;
+  --color-bg-hover: #dfe1e3;
+  --color-bg-active: #cdd1d5;
+  --color-border: #d0d2d4;
+  --color-border-light: #adb3ba;
+  --color-text-primary: #17191c;
+  --color-text-secondary: #3f454d;
+  --color-text-muted: #707780;
+  --color-accent: #e11d48;
+  --color-accent-hover: #be123c;
+  --color-success: #15803d;
+  --color-error: #dc2626;
+  --color-warning: #a16207;
+  --color-row-insert: #15803d;
+  --color-row-delete: #9d174d;
 }
 
 /* Only disable selection on UI chrome — content areas are selectable by default */
