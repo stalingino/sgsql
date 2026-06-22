@@ -10,6 +10,17 @@ mod config;
 struct SidecarChild(Mutex<Option<CommandChild>>);
 struct AppExiting(Mutex<bool>);
 
+fn stop_managed_sidecar(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<SidecarChild>() {
+        if let Ok(mut guard) = state.0.lock() {
+            if let Some(child) = guard.take() {
+                log::info!("Application exiting — killing sidecar PID {}", child.pid());
+                let _ = child.kill();
+            }
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -137,14 +148,7 @@ pub fn run() {
 
                 if windows.is_empty() {
                     // All windows gone — kill sidecar.
-                    if let Some(state) = app.try_state::<SidecarChild>() {
-                        if let Ok(mut guard) = state.0.lock() {
-                            if let Some(child) = guard.take() {
-                                log::info!("All windows closed — killing sidecar");
-                                let _ = child.kill();
-                            }
-                        }
-                    }
+                    stop_managed_sidecar(app);
                 } else {
                     // If every remaining window is hidden the user effectively quit
                     let all_hidden = windows
@@ -163,6 +167,11 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+                stop_managed_sidecar(app);
+            }
+        });
 }

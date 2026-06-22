@@ -581,15 +581,15 @@ export function ConnectionManagerWindow() {
                     SSH Tunnel
                   </div>
                   <div className="flex gap-3">
-                    <Field label="Server" className="flex-1">
-                      <input value={draft.sshHost} onChange={(e) => updateDraft({ sshHost: e.target.value })} placeholder="127.0.0.1" className="input-field" />
+                    <Field label="Server / SSH config host" className="flex-1">
+                      <input value={draft.sshHost} onChange={(e) => updateDraft({ sshHost: e.target.value })} placeholder="bastion or ~/.ssh/config Host" className="input-field" />
                     </Field>
                     <Field label="Port" className="w-[100px]">
                       <input type="number" value={draft.sshPort} onChange={(e) => updateDraft({ sshPort: parseInt(e.target.value) || 22 })} className="input-field" />
                     </Field>
                   </div>
                   <Field label="User">
-                    <input value={draft.sshUsername} onChange={(e) => updateDraft({ sshUsername: e.target.value })} placeholder="SSH username" className="input-field" />
+                    <input value={draft.sshUsername} onChange={(e) => updateDraft({ sshUsername: e.target.value })} placeholder="Optional — use SSH config" className="input-field" />
                   </Field>
                   <div className="flex gap-3">
                     <Field label={draft.sshUsePrivateKey ? "Key passphrase" : "Password"} className="flex-1">

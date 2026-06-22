@@ -59,7 +59,10 @@ export async function handleTestConnection(
     return jsonResponse({ ok: true, latency: elapsed(start) }, headers);
   } catch (e: unknown) {
     await tunnel?.close().catch(() => {});
-    const message = friendlyError(e);
+    const baseMessage = friendlyError(e);
+    const message = profile.useSsh && tunnel && !baseMessage.startsWith("SSH ")
+      ? `SSH tunnel established, but the database at ${profile.host}:${profile.port} could not be reached. ${baseMessage}`
+      : baseMessage;
     console.error(`[sidecar] connection test failed: ${message}`);
     return jsonResponse({ ok: false, error: message, latency: elapsed(start) }, headers);
   }

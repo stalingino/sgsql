@@ -10,6 +10,25 @@ export interface SshTunnel {
   close: () => Promise<void>;
 }
 
+function sshFailure(profile: ConnectionProfile, error: unknown): Error {
+  const detail = error instanceof Error ? error.message.trim() : String(error);
+  const normalized = detail.toLowerCase();
+  const endpoint = `${profile.sshHost}:${profile.sshPort || 22}`;
+  if (normalized.includes("permission denied") || normalized.includes("authentication failed")) {
+    return new Error(`SSH authentication failed for ${profile.sshUsername ? `${profile.sshUsername}@` : ""}${endpoint}.`);
+  }
+  if (normalized.includes("could not resolve hostname") || normalized.includes("name or service not known")) {
+    return new Error(`SSH host not found: ${endpoint}.`);
+  }
+  if (normalized.includes("connection refused")) {
+    return new Error(`SSH connection refused by ${endpoint}.`);
+  }
+  if (normalized.includes("timed out") || normalized.includes("operation timeout")) {
+    return new Error(`SSH connection to ${endpoint} timed out.`);
+  }
+  return new Error(`SSH tunnel to ${endpoint} failed${detail ? `: ${detail}` : "."}`);
+}
+
 async function availablePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer();
@@ -54,7 +73,7 @@ function expandHome(path: string): string {
 
 export async function createSshTunnel(profile: ConnectionProfile): Promise<SshTunnel | null> {
   if (!profile.useSsh || profile.type === "sqlite") return null;
-  if (!profile.sshHost || !profile.sshUsername) throw new Error("SSH server and user are required");
+  if (!profile.sshHost) throw new Error("SSH server or config host is required");
   if (profile.sshUsePrivateKey && !profile.sshPrivateKey) throw new Error("SSH private key file is required");
 
   const localPort = await availablePort();
@@ -73,13 +92,16 @@ export async function createSshTunnel(profile: ConnectionProfile): Promise<SshTu
   const args = [
     "ssh", "-N", "-T",
     "-o", "ExitOnForwardFailure=yes",
-    "-o", "ServerAliveInterval=30",
+    "-o", "ServerAliveInterval=15",
     "-o", "ServerAliveCountMax=3",
+    "-o", "TCPKeepAlive=yes",
     "-o", "StrictHostKeyChecking=accept-new",
     "-o", "ConnectTimeout=8",
     "-L", `127.0.0.1:${localPort}:${profile.host}:${profile.port}`,
-    "-p", String(profile.sshPort || 22),
   ];
+  // Let ~/.ssh/config provide Port for Host aliases when the form retains the
+  // default. Non-default form values are explicit command-line overrides.
+  if (profile.sshPort && profile.sshPort !== 22) args.push("-p", String(profile.sshPort));
   if (!password) args.push("-o", "BatchMode=yes");
   let proc: ReturnType<typeof Bun.spawn>;
   try {
@@ -98,7 +120,7 @@ export async function createSshTunnel(profile: ConnectionProfile): Promise<SshTu
       }
       args.push("-i", privateKeyPath);
     }
-    args.push(`${profile.sshUsername}@${profile.sshHost}`);
+    args.push(profile.sshUsername ? `${profile.sshUsername}@${profile.sshHost}` : profile.sshHost);
 
     proc = Bun.spawn(args, {
       stdout: "ignore",
@@ -115,7 +137,7 @@ export async function createSshTunnel(profile: ConnectionProfile): Promise<SshTu
     });
   } catch (error) {
     await cleanupTemporaryFiles();
-    throw error;
+    throw sshFailure(profile, error);
   }
   let errorOutput = "";
   const stderrTask = (async () => {
@@ -133,7 +155,7 @@ export async function createSshTunnel(profile: ConnectionProfile): Promise<SshTu
   } catch (error) {
     proc.kill();
     await proc.exited.catch(() => 0);
-    throw error;
+    throw sshFailure(profile, error);
   } finally {
     await cleanupTemporaryFiles();
   }

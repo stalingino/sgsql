@@ -21,6 +21,10 @@ export function friendlyError(e: unknown): string {
   const { msgs, codes } = collectParts(e);
   const has = (s: string) => msgs.includes(s) || codes.includes(s);
 
+  // SSH tunnel errors already identify the failing layer and endpoint. Do not
+  // collapse them into a generic database/network timeout.
+  if (msgs.startsWith("SSH ")) return e instanceof Error ? e.message : msgs;
+
   if (has("ETIMEDOUT") || has("ETIMEOUT") || has("connect timeout") || has("timed out"))
     return "Connection timed out. The host is unreachable or not responding.";
   if (has("ECONNREFUSED"))
