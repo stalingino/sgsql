@@ -63,8 +63,10 @@ export function SchemaEditor(props: Props) {
   const [copied, setCopied] = useState(false);
   const [newIndex, setNewIndex] = useState<IndexDraft>(emptyIndex);
   const [editingIndexName, setEditingIndexName] = useState<string | null>(null);
+  const [indexFormOpen, setIndexFormOpen] = useState(false);
   const [newFk, setNewFk] = useState<ForeignKeyInfo>({ name: "", column: "", columns: [], foreignSchema: schema, foreignTable: "", foreignColumn: "", foreignColumns: [], onUpdate: "NO ACTION", onDelete: "NO ACTION" });
   const [editingFkName, setEditingFkName] = useState<string | null>(null);
+  const [fkFormOpen, setFkFormOpen] = useState(false);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const rightPaneRef = useRef<HTMLDivElement>(null);
   const [rightWidth, setRightWidth] = useState(360);
@@ -106,8 +108,10 @@ export function SchemaEditor(props: Props) {
       setPreview(null);
       notifySchemaChanged(connectionId);
       setEditingIndexName(null);
+      setIndexFormOpen(false);
       setNewIndex(emptyIndex());
       setEditingFkName(null);
+      setFkFormOpen(false);
       setNewFk({ name: "", column: "", columns: [], foreignSchema: schema, foreignTable: "", foreignColumn: "", foreignColumns: [], onUpdate: "NO ACTION", onDelete: "NO ACTION" });
       await onRefresh();
       await loadMetadata();
@@ -122,10 +126,15 @@ export function SchemaEditor(props: Props) {
     try {
       setError(null);
       const statements = factory();
-      if (!statements.length) setError("No schema changes to apply.");
-      else setPreview(statements);
+      if (!statements.length) {
+        setError("No schema changes to apply.");
+        return false;
+      }
+      setPreview(statements);
+      return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
+      return false;
     }
   };
 
@@ -137,6 +146,22 @@ export function SchemaEditor(props: Props) {
       ? buildEditIndex(connectionType, db, schema, table, editingIndexName, newIndex.name, newIndex.columns, newIndex.unique, newIndex)
       : [buildCreateIndex(connectionType, db, schema, table, newIndex.name, newIndex.columns, newIndex.unique, newIndex)];
   });
+  const closeIndexForm = () => { setIndexFormOpen(false); setEditingIndexName(null); setNewIndex(emptyIndex()); };
+  const closeFkForm = () => { setFkFormOpen(false); setEditingFkName(null); setNewFk({ name: "", column: "", columns: [], foreignSchema: schema, foreignTable: "", foreignColumn: "", foreignColumns: [], onUpdate: "NO ACTION", onDelete: "NO ACTION" }); };
+  const submitForeignKey = () => {
+    const localColumns = newFk.columns?.filter(Boolean) ?? [];
+    const remoteColumns = newFk.foreignColumns?.filter(Boolean) ?? [];
+    if (!newFk.name.trim() || localColumns.length === 0 || !newFk.foreignTable.trim() || remoteColumns.length === 0 || localColumns.length !== remoteColumns.length) {
+      setError("Constraint name and matching local/referenced columns are required.");
+      return false;
+    }
+    if (connectionType === "sqlite") {
+      setForeignKeys((current) => editingFkName ? current.map((fk) => fk.name === editingFkName ? newFk : fk) : [...current, newFk]);
+      closeFkForm();
+      return true;
+    }
+    return propose(() => editingFkName ? [buildDropForeignKey(connectionType, db, schema, table, editingFkName), buildAddForeignKey(connectionType, db, schema, table, newFk)] : [buildAddForeignKey(connectionType, db, schema, table, newFk)]);
+  };
 
   const startVerticalResize = (event: React.MouseEvent) => {
     event.preventDefault();
@@ -195,8 +220,10 @@ export function SchemaEditor(props: Props) {
 
         <aside ref={rightPaneRef} className="flex flex-col min-h-0 shrink-0" style={{ width: rightWidth }}>
           <section className="flex flex-col min-h-0" style={{ height: indexHeight }}>
-            <PaneHeader icon={<KeyRound size={12} />} title="Indexes" count={indexes.length} />
-            <div className="flex-1 min-h-0 overflow-auto"><IndexesEditor dialect={connectionType} indexes={indexes} columns={draft.map((c) => c.name)} value={newIndex} onChange={setNewIndex} loading={metaLoading} editingIndexName={editingIndexName} onSubmit={reviewIndex} onCancelEdit={() => { setEditingIndexName(null); setNewIndex(emptyIndex()); }} onEdit={(index) => { setEditingIndexName(index.name); setNewIndex({ name: index.name, columns: [...index.columns], unique: index.unique, method: index.method ?? "", predicate: index.predicate ?? "", includeColumns: [...(index.includeColumns ?? [])], expressionSql: index.expressionSql ?? "" }); }} onDrop={(name) => propose(() => [buildDropIndex(connectionType, db, schema, table, name)])} /></div>
+            <PaneHeader icon={<KeyRound size={12} />} title="Indexes" count={indexes.length}>
+              <button onClick={() => { setError(null); setEditingIndexName(null); setNewIndex(emptyIndex()); setIndexFormOpen(true); }} className="flex items-center gap-1 px-2 py-1 rounded bg-accent text-white text-[10px] cursor-pointer"><Plus size={10} />Add</button>
+            </PaneHeader>
+            <div className="flex-1 min-h-0 overflow-auto"><IndexesEditor indexes={indexes} loading={metaLoading} editingIndexName={editingIndexName} onEdit={(index) => { setError(null); setEditingIndexName(index.name); setNewIndex({ name: index.name, columns: [...index.columns], unique: index.unique, method: index.method ?? "", predicate: index.predicate ?? "", includeColumns: [...(index.includeColumns ?? [])], expressionSql: index.expressionSql ?? "" }); setIndexFormOpen(true); }} onDrop={(name) => propose(() => [buildDropIndex(connectionType, db, schema, table, name)])} /></div>
           </section>
 
           <div onMouseDown={startHorizontalResize} className="group relative h-[5px] shrink-0 cursor-row-resize bg-bg-secondary"><div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border group-hover:bg-accent/60" /></div>
@@ -204,17 +231,9 @@ export function SchemaEditor(props: Props) {
           <section className="flex flex-col flex-1 min-h-0">
             <PaneHeader icon={<Link2 size={12} />} title="Foreign Keys" count={foreignKeys.length}>
               {connectionType === "sqlite" && <button disabled={!foreignKeysDirty || working} onClick={() => propose(columnStatements)} className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-accent text-white text-[11px] disabled:opacity-30 cursor-pointer"><Save size={11} />Review</button>}
+              <button onClick={() => { setError(null); setEditingFkName(null); setNewFk({ name: "", column: "", columns: [], foreignSchema: schema, foreignTable: "", foreignColumn: "", foreignColumns: [], onUpdate: "NO ACTION", onDelete: "NO ACTION" }); setFkFormOpen(true); }} className="flex items-center gap-1 px-2 py-1 rounded bg-accent text-white text-[10px] cursor-pointer"><Plus size={10} />Add</button>
             </PaneHeader>
-            <div className="flex-1 min-h-0 overflow-auto"><ForeignKeysEditor foreignKeys={foreignKeys} columns={draft.map((c) => c.name)} value={newFk} onChange={setNewFk} loading={metaLoading} editingFkName={editingFkName} onCancelEdit={() => { setEditingFkName(null); setNewFk({ name: "", column: "", columns: [], foreignSchema: schema, foreignTable: "", foreignColumn: "", foreignColumns: [], onUpdate: "NO ACTION", onDelete: "NO ACTION" }); }} onEdit={(fk) => { setEditingFkName(fk.name); setNewFk({ ...fk, columns: [...(fk.columns ?? [fk.column])], foreignColumns: [...(fk.foreignColumns ?? [fk.foreignColumn])] }); }} onSubmit={() => {
-              const localColumns = newFk.columns?.filter(Boolean) ?? [];
-              const remoteColumns = newFk.foreignColumns?.filter(Boolean) ?? [];
-              if (!newFk.name.trim() || localColumns.length === 0 || !newFk.foreignTable.trim() || remoteColumns.length === 0 || localColumns.length !== remoteColumns.length) { setError("Constraint name and matching local/referenced columns are required."); return; }
-              if (connectionType === "sqlite") {
-                setForeignKeys((current) => editingFkName ? current.map((fk) => fk.name === editingFkName ? newFk : fk) : [...current, newFk]);
-                setEditingFkName(null);
-                setNewFk({ name: "", column: "", columns: [], foreignSchema: schema, foreignTable: "", foreignColumn: "", foreignColumns: [], onUpdate: "NO ACTION", onDelete: "NO ACTION" });
-              } else propose(() => editingFkName ? [buildDropForeignKey(connectionType, db, schema, table, editingFkName), buildAddForeignKey(connectionType, db, schema, table, newFk)] : [buildAddForeignKey(connectionType, db, schema, table, newFk)]);
-            }} onDrop={(name) => {
+            <div className="flex-1 min-h-0 overflow-auto"><ForeignKeysEditor foreignKeys={foreignKeys} loading={metaLoading} editingFkName={editingFkName} onEdit={(fk) => { setError(null); setEditingFkName(fk.name); setNewFk({ ...fk, columns: [...(fk.columns ?? [fk.column])], foreignColumns: [...(fk.foreignColumns ?? [fk.foreignColumn])] }); setFkFormOpen(true); }} onDrop={(name) => {
               if (connectionType === "sqlite") setForeignKeys((current) => current.filter((fk) => fk.name !== name));
               else propose(() => [buildDropForeignKey(connectionType, db, schema, table, name)]);
             }} /></div>
@@ -223,6 +242,8 @@ export function SchemaEditor(props: Props) {
       </div>
 
       {ddlOpen && <DdlViewModal ddl={ddl} copied={copied} onCopy={async () => { await navigator.clipboard.writeText(ddl); setCopied(true); setTimeout(() => setCopied(false), 1200); }} onClose={onDdlClose} />}
+      {indexFormOpen && <IndexFormModal dialect={connectionType} columns={draft.map((column) => column.name)} value={newIndex} error={error} onChange={setNewIndex} editingIndexName={editingIndexName} onClose={closeIndexForm} onSubmit={() => { if (reviewIndex()) setIndexFormOpen(false); }} />}
+      {fkFormOpen && <ForeignKeyFormModal columns={draft.map((column) => column.name)} value={newFk} error={error} onChange={setNewFk} editingFkName={editingFkName} onClose={closeFkForm} onSubmit={() => { if (submitForeignKey() && connectionType !== "sqlite") setFkFormOpen(false); }} />}
       {preview && <DdlConfirm statements={preview} working={working} onCancel={() => setPreview(null)} onConfirm={() => void runStatements(preview)} />}
     </div>
   );
@@ -282,28 +303,61 @@ function ColumnsEditor({ columns, dialect, onChange }: { columns: EditableColumn
   </div>;
 }
 
-function IndexesEditor({ dialect, indexes, columns, value, onChange, loading, editingIndexName, onSubmit, onCancelEdit, onEdit, onDrop }: { dialect: "postgres" | "mysql" | "sqlite"; indexes: IndexInfo[]; columns: string[]; value: IndexDraft; onChange: (value: IndexDraft) => void; loading: boolean; editingIndexName: string | null; onSubmit: () => void; onCancelEdit: () => void; onEdit: (index: IndexInfo) => void; onDrop: (name: string) => void }) {
+function IndexesEditor({ indexes, loading, editingIndexName, onEdit, onDrop }: { indexes: IndexInfo[]; loading: boolean; editingIndexName: string | null; onEdit: (index: IndexInfo) => void; onDrop: (name: string) => void }) {
   return <Manager loading={loading} empty="No indexes found.">
-    {indexes.map((index) => <ManagerRow key={index.name} title={index.name} detail={`${index.unique ? "UNIQUE · " : ""}${index.columns.join(", ")}`} protectedItem={index.primary} active={editingIndexName === index.name} onEdit={() => onEdit(index)} onDrop={() => onDrop(index.name)} />)}
-    <div className="flex flex-col gap-2 p-3 border-t border-border bg-bg-secondary/40">
-      <SmallInput value={value.name} placeholder="Index name" onChange={(name) => onChange({ ...value, name })} />
-      <select multiple value={value.columns} onChange={(event) => onChange({ ...value, columns: Array.from(event.target.selectedOptions, (option) => option.value) })} className="input-field h-16">{columns.map((column) => <option key={column}>{column}</option>)}</select>
-      <SmallInput value={value.expressionSql} placeholder="Expression SQL (optional, e.g. lower(email))" onChange={(expressionSql) => onChange({ ...value, expressionSql })} />
-      {dialect !== "sqlite" && <SmallInput value={value.method} placeholder={dialect === "postgres" ? "Method (btree, hash, gin, gist…)" : "Method (BTREE or HASH)"} onChange={(method) => onChange({ ...value, method })} />}
-      {dialect === "postgres" && <select multiple value={value.includeColumns} onChange={(event) => onChange({ ...value, includeColumns: Array.from(event.target.selectedOptions, (option) => option.value) })} className="input-field h-14" title="INCLUDE columns">{columns.filter((column) => !value.columns.includes(column)).map((column) => <option key={column}>{column}</option>)}</select>}
-      {dialect !== "mysql" && <SmallInput value={value.predicate} placeholder="Partial index WHERE predicate" onChange={(predicate) => onChange({ ...value, predicate })} />}
-      <div className="flex items-center gap-2"><label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={value.unique} onChange={(event) => onChange({ ...value, unique: event.target.checked })} />Unique</label><div className="flex-1" />{editingIndexName && <button onClick={onCancelEdit} className="px-2.5 py-1.5 rounded border border-border text-xs cursor-pointer">Cancel</button>}<button onClick={onSubmit} className="flex items-center gap-1 px-2.5 py-1.5 bg-accent text-white rounded text-xs cursor-pointer">{editingIndexName ? <Save size={11} /> : <Plus size={11} />}{editingIndexName ? "Review update" : "Add index"}</button></div>
-    </div>
+    {indexes.length ? indexes.map((index) => <ManagerRow key={index.name} title={index.name} detail={`${index.unique ? "UNIQUE · " : ""}${index.columns.join(", ")}`} protectedItem={index.primary} active={editingIndexName === index.name} onEdit={() => onEdit(index)} onDrop={() => onDrop(index.name)} />) : null}
   </Manager>;
 }
 
-function ForeignKeysEditor({ foreignKeys, columns, value, onChange, loading, editingFkName, onSubmit, onCancelEdit, onEdit, onDrop }: { foreignKeys: ForeignKeyInfo[]; columns: string[]; value: ForeignKeyInfo; onChange: (value: ForeignKeyInfo) => void; loading: boolean; editingFkName: string | null; onSubmit: () => void; onCancelEdit: () => void; onEdit: (fk: ForeignKeyInfo) => void; onDrop: (name: string) => void }) {
-  const actions = ["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"];
+function ForeignKeysEditor({ foreignKeys, loading, editingFkName, onEdit, onDrop }: { foreignKeys: ForeignKeyInfo[]; loading: boolean; editingFkName: string | null; onEdit: (fk: ForeignKeyInfo) => void; onDrop: (name: string) => void }) {
   return <Manager loading={loading} empty="No foreign keys found.">
-    {foreignKeys.map((fk) => <ManagerRow key={fk.name} title={fk.name} detail={`${(fk.columns ?? [fk.column]).join(", ")} → ${fk.foreignSchema ? `${fk.foreignSchema}.` : ""}${fk.foreignTable}(${(fk.foreignColumns ?? [fk.foreignColumn]).join(", ")}) · ${fk.onUpdate ?? "NO ACTION"}/${fk.onDelete ?? "NO ACTION"}`} active={editingFkName === fk.name} onEdit={() => onEdit(fk)} onDrop={() => onDrop(fk.name)} />)}
-    <div className="grid grid-cols-2 gap-2 p-3 border-t border-border bg-bg-secondary/40"><div className="col-span-2"><SmallInput value={value.name} placeholder="Constraint name" onChange={(name) => onChange({ ...value, name })} /></div><select multiple value={value.columns ?? []} onChange={(event) => { const selected = Array.from(event.target.selectedOptions, (option) => option.value); onChange({ ...value, columns: selected, column: selected[0] ?? "" }); }} className="input-field h-16">{columns.map((column) => <option key={column}>{column}</option>)}</select><SmallInput value={value.foreignSchema} placeholder="Schema / database" onChange={(foreignSchema) => onChange({ ...value, foreignSchema })} /><SmallInput value={value.foreignTable} placeholder="Referenced table" onChange={(foreignTable) => onChange({ ...value, foreignTable })} /><input value={(value.foreignColumns ?? []).join(", ")} placeholder="Referenced columns, comma separated" onChange={(event) => { const selected = event.target.value.split(",").map((item) => item.trim()).filter(Boolean); onChange({ ...value, foreignColumns: selected, foreignColumn: selected[0] ?? "" }); }} className="input-field" /><select value={value.onUpdate ?? "NO ACTION"} onChange={(event) => onChange({ ...value, onUpdate: event.target.value })} className="input-field" title="ON UPDATE">{actions.map((action) => <option key={action}>{action}</option>)}</select><select value={value.onDelete ?? "NO ACTION"} onChange={(event) => onChange({ ...value, onDelete: event.target.value })} className="input-field" title="ON DELETE">{actions.map((action) => <option key={action}>{action}</option>)}</select><div className="col-span-2 flex justify-end gap-2">{editingFkName && <button onClick={onCancelEdit} className="px-2.5 py-1.5 rounded border border-border text-xs">Cancel</button>}<button onClick={onSubmit} className="flex items-center gap-1 px-2.5 py-1.5 bg-accent text-white rounded text-xs">{editingFkName ? <Save size={12} /> : <Plus size={12} />}{editingFkName ? "Review update" : "Add foreign key"}</button></div>
-    </div>
+    {foreignKeys.length ? foreignKeys.map((fk) => <ManagerRow key={fk.name} title={fk.name} detail={`${(fk.columns ?? [fk.column]).join(", ")} → ${fk.foreignSchema ? `${fk.foreignSchema}.` : ""}${fk.foreignTable}(${(fk.foreignColumns ?? [fk.foreignColumn]).join(", ")}) · ${fk.onUpdate ?? "NO ACTION"}/${fk.onDelete ?? "NO ACTION"}`} active={editingFkName === fk.name} onEdit={() => onEdit(fk)} onDrop={() => onDrop(fk.name)} />) : null}
   </Manager>;
+}
+
+function EditorFormModal({ title, error, children, onClose }: { title: string; error: string | null; children: React.ReactNode; onClose: () => void }) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [onClose]);
+  return <div role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} className="fixed inset-0 z-[240] flex items-center justify-center bg-black/55 p-6">
+    <div className="w-full max-w-xl max-h-full overflow-auto rounded-lg border border-border bg-bg-primary shadow-2xl">
+      <div className="sticky top-0 z-10 flex items-center gap-2 px-4 py-3 border-b border-border bg-bg-primary"><span className="text-sm font-semibold">{title}</span><div className="flex-1" /><button onClick={onClose} className="p-1 rounded hover:bg-bg-hover cursor-pointer" aria-label="Close"><X size={14} /></button></div>
+      {error && <div className="px-4 py-2 text-xs text-error bg-error/10 border-b border-error/20">{error}</div>}
+      {children}
+    </div>
+  </div>;
+}
+
+function IndexFormModal({ dialect, columns, value, error, onChange, editingIndexName, onClose, onSubmit }: { dialect: "postgres" | "mysql" | "sqlite"; columns: string[]; value: IndexDraft; error: string | null; onChange: (value: IndexDraft) => void; editingIndexName: string | null; onClose: () => void; onSubmit: () => void }) {
+  return <EditorFormModal title={editingIndexName ? "Edit index" : "Add index"} error={error} onClose={onClose}>
+    <div className="flex flex-col gap-3 p-4">
+      <SmallInput value={value.name} placeholder="Index name" onChange={(name) => onChange({ ...value, name })} />
+      <select multiple value={value.columns} onChange={(event) => onChange({ ...value, columns: Array.from(event.target.selectedOptions, (option) => option.value) })} className="input-field h-24">{columns.map((column) => <option key={column}>{column}</option>)}</select>
+      <SmallInput value={value.expressionSql} placeholder="Expression SQL (optional, e.g. lower(email))" onChange={(expressionSql) => onChange({ ...value, expressionSql })} />
+      {dialect !== "sqlite" && <SmallInput value={value.method} placeholder={dialect === "postgres" ? "Method (btree, hash, gin, gist…)" : "Method (BTREE or HASH)"} onChange={(method) => onChange({ ...value, method })} />}
+      {dialect === "postgres" && <select multiple value={value.includeColumns} onChange={(event) => onChange({ ...value, includeColumns: Array.from(event.target.selectedOptions, (option) => option.value) })} className="input-field h-20" title="INCLUDE columns">{columns.filter((column) => !value.columns.includes(column)).map((column) => <option key={column}>{column}</option>)}</select>}
+      {dialect !== "mysql" && <SmallInput value={value.predicate} placeholder="Partial index WHERE predicate" onChange={(predicate) => onChange({ ...value, predicate })} />}
+      <div className="flex items-center gap-2"><label className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={value.unique} onChange={(event) => onChange({ ...value, unique: event.target.checked })} />Unique</label><div className="flex-1" /><button onClick={onClose} className="px-3 py-1.5 rounded border border-border text-xs cursor-pointer">Cancel</button><button onClick={onSubmit} className="flex items-center gap-1.5 px-3 py-1.5 bg-accent text-white rounded text-xs cursor-pointer">{editingIndexName ? <Save size={11} /> : <Plus size={11} />}{editingIndexName ? "Review update" : "Add index"}</button></div>
+    </div>
+  </EditorFormModal>;
+}
+
+function ForeignKeyFormModal({ columns, value, error, onChange, editingFkName, onClose, onSubmit }: { columns: string[]; value: ForeignKeyInfo; error: string | null; onChange: (value: ForeignKeyInfo) => void; editingFkName: string | null; onClose: () => void; onSubmit: () => void }) {
+  const actions = ["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"];
+  return <EditorFormModal title={editingFkName ? "Edit foreign key" : "Add foreign key"} error={error} onClose={onClose}>
+    <div className="grid grid-cols-2 gap-3 p-4">
+      <div className="col-span-2"><SmallInput value={value.name} placeholder="Constraint name" onChange={(name) => onChange({ ...value, name })} /></div>
+      <select multiple value={value.columns ?? []} onChange={(event) => { const selected = Array.from(event.target.selectedOptions, (option) => option.value); onChange({ ...value, columns: selected, column: selected[0] ?? "" }); }} className="input-field h-24">{columns.map((column) => <option key={column}>{column}</option>)}</select>
+      <SmallInput value={value.foreignSchema} placeholder="Schema / database" onChange={(foreignSchema) => onChange({ ...value, foreignSchema })} />
+      <SmallInput value={value.foreignTable} placeholder="Referenced table" onChange={(foreignTable) => onChange({ ...value, foreignTable })} />
+      <input value={(value.foreignColumns ?? []).join(", ")} placeholder="Referenced columns, comma separated" onChange={(event) => { const selected = event.target.value.split(",").map((item) => item.trim()).filter(Boolean); onChange({ ...value, foreignColumns: selected, foreignColumn: selected[0] ?? "" }); }} className="input-field" />
+      <select value={value.onUpdate ?? "NO ACTION"} onChange={(event) => onChange({ ...value, onUpdate: event.target.value })} className="input-field" title="ON UPDATE">{actions.map((action) => <option key={action}>{action}</option>)}</select>
+      <select value={value.onDelete ?? "NO ACTION"} onChange={(event) => onChange({ ...value, onDelete: event.target.value })} className="input-field" title="ON DELETE">{actions.map((action) => <option key={action}>{action}</option>)}</select>
+      <div className="col-span-2 flex justify-end gap-2"><button onClick={onClose} className="px-3 py-1.5 rounded border border-border text-xs cursor-pointer">Cancel</button><button onClick={onSubmit} className="flex items-center gap-1.5 px-3 py-1.5 bg-accent text-white rounded text-xs cursor-pointer">{editingFkName ? <Save size={12} /> : <Plus size={12} />}{editingFkName ? "Review update" : "Add foreign key"}</button></div>
+    </div>
+  </EditorFormModal>;
 }
 
 function Manager({ children, loading, empty }: { children: React.ReactNode; loading: boolean; empty: string }) { return <div>{loading ? <Centered><Loader2 size={13} className="animate-spin" />Loading…</Centered> : children || <Centered>{empty}</Centered>}</div>; }
