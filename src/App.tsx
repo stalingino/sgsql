@@ -142,6 +142,7 @@ function App() {
   tabsRef.current = tabs;
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+  const openedConnectionIdsRef = useRef(new Set<string>());
   const addQueryTabRef = useRef<(() => void) | null>(null);
   const saveAllChangesRef = useRef<(() => void) | null>(null);
   const closeContentTabRef = useRef<(id: string) => void>(() => {});
@@ -277,6 +278,17 @@ function App() {
       "connection-selected",
       async (event) => {
         const { profile, connectionId: preOpenedId, serverVersion } = event.payload;
+        const existingTab = tabsRef.current.find((candidate) => candidate.connectionId === preOpenedId);
+        if (existingTab) {
+          setActiveTabId(existingTab.id);
+          await getCurrentWindow().show();
+          await getCurrentWindow().setFocus();
+          return;
+        }
+        if (openedConnectionIdsRef.current.has(preOpenedId)) {
+          return;
+        }
+        openedConnectionIdsRef.current.add(preOpenedId);
 
         const tabId = nextTabId();
         const initialDbs = profile.database ? [profile.database] : [];
@@ -315,6 +327,7 @@ function App() {
   const closeTab = useCallback((tabId: string) => {
     const tab = tabsRef.current.find((t) => t.id === tabId);
     if (tab?.connectionId) {
+      openedConnectionIdsRef.current.delete(tab.connectionId);
       closeConnection(tab.connectionId).catch(() => {});
     }
 
