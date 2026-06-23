@@ -315,6 +315,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
       name: c.name,
       dataType: c.dataType,
       udtName: c.udtName,
+      enumValues: c.enumValues,
       defaultValue: c.defaultValue,
     })) ?? [],
     [columns],
@@ -330,7 +331,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     const existingInserts = useEditStore.getState().getTableInserts(connectionId, db, schema, table);
     const newRowIndex = realRows + existingInserts.length - 1;
     const newRow = colNames.map(() => null);
-    const columnMeta = columns.map((c) => ({ name: c.name, dataType: c.dataType, udtName: c.udtName, defaultValue: c.defaultValue }));
+    const columnMeta = columns.map((c) => ({ name: c.name, dataType: c.dataType, udtName: c.udtName, enumValues: c.enumValues, defaultValue: c.defaultValue }));
     onCellSelect?.({
       rowIndex: newRowIndex,
       colIndex: 0,
@@ -834,7 +835,7 @@ function DataView({
   onCellSelect?: (selection: CellSelection | null) => void;
   onSelectionChange?: (selectedIndices: Set<number>) => void;
   pkColumns: string[];
-  columnMeta: { name: string; dataType: string; udtName: string; defaultValue: string | null }[];
+  columnMeta: { name: string; dataType: string; udtName: string; enumValues?: string[]; defaultValue: string | null }[];
 }) {
   const editChanges = useEditStore((s) => s.changes);
   const editDeletes = useEditStore((s) => s.deletes);
@@ -894,15 +895,16 @@ function DataView({
       const row = combinedRows[idx] as unknown[];
       if (!row) continue;
       const id = useEditStore.getState().addInsert(connectionId, connectionType, db, schema, table, headerColumns);
-      // Copy all column values from the source row
+      // Primary keys must be generated or entered again for a duplicate row.
       for (let ci = 0; ci < headerColumns.length; ci++) {
+        if (pkColumns.includes(headerColumns[ci])) continue;
         const val = row[ci];
         if (val !== null && val !== undefined) {
           useEditStore.getState().updateInsertValue(id, headerColumns[ci], val);
         }
       }
     }
-  }, [connectionId, connectionType, db, schema, table, headerColumns, combinedRows]);
+  }, [connectionId, connectionType, db, schema, table, headerColumns, pkColumns, combinedRows]);
 
   // Wrap onCellSelect to inject table context (also handle insert rows)
   const handleCellSelect = useCallback((sel: CellSelection | null) => {

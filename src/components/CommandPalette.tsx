@@ -17,6 +17,7 @@ interface CommandPaletteProps {
   connectionId: string;
   connectionType: "postgres" | "mysql" | "sqlite";
   connectionDatabase: string;
+  currentDatabase: string | null;
   cacheKey?: string;
   mode?: "all" | "db-only";
   onSelectDb: (db: string) => void;
@@ -60,6 +61,7 @@ export function CommandPalette({
   connectionId,
   connectionType,
   connectionDatabase,
+  currentDatabase,
   cacheKey,
   mode = "all",
   onSelectDb,
@@ -94,7 +96,8 @@ export function CommandPalette({
 
         // Fetch tables only in "all" mode
         if (mode !== "db-only") {
-          const orderedDbs = [connectionDatabase, ...dbs.filter((d) => d !== connectionDatabase)];
+          const preferredDb = currentDatabase || connectionDatabase;
+          const orderedDbs = [preferredDb, ...dbs.filter((d) => d !== preferredDb)];
           for (const db of orderedDbs) {
             try {
               const tables = await fetchTables(connectionId, db, schema);
@@ -156,6 +159,10 @@ export function CommandPalette({
       })
       .filter((result) => result.match)
       .sort((a, b) => {
+        const aIsCurrentTable = a.item.kind !== "db" && a.item.db === currentDatabase;
+        const bIsCurrentTable = b.item.kind !== "db" && b.item.db === currentDatabase;
+        if (aIsCurrentTable !== bIsCurrentTable) return aIsCurrentTable ? -1 : 1;
+
         if (search && a.score !== b.score) return b.score - a.score;
 
         const aRecent = recency.get(itemKey(a.item)) ?? Number.MAX_SAFE_INTEGER;
@@ -298,7 +305,7 @@ export function CommandPalette({
               >
                 {kindIcon(item.kind)}
                 <span className="flex-1 min-w-0 truncate text-sm font-mono text-text-primary">
-                  {item.kind !== "db" && item.db !== connectionDatabase && (
+                  {item.kind !== "db" && item.db !== currentDatabase && (
                     <span className="text-text-muted">{item.db}.</span>
                   )}
                   {item.name}

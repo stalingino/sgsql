@@ -608,6 +608,12 @@ async function getColumns(
           c.data_type,
           c.udt_name,
           pg_catalog.format_type(a.atttypid, a.atttypmod) AS formatted_type,
+          ARRAY(
+            SELECT enumlabel
+            FROM pg_enum
+            WHERE enumtypid = a.atttypid
+            ORDER BY enumsortorder
+          ) AS enum_values,
           c.is_nullable,
           c.column_default,
           col_description(cls.oid, a.attnum) AS comment,

@@ -30,6 +30,7 @@ import { loadConfig, getConfig, saveConfig, queryStackPop, queryStackPush } from
 import { useQueryLog } from "./lib/queryLog";
 import { useExecutionQueue } from "./lib/executionQueue";
 import { useEditStore } from "./lib/editStore";
+import { notifySchemaChanged } from "./lib/schemaRevision";
 import { SchemaTree } from "./components/SchemaTree";
 import { DataTable } from "./components/DataTable";
 import { QueryEditor } from "./components/QueryEditor";
@@ -443,6 +444,33 @@ function App() {
     }));
   }, [activeTabId]);
 
+  const handleTableDrop = useCallback((db: string, schema: string, table: string) => {
+    setTabs((prev) => prev.map((tab) => {
+      if (tab.id !== activeTabId) return tab;
+      const ws = tab.workspaces[db];
+      if (!ws) return tab;
+
+      const droppedIdx = ws.contentTabs.findIndex((contentTab) =>
+        contentTab.type !== "query"
+        && contentTab.db === db
+        && contentTab.schema === schema
+        && contentTab.table === table,
+      );
+      if (droppedIdx < 0) return tab;
+
+      const dropped = ws.contentTabs[droppedIdx];
+      const contentTabs = ws.contentTabs.filter((contentTab) => contentTab.id !== dropped.id);
+      const activeContentTabId = ws.activeContentTabId === dropped.id
+        ? contentTabs[Math.min(droppedIdx, contentTabs.length - 1)]?.id ?? null
+        : ws.activeContentTabId;
+      return {
+        ...tab,
+        workspaces: { ...tab.workspaces, [db]: { ...ws, contentTabs, activeContentTabId } },
+      };
+    }));
+    setCellSelection(null);
+  }, [activeTabId]);
+
   closeContentTabRef.current = closeContentTab;
   closeDbRef.current = closeDb;
   closeTabRef.current = closeTab;
@@ -589,6 +617,7 @@ function App() {
     setReloadingConnection(true);
     try {
       await reloadConnection(activeTab.connectionId);
+      notifySchemaChanged(activeTab.connectionId);
       setReconnectNotice(`Reloaded ${activeTab.profile.name}`);
       window.setTimeout(() => setReconnectNotice(null), 6_000);
       const openTables = Object.values(activeTab.workspaces).flatMap((workspace) =>
@@ -723,6 +752,7 @@ function App() {
           connectionId={activeTab.connectionId}
           connectionType={activeTab.profile.type}
           connectionDatabase={activeTab.profile.database}
+          currentDatabase={activeTab.activeDbName}
           cacheKey={activeTab.profile.id}
           mode={commandPaletteOpen}
           onSelectDb={(db) => {
@@ -775,6 +805,7 @@ function App() {
                 onCloseDb={closeDb}
                 onAddDb={() => setCommandPaletteOpen("db-only")}
                 onTableSelect={handleTableSelect}
+                onTableDrop={handleTableDrop}
                 tableListVisible={sidebarVisible}
               />
             )}
@@ -821,25 +852,25 @@ function App() {
               </div>
 
               {/* Content area */}
-              {activeWorkspace?.activeContentTabId && activeTab.connectionId ? (
+              {activeTab.connectionId ? (
                 <div className="flex-1 relative min-h-0 overflow-hidden z-0">
-                  {activeWorkspace.contentTabs.map((ct) => (
+                  {Object.values(activeTab.workspaces).flatMap((workspace) => workspace.contentTabs.map((ct) => (
                     <div
                       key={ct.id}
                       className="absolute inset-0"
-                      style={{ display: ct.id === activeWorkspace.activeContentTabId ? "block" : "none" }}
+                      style={{ display: workspace.db === activeTab.activeDbName && ct.id === workspace.activeContentTabId ? "block" : "none" }}
                     >
                       {ct.type === "query" ? (
                         <QueryEditor
                           connectionId={activeTab.connectionId!}
                           connectionType={activeTab.profile.type}
-                          activeDb={activeTab.activeDbName || ""}
+                          activeDb={ct.db}
                           initialSql={ct.sql || ""}
                           onCellSelect={handleCellSelection}
                           onSqlChange={(sql) => {
                             setTabs((prev) => prev.map((tab) => {
-                              if (tab.id !== activeTab.id || !tab.activeDbName) return tab;
-                              const ws = tab.workspaces[tab.activeDbName];
+                              if (tab.id !== activeTab.id) return tab;
+                              const ws = tab.workspaces[ct.db];
                               if (!ws) return tab;
                               const updatedWs = {
                                 ...ws,
@@ -847,7 +878,7 @@ function App() {
                                   c.id !== ct.id ? c : { ...c, sql }
                                 ),
                               };
-                              return { ...tab, workspaces: { ...tab.workspaces, [tab.activeDbName]: updatedWs } };
+                              return { ...tab, workspaces: { ...tab.workspaces, [ct.db]: updatedWs } };
                             }));
                           }}
                         />
@@ -862,16 +893,28 @@ function App() {
                           viewMode={ct.viewMode ?? "data"}
                           onViewModeChange={(viewMode) => {
                             setTabs((prev) => prev.map((tab) => {
-                              if (tab.id !== activeTab.id || !tab.activeDbName) return tab;
-                              const ws = tab.workspaces[tab.activeDbName];
+                              if (tab.id !== activeTab.id) return tab;
+                              const ws = tab.workspaces[ct.db];
                               if (!ws) return tab;
-                              return { ...tab, workspaces: { ...tab.workspaces, [tab.activeDbName]: { ...ws, contentTabs: ws.contentTabs.map((content) => content.id === ct.id ? { ...content, viewMode } : content) } } };
+                              return { ...tab, workspaces: { ...tab.workspaces, [ct.db]: { ...ws, contentTabs: ws.contentTabs.map((content) => content.id === ct.id ? { ...content, viewMode } : content) } } };
                             }));
                           }}
                         />
                       )}
                     </div>
-                  ))}
+                  )))}
+                  {!activeContentTab && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-4">
+                      <img
+                        src="/schema-background.png"
+                        alt=""
+                        className="w-96 h-96 opacity-[0.12] pointer-events-none select-none [html[data-theme=dark]_&]:invert"
+                      />
+                      <p className="text-text-muted text-sm">
+                        {activeTab.activeDbName ? "Select a table to get started" : "Add a database to get started"}
+                      </p>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="flex-1 flex flex-col items-center justify-center min-h-0 gap-4">

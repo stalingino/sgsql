@@ -34,7 +34,7 @@ export interface CellSelection {
     table: string;
     pkColumns: string[];
     /** Column metadata for type-aware editing */
-    columnMeta?: { name: string; dataType: string; udtName: string; defaultValue: string | null }[];
+    columnMeta?: { name: string; dataType: string; udtName: string; enumValues?: string[]; defaultValue: string | null }[];
   };
   /** If this is a pending insert row, its ID in the edit store */
   insertId?: string;

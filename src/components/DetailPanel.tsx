@@ -161,6 +161,7 @@ export function DetailPanel({ selection, wasAlreadyOpen }: DetailPanelProps) {
               rowKey={rowKey}
               canEdit={canEdit}
               dataType={meta?.udtName || meta?.dataType || ""}
+              enumValues={meta?.enumValues}
               defaultValue={meta?.defaultValue ?? null}
               insertId={isInsertRow ? selection.insertId : undefined}
             />
@@ -249,6 +250,7 @@ const DATE_TIME_TYPES = new Set([
   "timestamp without time zone", "timestamp with time zone",
   "time", "timetz", "time without time zone", "time with time zone",
 ]);
+const ENUM_NULL_VALUE = "__sgsql_null__";
 
 function isDateTimeType(dataType: string): boolean {
   return DATE_TIME_TYPES.has(dataType.toLowerCase());
@@ -316,6 +318,7 @@ function FieldRow({
   rowKey,
   canEdit,
   dataType,
+  enumValues,
   defaultValue,
   insertId,
 }: {
@@ -325,6 +328,7 @@ function FieldRow({
   rowKey: RowKey | null;
   canEdit: boolean;
   dataType: string;
+  enumValues?: string[];
   defaultValue: string | null;
   insertId?: string;
 }) {
@@ -354,9 +358,16 @@ function FieldRow({
       ? ""
       : formatValue(effectiveValue);
 
-  const handleChange = useCallback((newVal: string) => {
+  const commitValue = useCallback((parsed: unknown) => {
     if (!canEdit) return;
+    if (insertId) {
+      useEditStore.getState().updateInsertValue(insertId, name, parsed);
+    } else if (rowKey) {
+      useEditStore.getState().setChange(rowKey, name, value, parsed);
+    }
+  }, [rowKey, name, value, canEdit, insertId]);
 
+  const handleChange = useCallback((newVal: string) => {
     // Convert typed value back
     let parsed: unknown = newVal;
     if (newVal === "" && (isNull || isCurrentlyNull)) {
@@ -366,14 +377,12 @@ function FieldRow({
     } else if (typeof value === "number" && !isNaN(Number(newVal)) && newVal !== "") {
       parsed = Number(newVal);
     }
+    commitValue(parsed);
+  }, [commitValue, isBoolean, isNull, isCurrentlyNull, value]);
 
-    if (insertId) {
-      // For insert rows, update the insert store
-      useEditStore.getState().updateInsertValue(insertId, name, parsed);
-    } else if (rowKey) {
-      useEditStore.getState().setChange(rowKey, name, value, parsed);
-    }
-  }, [rowKey, name, value, canEdit, isBoolean, isNull, isCurrentlyNull, insertId]);
+  const handleEnumChange = useCallback((newVal: string) => {
+    commitValue(newVal === ENUM_NULL_VALUE ? null : newVal);
+  }, [commitValue]);
 
   const handleNullFocus = useCallback(() => {
     if (isCurrentlyNull) {
@@ -428,6 +437,17 @@ function FieldRow({
           >
             {displayValue}
           </div>
+        ) : enumValues?.length ? (
+          <select
+            value={isCurrentlyNull ? ENUM_NULL_VALUE : String(effectiveValue)}
+            onChange={(event) => handleEnumChange(event.target.value)}
+            disabled={!canEdit}
+            className={`w-full px-2.5 py-1.5 text-[12px] font-mono text-text-primary bg-bg-primary border rounded-md outline-none cursor-pointer focus:border-accent transition-colors ${inputBorder}`}
+          >
+            <option value={ENUM_NULL_VALUE}>NULL</option>
+            {!isCurrentlyNull && !enumValues.includes(String(effectiveValue)) && <option value={String(effectiveValue)}>{String(effectiveValue)}</option>}
+            {enumValues.map((enumValue) => <option key={enumValue} value={enumValue}>{enumValue || "'' (empty)"}</option>)}
+          </select>
         ) : isCurrentlyNull && !nullEditing ? (
           <input
             type="text"

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Save, Undo2, Loader2, Plus, Trash2 } from "lucide-react";
 import { useEditStore, SqlExpression, type CellChange, type RowKey, type PendingInsert, type PendingDelete } from "../lib/editStore";
 import { useExecutionQueue } from "../lib/executionQueue";
@@ -10,6 +10,12 @@ export function ChangeHistoryPanel() {
   const allChanges = useEditStore.getState().getAllChanges();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Global saves run outside this component. Once the pending set changes,
+  // the failure no longer describes the current edits.
+  useEffect(() => {
+    if (error) setError(null);
+  }, [changes, inserts, deletes]);
 
   // Group cell changes by row
   const groupedByRow = groupChangesByRow(allChanges);

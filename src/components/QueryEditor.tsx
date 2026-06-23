@@ -387,6 +387,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
           name: column.name,
           dataType: column.dataType,
           udtName: column.udtName,
+          enumValues: column.enumValues,
           defaultValue: column.defaultValue,
         })),
       };

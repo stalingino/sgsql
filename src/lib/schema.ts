@@ -12,6 +12,7 @@ export interface ColumnInfo {
   name: string;
   dataType: string;
   udtName: string;
+  enumValues?: string[];
   nullable: boolean;
   defaultValue: string | null;
   isPk: boolean;
@@ -187,6 +188,9 @@ export async function fetchColumns(
     name: c.column_name ?? c.name ?? "",
     dataType: c.data_type ?? c.dataType ?? "",
     udtName: c.formatted_type ?? c.udt_name ?? c.udtName ?? c.column_type ?? "",
+    enumValues: Array.isArray(c.enum_values)
+      ? c.enum_values.map(String)
+      : parseMysqlEnumValues(c.column_type ?? c.formatted_type ?? c.udt_name ?? c.udtName),
     nullable: (c.is_nullable ?? c.nullable ?? "YES") === "YES",
     defaultValue: c.column_default ?? c.defaultValue ?? null,
     isPk: c.column_key === "PRI" || c.isPk === true,
@@ -196,6 +200,38 @@ export async function fetchColumns(
     extra: c.extra ?? [c.collation_name ? `COLLATE ${c.collation_name}` : "", c.identity_clause ?? "", c.generation_clause ?? ""].filter(Boolean).join(" "),
     comment: c.comment ?? c.column_comment ?? "",
   }));
+}
+
+function parseMysqlEnumValues(type: unknown): string[] | undefined {
+  if (typeof type !== "string") return undefined;
+  const match = /^enum\((.*)\)$/is.exec(type.trim());
+  if (!match) return undefined;
+
+  const values: string[] = [];
+  const input = match[1];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index];
+    if (!quoted) {
+      if (char === "'") quoted = true;
+      else if (char !== "," && !/\s/.test(char)) return undefined;
+      continue;
+    }
+    if (char === "\\" && index + 1 < input.length) {
+      value += input[++index];
+    } else if (char === "'" && input[index + 1] === "'") {
+      value += "'";
+      index += 1;
+    } else if (char === "'") {
+      values.push(value);
+      value = "";
+      quoted = false;
+    } else {
+      value += char;
+    }
+  }
+  return quoted || values.length === 0 ? undefined : values;
 }
 
 function schemaUrl(connId: string, action: string, db: string, schema: string, table: string) {

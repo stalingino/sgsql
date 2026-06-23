@@ -8,13 +8,17 @@ import {
   X,
 } from "lucide-react";
 import {
+  applySchemaChanges,
   fetchSchemas,
   fetchTables,
   type TableInfo,
 } from "../lib/schema";
+import { quoteIdent } from "../lib/schemaDdl";
 import { getConfig, saveConfig } from "../lib/config";
-import { useSchemaRevision } from "../lib/schemaRevision";
+import { useEditStore } from "../lib/editStore";
+import { notifySchemaChanged, useSchemaRevision } from "../lib/schemaRevision";
 import { CreateTableModal } from "./CreateTableModal";
+import { HighlightedSQL } from "../lib/highlightSQL";
 
 /* ── Props ──────────────────────────────────────────────── */
 
@@ -27,6 +31,7 @@ interface SchemaTreeProps {
   onCloseDb: (db: string) => void;
   onAddDb: () => void;
   onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view") => void;
+  onTableDrop?: (db: string, schema: string, table: string) => void;
   tableListVisible?: boolean;
 }
 
@@ -50,6 +55,7 @@ export function SchemaTree({
   onCloseDb,
   onAddDb,
   onTableSelect,
+  onTableDrop,
   tableListVisible = true,
 }: SchemaTreeProps) {
   const cacheRef = useRef<SchemaCache>(new Map());
@@ -110,6 +116,7 @@ export function SchemaTree({
             connectionType={connectionType}
             cacheRef={cacheRef}
             onTableSelect={onTableSelect}
+            onTableDrop={onTableDrop}
             schemaRevision={schemaRevision}
             schemas={schemas}
             onSchemaChange={(nextSchema) => activeDb && setSelectedSchemas((current) => ({ ...current, [activeDb]: nextSchema }))}
@@ -230,6 +237,7 @@ function TableList({
   connectionType,
   cacheRef,
   onTableSelect,
+  onTableDrop,
   schemaRevision,
   schemas,
   onSchemaChange,
@@ -241,6 +249,7 @@ function TableList({
   connectionType: "postgres" | "mysql" | "sqlite";
   cacheRef: React.RefObject<SchemaCache>;
   onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view") => void;
+  onTableDrop?: (db: string, schema: string, table: string) => void;
   schemaRevision: number;
   schemas: string[];
   onSchemaChange: (schema: string) => void;
@@ -250,15 +259,26 @@ function TableList({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [selectedIdx, setSelectedIdx] = useState(-1);
+  const [selectedTableKey, setSelectedTableKey] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ table: TableInfo; x: number; y: number } | null>(null);
+  const [pendingAction, setPendingAction] = useState<{ kind: "truncate" | "drop"; table: TableInfo; statement: string } | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
   const filterInputRef = useRef<HTMLInputElement>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
   const revisionRef = useRef(schemaRevision);
 
   // Clear search when db changes
-  useEffect(() => { setQuery(""); setSelectedIdx(-1); }, [db]);
+  useEffect(() => { setQuery(""); setSelectedTableKey(null); }, [db, schema]);
 
-  // Reset selection when query changes
-  useEffect(() => { setSelectedIdx(-1); }, [query]);
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = (event: MouseEvent) => {
+      if (!contextMenuRef.current?.contains(event.target as Node)) setContextMenu(null);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [contextMenu]);
 
   // Auto-focus the filter input on mount
   useEffect(() => {
@@ -310,24 +330,68 @@ function TableList({
         .map((r) => r.t)
     : tables;
 
+  const selectedIdx = filtered.findIndex((table) => `${table.type}:${table.name}` === selectedTableKey);
+  const selectTable = (table: TableInfo, open = true) => {
+    setSelectedTableKey(`${table.type}:${table.name}`);
+    if (open) onTableSelect?.(db, schema, table.name, table.type === "view" ? "view" : "table");
+  };
+
+  const tableReference = (table: string) => {
+    if (connectionType === "mysql") return `${quoteIdent(connectionType, db)}.${quoteIdent(connectionType, table)}`;
+    if (connectionType === "postgres") return `${quoteIdent(connectionType, schema || "public")}.${quoteIdent(connectionType, table)}`;
+    return quoteIdent(connectionType, table);
+  };
+
+  const beginAction = (kind: "truncate" | "drop") => {
+    if (!contextMenu) return;
+    const ref = tableReference(contextMenu.table.name);
+    const statement = kind === "drop"
+      ? `DROP TABLE ${ref}`
+      : connectionType === "sqlite"
+        ? `DELETE FROM ${ref}`
+        : `TRUNCATE TABLE ${ref}`;
+    setContextMenu(null);
+    setActionError(null);
+    setPendingAction({ kind, table: contextMenu.table, statement });
+  };
+
+  const runAction = async () => {
+    if (!pendingAction) return;
+    setWorking(true);
+    setActionError(null);
+    try {
+      await applySchemaChanges(connectionId, db, [pendingAction.statement], connectionType === "sqlite");
+      notifySchemaChanged(connectionId);
+      if (pendingAction.kind === "truncate") {
+        useEditStore.getState().requestDataRefresh([{ connectionId, db, schema, table: pendingAction.table.name }]);
+      }
+      if (pendingAction.kind === "drop") {
+        setSelectedTableKey(null);
+        onTableDrop?.(db, schema, pendingAction.table.name);
+      }
+      setPendingAction(null);
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setWorking(false);
+    }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Tab" && filtered.length > 0) {
       e.preventDefault();
       const dir = e.shiftKey ? -1 : 1;
-      setSelectedIdx((prev) => {
-        if (prev < 0) return 0;
-        return (prev + dir + filtered.length) % filtered.length;
-      });
+      const next = selectedIdx < 0 ? 0 : (selectedIdx + dir + filtered.length) % filtered.length;
+      selectTable(filtered[next], false);
     } else if (e.key === "ArrowDown" && filtered.length > 0) {
       e.preventDefault();
-      setSelectedIdx((prev) => Math.min(prev + 1, filtered.length - 1));
+      selectTable(filtered[Math.min(selectedIdx + 1, filtered.length - 1)], false);
     } else if (e.key === "ArrowUp" && filtered.length > 0) {
       e.preventDefault();
-      setSelectedIdx((prev) => Math.max(prev - 1, 0));
+      selectTable(filtered[Math.max(selectedIdx - 1, 0)], false);
     } else if (e.key === "Enter" && selectedIdx >= 0 && selectedIdx < filtered.length) {
       e.preventDefault();
-      const t = filtered[selectedIdx];
-      onTableSelect?.(db, schema, t.name, t.type === "view" ? "view" : "table");
+      selectTable(filtered[selectedIdx]);
     }
   };
 
@@ -373,13 +437,42 @@ function TableList({
             key={`${t.type}:${t.name}`}
             table={t}
             query={query}
-            db={db}
-            schema={schema}
             selected={i === selectedIdx}
-            onTableSelect={onTableSelect}
+            onSelect={() => selectTable(t)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              selectTable(t, false);
+              if (t.type === "table") setContextMenu({ table: t, x: event.clientX, y: event.clientY });
+            }}
           />
         ))}
       </div>
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          className="fixed z-[9999] min-w-[170px] overflow-hidden rounded-md border border-border bg-bg-primary py-1 shadow-xl"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+        >
+          <div className="mb-1 border-b border-border px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+            {contextMenu.table.name}
+          </div>
+          <button onClick={() => beginAction("truncate")} className="flex w-full items-center px-3 py-1.5 text-left text-[12px] text-text-primary transition-colors hover:bg-bg-hover">
+            Truncate table
+          </button>
+          <button onClick={() => beginAction("drop")} className="flex w-full items-center px-3 py-1.5 text-left text-[12px] text-error transition-colors hover:bg-error/10">
+            Drop table
+          </button>
+        </div>
+      )}
+      {pendingAction && (
+        <TableActionConfirm
+          action={pendingAction}
+          error={actionError}
+          working={working}
+          onCancel={() => { if (!working) { setPendingAction(null); setActionError(null); } }}
+          onConfirm={() => void runAction()}
+        />
+      )}
     </div>
   );
 }
@@ -419,17 +512,15 @@ function highlightMatch(name: string, query: string): React.ReactNode {
 function TableNode({
   table,
   query = "",
-  db,
-  schema,
   selected,
-  onTableSelect,
+  onSelect,
+  onContextMenu,
 }: {
   table: TableInfo;
   query?: string;
-  db: string;
-  schema: string;
   selected?: boolean;
-  onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view") => void;
+  onSelect: () => void;
+  onContextMenu: (event: React.MouseEvent) => void;
 }) {
   const isView = table.type === "view";
   const nodeRef = useRef<HTMLDivElement>(null);
@@ -446,7 +537,8 @@ function TableNode({
       className={`flex items-center gap-1.5 py-[3px] pr-2 pl-3 cursor-pointer transition-colors ${
         selected ? "bg-accent/20" : "hover:bg-bg-hover"
       }`}
-      onClick={() => onTableSelect?.(db, schema, table.name, isView ? "view" : "table")}
+      onClick={onSelect}
+      onContextMenu={onContextMenu}
     >
       {isView
         ? <Eye size={14} className="shrink-0 text-purple-400" />
@@ -455,6 +547,36 @@ function TableNode({
       <span className="truncate text-[12px] font-mono text-text-primary">{highlightMatch(table.name, query)}</span>
     </div>
   );
+}
+
+function TableActionConfirm({
+  action,
+  error,
+  working,
+  onCancel,
+  onConfirm,
+}: {
+  action: { kind: "truncate" | "drop"; table: TableInfo; statement: string };
+  error: string | null;
+  working: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const label = action.kind === "drop" ? "Drop table" : "Truncate table";
+  return <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60 p-6">
+    <div className="w-full max-w-xl rounded-lg border border-border bg-bg-primary shadow-2xl">
+      <div className="border-b border-border px-4 py-3">
+        <div className="text-sm font-semibold">{label}</div>
+        <div className="mt-0.5 text-[11px] text-warning">This permanently changes <span className="font-mono">{action.table.name}</span>. Verify the statement before applying it.</div>
+      </div>
+      {error && <div className="bg-error/10 px-4 py-2 text-xs text-error">{error}</div>}
+      <pre className="max-h-48 overflow-auto p-4 text-xs leading-5 font-mono whitespace-pre-wrap"><HighlightedSQL sql={`${action.statement};`} /></pre>
+      <div className="flex justify-end gap-2 border-t border-border px-4 py-3">
+        <button disabled={working} onClick={onCancel} className="rounded border border-border px-3 py-1.5 text-xs disabled:opacity-50">Cancel</button>
+        <button disabled={working} onClick={onConfirm} className="rounded bg-error px-3 py-1.5 text-xs text-white disabled:opacity-50">{working ? "Applying…" : label}</button>
+      </div>
+    </div>
+  </div>;
 }
 
 /* ── Resizable table list wrapper ──────────────────────── */
