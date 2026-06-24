@@ -1,48 +1,48 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg-primary: #0f0f0f;
-  --color-bg-secondary: #161616;
-  --color-bg-tertiary: #1e1e1e;
-  --color-bg-hover: #2a2a2a;
-  --color-bg-active: #333333;
-  --color-border: #2a2a2a;
-  --color-border-light: #3a3a3a;
-  --color-text-primary: #e0e0e0;
-  --color-text-secondary: #888888;
-  --color-text-muted: #555555;
-  --color-accent: #ff4d4d;
-  --color-accent-hover: #ff6666;
+  --color-bg-primary: #1b1f27;
+  --color-bg-secondary: #232935;
+  --color-bg-tertiary: #2a3140;
+  --color-bg-hover: #313a4b;
+  --color-bg-active: #2d4a7a;
+  --color-border: #394355;
+  --color-border-light: #4d5a70;
+  --color-text-primary: #f8fafc;
+  --color-text-secondary: #d3dae5;
+  --color-text-muted: #9faaba;
+  --color-accent: #3b82f6;
+  --color-accent-hover: #60a5fa;
   --color-success: #4ade80;
   --color-error: #f87171;
   --color-warning: #facc15;
   --color-row-insert: #4ade80;
   --color-row-delete: #c084a0;
-  --color-syntax-keyword: #c084fc;
+  --color-syntax-keyword: #367af2;
   --color-syntax-string: #4ade80;
-  --color-syntax-identifier: #38bdf8;
-  --color-syntax-number: #ff4d5e;
+  --color-syntax-identifier: #29c3ff;
+  --color-syntax-number: #58aafe;
 }
 
 /* ── Dark theme (default) ───────────────────────────────── */
 :root,
 [data-theme="dark"] {
-  --color-bg-primary: #171b22;
-  --color-bg-secondary: #1e242d;
-  --color-bg-tertiary: #28313d;
-  --color-bg-hover: #333e4c;
-  --color-bg-active: #414e60;
-  --color-border: #3a4656;
-  --color-border-light: #506075;
-  --color-text-primary: #f1f5f9;
-  --color-text-secondary: #b8c2cf;
-  --color-text-muted: #8491a2;
-  --color-accent: #ff4d5e;
-  --color-accent-hover: #ff6675;
-  --color-syntax-keyword: #c084fc;
+  --color-bg-primary: #1b1f27;
+  --color-bg-secondary: #232935;
+  --color-bg-tertiary: #2a3140;
+  --color-bg-hover: #313a4b;
+  --color-bg-active: #2d4a7a;
+  --color-border: #394355;
+  --color-border-light: #4d5a70;
+  --color-text-primary: #f8fafc;
+  --color-text-secondary: #d3dae5;
+  --color-text-muted: #9faaba;
+  --color-accent: #3b82f6;
+  --color-accent-hover: #60a5fa;
+  --color-syntax-keyword: #60a5fa;
   --color-syntax-string: #4ade80;
   --color-syntax-identifier: #38bdf8;
-  --color-syntax-number: #ff4d5e;
+  --color-syntax-number: #93c5fd;
 }
 
 /* ── Light theme ────────────────────────────────────────── */
@@ -57,17 +57,17 @@
   --color-text-primary: #17191c;
   --color-text-secondary: #3f454d;
   --color-text-muted: #707780;
-  --color-accent: #e11d48;
-  --color-accent-hover: #be123c;
+  --color-accent: #2563eb;
+  --color-accent-hover: #0284c7;
   --color-success: #15803d;
   --color-error: #dc2626;
   --color-warning: #a16207;
   --color-row-insert: #15803d;
   --color-row-delete: #9d174d;
-  --color-syntax-keyword: #6d28d9;
+  --color-syntax-keyword: #2563eb;
   --color-syntax-string: #047857;
-  --color-syntax-identifier: #0369a1;
-  --color-syntax-number: #be123c;
+  --color-syntax-identifier: #0284c7;
+  --color-syntax-number: #0284c7;
 }
 
 /* Only disable selection on UI chrome — content areas are selectable by default */
