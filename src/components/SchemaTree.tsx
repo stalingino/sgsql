@@ -29,6 +29,7 @@ interface SchemaTreeProps {
   activeDb: string | null;
   onActiveDbChange: (db: string) => void;
   onCloseDb: (db: string) => void;
+  onDbReorder: (sourceDb: string, targetDb: string) => void;
   onAddDb: () => void;
   onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view") => void;
   onTableDrop?: (db: string, schema: string, table: string) => void;
@@ -53,6 +54,7 @@ export function SchemaTree({
   activeDb,
   onActiveDbChange,
   onCloseDb,
+  onDbReorder,
   onAddDb,
   onTableSelect,
   onTableDrop,
@@ -63,6 +65,7 @@ export function SchemaTree({
   const [schemas, setSchemas] = useState<string[]>([defaultSchema(connectionType)]);
   const [selectedSchemas, setSelectedSchemas] = useState<Record<string, string>>({});
   const [createOpen, setCreateOpen] = useState(false);
+  const draggedDbRef = useRef<string | null>(null);
   const schema = activeDb ? selectedSchemas[activeDb] ?? defaultSchema(connectionType) : defaultSchema(connectionType);
 
   // Reset cache when connection changes
@@ -90,6 +93,23 @@ export function SchemaTree({
             active={db === activeDb}
             onClick={() => onActiveDbChange(db)}
             onRemove={() => onCloseDb(db)}
+            onDragStart={(event) => {
+              draggedDbRef.current = db;
+              event.dataTransfer.effectAllowed = "move";
+            }}
+            onDragOver={(event) => {
+              if (draggedDbRef.current && draggedDbRef.current !== db) {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+              }
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              const sourceDb = draggedDbRef.current;
+              if (sourceDb) onDbReorder(sourceDb, db);
+              draggedDbRef.current = null;
+            }}
+            onDragEnd={() => { draggedDbRef.current = null; }}
           />
         ))}
 
@@ -136,11 +156,19 @@ function DbTab({
   active,
   onClick,
   onRemove,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
 }: {
   db: string;
   active: boolean;
   onClick: () => void;
   onRemove: () => void;
+  onDragStart: React.DragEventHandler<HTMLDivElement>;
+  onDragOver: React.DragEventHandler<HTMLDivElement>;
+  onDrop: React.DragEventHandler<HTMLDivElement>;
+  onDragEnd: React.DragEventHandler<HTMLDivElement>;
 }) {
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -166,6 +194,11 @@ function DbTab({
       <div
         onClick={onClick}
         onContextMenu={handleContextMenu}
+        onDragStart={onDragStart}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
+        onDragEnd={onDragEnd}
+        draggable
         title={db}
         className={`relative flex flex-col items-center gap-0.5 px-1.5 py-4 cursor-pointer transition-colors border-b border-border ${
           active

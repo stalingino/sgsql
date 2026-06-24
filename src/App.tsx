@@ -81,6 +81,23 @@ function nextContentTabId() {
   return `ct-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+function moveTab<T extends { id: string }>(items: T[], sourceId: string, targetId: string): T[] {
+  const sourceIndex = items.findIndex((item) => item.id === sourceId);
+  const targetIndex = items.findIndex((item) => item.id === targetId);
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return items;
+
+  const reordered = [...items];
+  const [source] = reordered.splice(sourceIndex, 1);
+  reordered.splice(targetIndex, 0, source);
+  return reordered;
+}
+
+function contentTabTitle(tab: ContentTab): string {
+  return tab.type === "query"
+    ? tab.table
+    : [tab.db, tab.schema, tab.table].filter(Boolean).join(".");
+}
+
 function defaultSchema(type: "postgres" | "mysql" | "sqlite"): string {
   if (type === "postgres") return "public";
   if (type === "sqlite") return "main";
@@ -150,6 +167,8 @@ function App() {
   const closeDbRef = useRef<(db: string) => void>(() => {});
   const closeTabRef = useRef<(id: string) => void>(() => {});
   const reloadActiveConnectionRef = useRef<(() => void) | null>(null);
+  const draggedConnectionTabIdRef = useRef<string | null>(null);
+  const draggedContentTabIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let clearTimer: ReturnType<typeof setTimeout> | undefined;
@@ -396,6 +415,20 @@ function App() {
     ));
   }, [activeTabId]);
 
+  const reorderDbs = useCallback((sourceDb: string, targetDb: string) => {
+    setTabs((prev) => prev.map((tab) => {
+      if (tab.id !== activeTabId) return tab;
+      const sourceIndex = tab.openDbs.indexOf(sourceDb);
+      const targetIndex = tab.openDbs.indexOf(targetDb);
+      if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return tab;
+
+      const openDbs = [...tab.openDbs];
+      const [source] = openDbs.splice(sourceIndex, 1);
+      openDbs.splice(targetIndex, 0, source);
+      return { ...tab, openDbs };
+    }));
+  }, [activeTabId]);
+
   /* ── Content tab helpers (now workspace-scoped) ────────── */
 
   const handleTableSelect = useCallback((db: string, schema: string, table: string, type: "table" | "view" = "table") => {
@@ -484,6 +517,22 @@ function App() {
       return { ...tab, workspaces: { ...tab.workspaces, [tab.activeDbName]: updatedWs } };
     }));
   }, [activeTabId]);
+
+  const reorderContentTabs = useCallback((sourceId: string, targetId: string) => {
+    setTabs((prev) => prev.map((tab) => {
+      if (tab.id !== activeTabId || !tab.activeDbName) return tab;
+      const workspace = tab.workspaces[tab.activeDbName];
+      if (!workspace) return tab;
+      const contentTabs = moveTab(workspace.contentTabs, sourceId, targetId);
+      return contentTabs === workspace.contentTabs
+        ? tab
+        : { ...tab, workspaces: { ...tab.workspaces, [tab.activeDbName]: { ...workspace, contentTabs } } };
+    }));
+  }, [activeTabId]);
+
+  const reorderConnectionTabs = useCallback((sourceId: string, targetId: string) => {
+    setTabs((prev) => moveTab(prev, sourceId, targetId));
+  }, []);
 
   const addQueryTab = useCallback(() => {
     setTabs((prev) => prev.map((tab) => {
@@ -667,6 +716,23 @@ function App() {
               active={tab.id === activeTabId}
               onActivate={() => setActiveTabId(tab.id)}
               onClose={() => closeTab(tab.id)}
+              onDragStart={(event) => {
+                draggedConnectionTabIdRef.current = tab.id;
+                event.dataTransfer.effectAllowed = "move";
+              }}
+              onDragOver={(event) => {
+                if (draggedConnectionTabIdRef.current && draggedConnectionTabIdRef.current !== tab.id) {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                }
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                const sourceId = draggedConnectionTabIdRef.current;
+                if (sourceId) reorderConnectionTabs(sourceId, tab.id);
+                draggedConnectionTabIdRef.current = null;
+              }}
+              onDragEnd={() => { draggedConnectionTabIdRef.current = null; }}
             />
           ))}
         </div>
@@ -803,6 +869,7 @@ function App() {
                 activeDb={activeTab.activeDbName}
                 onActiveDbChange={setActiveDb}
                 onCloseDb={closeDb}
+                onDbReorder={reorderDbs}
                 onAddDb={() => setCommandPaletteOpen("db-only")}
                 onTableSelect={handleTableSelect}
                 onTableDrop={handleTableDrop}
@@ -835,6 +902,23 @@ function App() {
                       active={ct.id === activeWorkspace.activeContentTabId}
                       onActivate={() => setActiveContentTab(ct.id)}
                       onClose={() => closeContentTab(ct.id)}
+                      onDragStart={(event) => {
+                        draggedContentTabIdRef.current = ct.id;
+                        event.dataTransfer.effectAllowed = "move";
+                      }}
+                      onDragOver={(event) => {
+                        if (draggedContentTabIdRef.current && draggedContentTabIdRef.current !== ct.id) {
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = "move";
+                        }
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        const sourceId = draggedContentTabIdRef.current;
+                        if (sourceId) reorderContentTabs(sourceId, ct.id);
+                        draggedContentTabIdRef.current = null;
+                      }}
+                      onDragEnd={() => { draggedContentTabIdRef.current = null; }}
                     />
                   ))}
                 </div>
@@ -973,11 +1057,19 @@ function TabItem({
   active,
   onActivate,
   onClose,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
 }: {
   tab: Tab;
   active: boolean;
   onActivate: () => void;
   onClose: () => void;
+  onDragStart: React.DragEventHandler<HTMLDivElement>;
+  onDragOver: React.DragEventHandler<HTMLDivElement>;
+  onDrop: React.DragEventHandler<HTMLDivElement>;
+  onDragEnd: React.DragEventHandler<HTMLDivElement>;
 }) {
   const envStyle = envBadgeStyle(tab.profile.env);
   const connecting = !tab.connectionId && !tab.connectingError;
@@ -986,6 +1078,12 @@ function TabItem({
   return (
     <div
       onClick={onActivate}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
+      draggable
+      title={tab.profile.name || "Untitled"}
       className={`group relative flex items-center gap-1.5 h-full px-3 text-xs cursor-pointer select-none border-r border-border min-w-0 max-w-[180px] transition-colors ${
         active
           ? "bg-bg-primary text-text-primary"
@@ -1004,6 +1102,8 @@ function TabItem({
       <span className="truncate font-medium">{tab.profile.name || "Untitled"}</span>
       <button
         onClick={(e) => { e.stopPropagation(); onClose(); }}
+        onDragStart={(e) => e.stopPropagation()}
+        draggable={false}
         title="Close tab"
         className="close-dot relative w-3.5 h-3.5 shrink-0 ml-auto flex items-center justify-center rounded-full cursor-pointer transition-all"
       >
@@ -1037,15 +1137,29 @@ function ContentTabItem({
   active,
   onActivate,
   onClose,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
 }: {
   ct: ContentTab;
   active: boolean;
   onActivate: () => void;
   onClose: () => void;
+  onDragStart: React.DragEventHandler<HTMLDivElement>;
+  onDragOver: React.DragEventHandler<HTMLDivElement>;
+  onDrop: React.DragEventHandler<HTMLDivElement>;
+  onDragEnd: React.DragEventHandler<HTMLDivElement>;
 }) {
   return (
     <div
       onClick={onActivate}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
+      draggable
+      title={contentTabTitle(ct)}
       className={`group relative flex items-center gap-1.5 h-full px-3 text-[11px] cursor-pointer select-none border-r border-border min-w-0 max-w-[160px] transition-colors ${
         active
           ? "bg-bg-primary text-text-primary"
@@ -1061,6 +1175,8 @@ function ContentTabItem({
       <span className="truncate font-medium">{ct.table}</span>
       <button
         onClick={(e) => { e.stopPropagation(); onClose(); }}
+        onDragStart={(e) => e.stopPropagation()}
+        draggable={false}
         title="Close"
         className={`shrink-0 ml-auto rounded-sm transition-colors cursor-pointer ${
           active
