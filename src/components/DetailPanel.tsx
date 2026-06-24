@@ -442,7 +442,7 @@ function FieldRow({
             value={isCurrentlyNull ? ENUM_NULL_VALUE : String(effectiveValue)}
             onChange={(event) => handleEnumChange(event.target.value)}
             disabled={!canEdit}
-            className={`w-full px-2.5 py-1.5 text-[12px] font-mono text-text-primary bg-bg-primary border rounded-md outline-none cursor-pointer focus:border-accent transition-colors ${inputBorder}`}
+            className={`w-full h-8 px-2.5 py-0 text-[12px] font-mono text-text-primary bg-bg-primary border rounded-md outline-none cursor-pointer focus:border-accent transition-colors ${inputBorder}`}
           >
             <option value={ENUM_NULL_VALUE}>NULL</option>
             {!isCurrentlyNull && !enumValues.includes(String(effectiveValue)) && <option value={String(effectiveValue)}>{String(effectiveValue)}</option>}
@@ -472,7 +472,7 @@ function FieldRow({
             value={displayValue}
             onChange={(e) => handleChange(e.target.value)}
             disabled={!canEdit}
-            className={`w-full px-2.5 py-1.5 text-[12px] font-mono text-text-primary bg-bg-primary border rounded-md outline-none cursor-pointer focus:border-accent transition-colors ${inputBorder}`}
+            className={`w-full h-8 px-2.5 py-0 text-[12px] font-mono text-text-primary bg-bg-primary border rounded-md outline-none cursor-pointer focus:border-accent transition-colors ${inputBorder}`}
           >
             <option value="true">true</option>
             <option value="false">false</option>
