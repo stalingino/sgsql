@@ -31,6 +31,33 @@ describe("SQL autocomplete", () => {
     expect(suggestions.map((item) => item.insertText)).toContain("audit.users");
   });
 
+  test("fuzzy-matches relation and column typos", () => {
+    const relationSql = "SELECT * FROM usres";
+    const relationSuggestions = buildSqlCompletions({
+      target: getCompletionTarget(relationSql, relationSql.length),
+      catalog,
+      references: [],
+      columnsByTable: new Map(),
+      defaultSchema: "public",
+      dialect: "postgres",
+    });
+    expect(relationSuggestions[0]?.label).toBe("users");
+
+    const reference = catalog[0];
+    const columnSql = "SELECT nme FROM users";
+    const columnSuggestions = buildSqlCompletions({
+      target: getCompletionTarget(columnSql, 10),
+      catalog,
+      references: [reference],
+      columnsByTable: new Map([
+        [catalogTableKey(reference), [{ name: "name", dataType: "text" } as any]],
+      ]),
+      defaultSchema: "public",
+      dialect: "postgres",
+    });
+    expect(columnSuggestions.map((item) => item.label)).toEqual(["name"]);
+  });
+
   test("resolves aliases and restricts qualified column suggestions", () => {
     const statement = "SELECT u.na FROM users AS u JOIN orders o ON o.user_id = u.id";
     const references = findTableReferences(statement, catalog, "public");

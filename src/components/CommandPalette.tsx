@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Database, Table2, Eye, Loader2, Search } from "lucide-react";
 import { fetchDatabases, fetchTables } from "../lib/schema";
 import { getSearchLru, touchSearchLru } from "../lib/searchLru";
+import { fuzzySearchResults } from "../lib/fuzzySearch";
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -23,30 +24,6 @@ interface CommandPaletteProps {
   onSelectDb: (db: string) => void;
   onSelectTable: (db: string, schema: string, table: string, type: "table" | "view") => void;
   onClose: () => void;
-}
-
-/* ── Fuzzy match ───────────────────────────────────────── */
-
-function fuzzyMatch(query: string, target: string): { match: boolean; score: number } {
-  if (!query) return { match: true, score: 0 };
-  const q = query.toLowerCase();
-  const t = target.toLowerCase();
-
-  if (t.includes(q)) return { match: true, score: 100 + q.length };
-
-  let qi = 0;
-  let score = 0;
-  let consecutive = 0;
-  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
-    if (t[ti] === q[qi]) {
-      qi++;
-      consecutive++;
-      score += consecutive;
-    } else {
-      consecutive = 0;
-    }
-  }
-  return { match: qi === q.length, score };
 }
 
 function defaultSchema(type: "postgres" | "mysql" | "sqlite"): string {
@@ -143,37 +120,33 @@ export function CommandPalette({
   const sortedFiltered = useMemo(() => {
     const search = query.trim();
     const recency = new Map(recentItems.map((key, index) => [key, index]));
+    const searchable = items.map((item) => ({
+      item,
+      name: item.name,
+      qualifiedName: item.kind === "db" ? item.name : `${item.db}.${item.schema}.${item.name}`,
+      db: item.db,
+      schema: item.schema,
+    }));
 
-    return items
-      .map((item, sourceIndex) => {
-        if (!search) return { item, sourceIndex, match: true, score: 0 };
-        const label = item.kind === "db" ? item.name : `${item.db}.${item.name}`;
-        const fullMatch = fuzzyMatch(search, label);
-        const nameMatch = fuzzyMatch(search, item.name);
-        return {
-          item,
-          sourceIndex,
-          match: fullMatch.match || nameMatch.match,
-          score: Math.max(fullMatch.score, nameMatch.score),
-        };
-      })
-      .filter((result) => result.match)
+    return fuzzySearchResults(searchable, search, {
+      keys: [{ name: "name", weight: 2 }, "qualifiedName", "db", "schema"],
+    })
       .sort((a, b) => {
-        const aIsCurrentTable = a.item.kind !== "db" && a.item.db === currentDatabase;
-        const bIsCurrentTable = b.item.kind !== "db" && b.item.db === currentDatabase;
+        const aIsCurrentTable = a.item.item.kind !== "db" && a.item.item.db === currentDatabase;
+        const bIsCurrentTable = b.item.item.kind !== "db" && b.item.item.db === currentDatabase;
         if (aIsCurrentTable !== bIsCurrentTable) return aIsCurrentTable ? -1 : 1;
 
-        if (search && a.score !== b.score) return b.score - a.score;
+        if (search && a.score !== b.score) return a.score - b.score;
 
-        const aRecent = recency.get(itemKey(a.item)) ?? Number.MAX_SAFE_INTEGER;
-        const bRecent = recency.get(itemKey(b.item)) ?? Number.MAX_SAFE_INTEGER;
+        const aRecent = recency.get(itemKey(a.item.item)) ?? Number.MAX_SAFE_INTEGER;
+        const bRecent = recency.get(itemKey(b.item.item)) ?? Number.MAX_SAFE_INTEGER;
         if (aRecent !== bRecent) return aRecent - bRecent;
 
-        if (a.item.kind === "db" && b.item.kind !== "db") return 1;
-        if (a.item.kind !== "db" && b.item.kind === "db") return -1;
-        return a.sourceIndex - b.sourceIndex;
+        if (a.item.item.kind === "db" && b.item.item.kind !== "db") return 1;
+        if (a.item.item.kind !== "db" && b.item.item.kind === "db") return -1;
+        return a.refIndex - b.refIndex;
       })
-      .map((result) => result.item);
+      .map((result) => result.item.item);
   }, [items, itemKey, query, recentItems]);
 
   // Reset selection when query changes

@@ -5,6 +5,7 @@ import {
   Plus,
   RotateCcw,
 } from "lucide-react";
+import { fuzzySearch } from "../lib/fuzzySearch";
 
 /* ── Types ──────────────────────────────────────────────── */
 
@@ -35,18 +36,6 @@ interface FilterPanelProps {
   onClear: () => void;
   canClear: boolean;
   onClose: () => void;
-}
-
-/* ── Fuzzy ──────────────────────────────────────────────── */
-
-function fuzzyMatch(query: string, target: string): boolean {
-  const q = query.toLowerCase();
-  const t = target.toLowerCase();
-  let qi = 0;
-  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
-    if (t[ti] === q[qi]) qi++;
-  }
-  return qi === q.length;
 }
 
 /* ── Helpers ────────────────────────────────────────────── */
@@ -351,9 +340,7 @@ function ModeColumnPicker({
     }
   }, [open]);
 
-  const filtered = search
-    ? columns.filter((c) => fuzzyMatch(search, c))
-    : columns;
+  const filtered = fuzzySearch(columns, search);
 
   const label = mode === "raw" ? "Raw SQL" : column || "Column...";
 

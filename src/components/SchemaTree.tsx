@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Database,
   Table2,
@@ -19,6 +19,7 @@ import { useEditStore } from "../lib/editStore";
 import { notifySchemaChanged, useSchemaRevision } from "../lib/schemaRevision";
 import { CreateTableModal } from "./CreateTableModal";
 import { HighlightedSQL } from "../lib/highlightSQL";
+import { fuzzySearch } from "../lib/fuzzySearch";
 
 /* ── Props ──────────────────────────────────────────────── */
 
@@ -237,30 +238,6 @@ function DbTab({
   );
 }
 
-/* ── Fuzzy match ─────────────────────────────────────────── */
-
-function fuzzyMatch(query: string, target: string): { match: boolean; score: number } {
-  if (!query) return { match: true, score: 0 };
-  const q = query.toLowerCase();
-  const t = target.toLowerCase();
-
-  if (t.includes(q)) return { match: true, score: 100 + q.length };
-
-  let qi = 0;
-  let score = 0;
-  let consecutive = 0;
-  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
-    if (t[ti] === q[qi]) {
-      qi++;
-      consecutive++;
-      score += consecutive;
-    } else {
-      consecutive = 0;
-    }
-  }
-  return { match: qi === q.length, score };
-}
-
 /* ── Table list for a single database ───────────────────── */
 
 function TableList({
@@ -355,13 +332,10 @@ function TableList({
     return () => { cancelled = true; };
   }, [connectionId, connectionType, db, schema, cacheRef, schemaRevision]);
 
-  const filtered = query
-    ? tables
-        .map((t) => ({ t, ...fuzzyMatch(query, t.name) }))
-        .filter((r) => r.match)
-        .sort((a, b) => b.score - a.score)
-        .map((r) => r.t)
-    : tables;
+  const filtered = useMemo(
+    () => fuzzySearch(tables, query, { keys: [{ name: "name", weight: 2 }, "type"] }),
+    [tables, query],
+  );
 
   const selectedIdx = filtered.findIndex((table) => `${table.type}:${table.name}` === selectedTableKey);
   const selectTable = (table: TableInfo, open = true) => {

@@ -4,6 +4,7 @@ import type { CellSelection } from "./ResultGrid";
 import { useEditStore, buildRowKey, SqlExpression, type RowKey } from "../lib/editStore";
 import { useExecutionQueue } from "../lib/executionQueue";
 import { useQueryLog } from "../lib/queryLog";
+import { fuzzySearch } from "../lib/fuzzySearch";
 
 /* ── Detail Panel ──────────────────────────────────────── */
 
@@ -52,10 +53,9 @@ export function DetailPanel({ selection, wasAlreadyOpen, onFieldActivate }: Deta
 
   // Build column meta lookup
   const columnMeta = selection?.tableContext?.columnMeta;
-  const normalizedFilter = filter.trim().toLowerCase();
   const visibleFieldIndexes = useMemo(() => {
-    if (!selection || !normalizedFilter) return selection?.columns.map((_, index) => index) ?? [];
-    return selection.columns.flatMap((column, index) => {
+    if (!selection) return [];
+    const fields = selection.columns.map((column, index) => {
       const meta = selection.tableContext?.columnMeta?.find((candidate) => candidate.name === column);
       const originalValue = isInsertRow && insertData
         ? insertData.values[column] ?? null
@@ -64,10 +64,17 @@ export function DetailPanel({ selection, wasAlreadyOpen, onFieldActivate }: Deta
         ? useEditStore.getState().getChange(rowKey, column)
         : undefined;
       const value = pendingChange ? pendingChange.newValue : originalValue;
-      const searchable = `${column} ${meta?.udtName || meta?.dataType || ""} ${formatFilterValue(value)}`.toLowerCase();
-      return searchable.includes(normalizedFilter) ? [index] : [];
+      return {
+        index,
+        column,
+        dataType: meta?.udtName || meta?.dataType || "",
+        value: formatFilterValue(value),
+      };
     });
-  }, [selection, normalizedFilter, isInsertRow, insertData, rowKey, _editChanges, _editInserts]);
+    return fuzzySearch(fields, filter, {
+      keys: [{ name: "column", weight: 2 }, "dataType", "value"],
+    }).map(({ index }) => index);
+  }, [selection, filter, isInsertRow, insertData, rowKey, _editChanges, _editInserts]);
 
   // Scroll to selected column field
   useEffect(() => {

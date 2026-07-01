@@ -41,6 +41,7 @@ import { formatConnectionUrl, isConnectionUrl, parseConnectionUrl } from "../lib
 import { openConnection } from "../lib/schema";
 import { useWindowPersist } from "../lib/useWindowPersist";
 import { reconcileItemGroup, resolveConnectionDropFolder } from "../lib/connectionOrder";
+import { fuzzySearch } from "../lib/fuzzySearch";
 
 export function ConnectionManagerWindow() {
   useWindowPersist();
@@ -121,9 +122,17 @@ export function ConnectionManagerWindow() {
   const visibleProfiles = dragPreviewProfiles ?? profiles;
 
   const filteredProfiles = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    if (!q) return visibleProfiles;
-    return visibleProfiles.filter((p) => fuzzyMatch(q, p));
+    return fuzzySearch(visibleProfiles, filter, {
+      keys: [
+        { name: "name", weight: 2 },
+        "host",
+        "database",
+        "type",
+        "username",
+        "group",
+        "env",
+      ],
+    });
   }, [visibleProfiles, filter]);
 
   // Flattened, navigable rows. Every connection belongs to a persisted folder.
@@ -1270,25 +1279,6 @@ function rowKey(row: ListRow): string {
 function cssEscape(value: string): string {
   const fn = (globalThis as { CSS?: { escape?: (s: string) => string } }).CSS?.escape;
   return fn ? fn(value) : value.replace(/["\\]/g, "\\$&");
-}
-
-/** Fuzzy match: every character in the query appears in order in the haystack */
-function fuzzyStr(query: string, haystack: string): boolean {
-  let hi = 0;
-  for (let qi = 0; qi < query.length; qi++) {
-    const ch = query[qi];
-    while (hi < haystack.length && haystack[hi] !== ch) hi++;
-    if (hi >= haystack.length) return false;
-    hi++;
-  }
-  return true;
-}
-
-function fuzzyMatch(query: string, p: ConnectionProfile): boolean {
-  const targets = [p.name, p.host, p.database, p.type, p.username, p.group].map((s) =>
-    (s || "").toLowerCase(),
-  );
-  return targets.some((t) => fuzzyStr(query, t));
 }
 
 function StatusBar({

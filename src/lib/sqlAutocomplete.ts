@@ -1,4 +1,5 @@
 import type { ColumnInfo } from "./schema";
+import { fuzzySearch } from "./fuzzySearch";
 
 export interface CatalogTable {
   db: string;
@@ -168,12 +169,12 @@ export function buildSqlCompletions({
 
   if (target.relationPosition) {
     const qualifier = target.qualifier?.toLowerCase();
-    const tables = catalog
+    const eligibleTables = catalog
       .filter((table) => !qualifier || table.schema.toLowerCase() === qualifier || table.db.toLowerCase() === qualifier)
-      .filter((table) => {
-        const fullName = `${table.schema}.${table.name}`.toLowerCase();
-        return table.name.toLowerCase().includes(target.prefix) || fullName.includes(target.prefix);
-      })
+      .map((table) => ({ ...table, qualifiedName: `${table.schema}.${table.name}` }));
+    const tables = fuzzySearch(eligibleTables, target.prefix, {
+      keys: [{ name: "name", weight: 2 }, "qualifiedName", "schema", "db"],
+    })
       .map((table): SqlCompletion => {
         const tableIdent = quoteCompletionIdentifier(table.name, dialect);
         const schemaIdent = quoteCompletionIdentifier(table.schema, dialect);
@@ -188,8 +189,10 @@ export function buildSqlCompletions({
       });
 
     if (!target.qualifier && dialect === "postgres") {
-      const schemas = Array.from(new Set(catalog.map((table) => table.schema)))
-        .filter((schema) => schema && schema.toLowerCase().includes(target.prefix))
+      const schemas = fuzzySearch(
+        Array.from(new Set(catalog.map((table) => table.schema))).filter(Boolean),
+        target.prefix,
+      )
         .map((schema): SqlCompletion => ({
           key: `schema:${schema}`,
           label: schema,
@@ -210,7 +213,6 @@ export function buildSqlCompletions({
   for (const reference of applicable) {
     const columns = columnsByTable.get(catalogTableKey(reference)) ?? [];
     for (const column of columns) {
-      if (!column.name.toLowerCase().includes(target.prefix)) continue;
       suggestions.push({
         key: `column:${catalogTableKey(reference)}:${column.name}`,
         label: column.name,
@@ -221,11 +223,11 @@ export function buildSqlCompletions({
     }
   }
 
-  return suggestions
-    .sort((a, b) => {
-      const aStarts = a.label.toLowerCase().startsWith(target.prefix) ? 0 : 1;
-      const bStarts = b.label.toLowerCase().startsWith(target.prefix) ? 0 : 1;
-      return aStarts - bStarts || a.label.localeCompare(b.label) || a.detail.localeCompare(b.detail);
-    })
-    .slice(0, 100);
+  const rankedSuggestions = fuzzySearch(suggestions, target.prefix, {
+    keys: [{ name: "label", weight: 2 }, "detail"],
+  });
+  if (!target.prefix) {
+    rankedSuggestions.sort((a, b) => a.label.localeCompare(b.label) || a.detail.localeCompare(b.detail));
+  }
+  return rankedSuggestions.slice(0, 100);
 }
