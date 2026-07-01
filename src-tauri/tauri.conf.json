@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "sgsql",
+  "productName": "SGSql",
   "version": "0.1.0",
   "identifier": "com.sgsql.desktop",
   "build": {
@@ -14,7 +14,7 @@
       {
         "label": "connection-manager",
         "url": "connection-manager.html",
-        "title": "SG SQL Connections",
+        "title": "SGSql Connections",
         "width": 740,
         "height": 540,
         "resizable": true,
@@ -23,7 +23,7 @@
       },
       {
         "label": "main",
-        "title": "SG SQL",
+        "title": "SGSql",
         "width": 1200,
         "height": 800,
         "resizable": true,

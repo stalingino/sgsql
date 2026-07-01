@@ -1,4 +1,4 @@
-# sgsql gap analysis
+# SGSql gap analysis
 
 Updated: 2026-06-21
 

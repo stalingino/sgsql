@@ -1,5 +1,5 @@
 [package]
-name = "sgsql"
+name = "SGSql"
 version = "0.1.0"
 description = "Stupidly Good SQL"
 authors = ["you"]

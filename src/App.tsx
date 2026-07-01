@@ -216,6 +216,18 @@ function App() {
           return next;
         });
       }
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        setSettingsOpen(true);
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === ".") {
+        e.preventDefault();
+        setConsoleVisible((visible) => {
+          const next = !visible;
+          saveConfig({ console: { ...getConfig().console, visible: next, height: getConfig().console?.height ?? 180 } });
+          return next;
+        });
+      }
       if ((e.metaKey || e.ctrlKey) && e.key === "o") {
         e.preventDefault();
         setDetailPanelVisible((v) => {
@@ -642,7 +654,7 @@ function App() {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-bg-primary">
         <Database size={40} className="text-accent mb-4" />
-        <h1 className="text-2xl font-bold mb-1 text-text-primary">SG SQL</h1>
+        <h1 className="text-2xl font-bold mb-1 text-text-primary">SGSql</h1>
         <p className="text-text-secondary mb-6 text-sm">Stupidly Good SQL</p>
         <div className="flex items-center gap-2 text-sm text-text-muted">
           <Loader2 size={14} className="animate-spin" />
@@ -658,7 +670,7 @@ function App() {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-bg-primary">
         <ServerCrash size={40} className="text-error mb-4" />
-        <h1 className="text-2xl font-bold mb-1 text-text-primary">SG SQL</h1>
+        <h1 className="text-2xl font-bold mb-1 text-text-primary">SGSql</h1>
         <p className="text-text-secondary mb-6 text-sm">Stupidly Good SQL</p>
         <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-error/10 text-error text-sm">
           <span className="w-2 h-2 rounded-full bg-error" />
@@ -787,7 +799,7 @@ function App() {
               saveConfig({ sidebar: { ...getConfig().sidebar, visible: next, width: getConfig().sidebar?.width ?? 280 } });
               return next;
             })}
-            title={sidebarVisible ? "Hide sidebar" : "Show sidebar"}
+            title={`${sidebarVisible ? "Hide" : "Show"} sidebar (Cmd+L)`}
             className={`flex items-center p-1.5 rounded-md transition-colors cursor-pointer ${
               sidebarVisible
                 ? "text-text-primary bg-bg-active"
@@ -817,7 +829,7 @@ function App() {
           {/* Settings */}
           <button
             onClick={() => setSettingsOpen(true)}
-            title="Settings"
+            title="Settings (Cmd+,)"
             className="flex items-center p-1.5 rounded-md transition-colors cursor-pointer text-text-muted hover:text-text-secondary hover:bg-bg-hover"
           >
             <Settings size={14} />
@@ -861,8 +873,8 @@ function App() {
       {!activeTab ? (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
-            <img src="/logo-nobg.png" alt="SG SQL" className="w-36 h-36 mx-auto mb-4" />
-            <h1 className="text-3xl font-bold mb-1 text-text-primary">SG SQL</h1>
+            <img src="/logo-nobg.png" alt="SGSql" className="w-36 h-36 mx-auto mb-4" />
+            <h1 className="text-3xl font-bold mb-1 text-text-primary">SGSql</h1>
             <p className="text-text-secondary mb-6 text-sm">Stupidly Good SQL</p>
             <button
               onClick={() => openConnectionManager()}
@@ -1465,8 +1477,8 @@ function StatusBar({
         <button
           onClick={onToggleBottomPanel}
           title={bottomPanelVisible
-            ? "Hide bottom panel"
-            : `Show query log and ${editChangeCount} pending change${editChangeCount !== 1 ? "s" : ""}`}
+            ? "Hide bottom panel (Cmd+.)"
+            : `Show query log and ${editChangeCount} pending change${editChangeCount !== 1 ? "s" : ""} (Cmd+.)`}
           className={`flex items-center gap-2 px-2 py-1 rounded transition-colors cursor-pointer ${
             bottomPanelVisible
               ? "text-text-primary bg-bg-active"

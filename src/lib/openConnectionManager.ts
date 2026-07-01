@@ -12,7 +12,7 @@ export async function openConnectionManager(): Promise<void> {
 
   new WebviewWindow("connection-manager", {
     url: "/connection-manager.html",
-    title: "SG SQL Connections",
+    title: "SGSql Connections",
     width: saved.width ?? 520,
     height: saved.height ?? 560,
     x: saved.x,

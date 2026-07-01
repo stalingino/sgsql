@@ -85,7 +85,7 @@ export async function ensureConnection(
     // sidecar still serves the previous route set. Let the legacy /query path
     // proceed until the application is restarted with the rebuilt sidecar.
     if (error instanceof SidecarHttpError && error.status === 404) {
-      console.warn("[sidecar] running sidecar does not support connection preflight; restart SG SQL to activate it");
+      console.warn("[sidecar] running sidecar does not support connection preflight; restart SGSql to activate it");
       return { ok: true, reconnected: false };
     }
     throw error;

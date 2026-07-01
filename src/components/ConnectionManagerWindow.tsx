@@ -311,7 +311,7 @@ export function ConnectionManagerWindow() {
     const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `sgsql-connections-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.download = `SGSql-connections-${new Date().toISOString().slice(0, 10)}.json`;
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();

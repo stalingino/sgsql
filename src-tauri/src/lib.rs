@@ -130,7 +130,7 @@ pub fn run() {
                             "connection-manager",
                             tauri::WebviewUrl::App("connection-manager.html".into()),
                         )
-                        .title("SG SQL Connections")
+                        .title("SGSql Connections")
                         .inner_size(740.0, 560.0)
                         .center()
                         .resizable(true)

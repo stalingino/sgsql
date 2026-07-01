@@ -1,4 +1,4 @@
-# sgsql — Stupidly Good SQL
+# SGSql — Stupidly Good SQL
 ### *"A SQL client worth using."*
 #### Full Build Plan — Phased
 
@@ -8,7 +8,7 @@
 
 |                     |                                                      |
 |---------------------|------------------------------------------------------|
-| **Name**            | sgsql                                                |
+| **Name**            | SGSql                                                |
 | **Full name**       | Stupidly Good SQL                                    |
 | **Tagline**         | A SQL client worth using                             |
 | **Repo**            | `sgsql`                                              |

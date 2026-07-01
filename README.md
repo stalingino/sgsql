@@ -1,8 +1,8 @@
-# SG SQL
+# SGSql
 
 ## Build the macOS app
 
-SG SQL is bundled as a macOS application using Tauri. The database sidecar is compiled with Bun and included in the application bundle.
+SGSql is bundled as a macOS application using Tauri. The database sidecar is compiled with Bun and included in the application bundle.
 
 ### Prerequisites
 
@@ -66,8 +66,8 @@ bun run tauri build
 The generated bundles are written to:
 
 ```text
-src-tauri/target/release/bundle/macos/sgsql.app
-src-tauri/target/release/bundle/dmg/sgsql_0.1.0_aarch64.dmg
+src-tauri/target/release/bundle/macos/SGSql.app
+src-tauri/target/release/bundle/dmg/SGSql_0.1.0_aarch64.dmg
 ```
 
 ### Architecture support
