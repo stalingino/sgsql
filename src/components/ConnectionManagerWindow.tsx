@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useMemo } from "react";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { DragDropProvider, type DragEndEvent } from "@dnd-kit/react";
+import { DragDropProvider, type DragEndEvent, type DragOverEvent, type DragStartEvent } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
 import { move } from "@dnd-kit/helpers";
 import {
@@ -40,6 +40,7 @@ import {
 import { formatConnectionUrl, isConnectionUrl, parseConnectionUrl } from "../lib/parseConnectionUrl";
 import { openConnection } from "../lib/schema";
 import { useWindowPersist } from "../lib/useWindowPersist";
+import { reconcileItemGroup, resolveConnectionDropFolder } from "../lib/connectionOrder";
 
 export function ConnectionManagerWindow() {
   useWindowPersist();
@@ -62,6 +63,7 @@ export function ConnectionManagerWindow() {
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const [folderName, setFolderName] = useState("");
   const [folderError, setFolderError] = useState<string | null>(null);
+  const [dragPreviewProfiles, setDragPreviewProfiles] = useState<ConnectionProfile[] | null>(null);
 
   const filterRef = useRef<HTMLInputElement>(null);
   const privateKeyRef = useRef<HTMLInputElement>(null);
@@ -69,6 +71,7 @@ export function ConnectionManagerWindow() {
   const listRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const folderNameRef = useRef<HTMLInputElement>(null);
+  const dragPreviewProfilesRef = useRef<ConnectionProfile[] | null>(null);
 
   function handleSshToggle(enabled: boolean) {
     updateDraft({ useSsh: enabled });
@@ -115,12 +118,13 @@ export function ConnectionManagerWindow() {
   }, [folderDialogOpen]);
 
   const isFiltering = filter.trim().length > 0;
+  const visibleProfiles = dragPreviewProfiles ?? profiles;
 
   const filteredProfiles = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    if (!q) return profiles;
-    return profiles.filter((p) => fuzzyMatch(q, p));
-  }, [profiles, filter]);
+    if (!q) return visibleProfiles;
+    return visibleProfiles.filter((p) => fuzzyMatch(q, p));
+  }, [visibleProfiles, filter]);
 
   // Flattened, navigable rows. Every connection belongs to a persisted folder.
   const rows = useMemo(() => {
@@ -480,44 +484,89 @@ export function ConnectionManagerWindow() {
     }
   }
 
-  function handleDndEnd(event: DragEndEvent) {
-    const { source } = event.operation;
-    if (event.canceled || !source || isFiltering) return;
+  function handleDndStart(event: DragStartEvent) {
+    if (event.operation.source?.type !== "connection") return;
+    dragPreviewProfilesRef.current = profiles;
+    setDragPreviewProfiles(profiles);
+  }
 
-    if (source.type === "folder") {
-      const folderById = new Map(folders.map((folder) => [folderDndId(folder), folder]));
-      const reorderedIds = move([...folderById.keys()], event);
-      const reordered = reorderedIds.map((id) => folderById.get(String(id))).filter((folder): folder is string => !!folder);
-      if (reordered.length === folders.length) void reorderFolders(reordered);
-      return;
-    }
+  function handleDndOver(event: DragOverEvent) {
+    const { source, target } = event.operation;
+    if (!source || source.type !== "connection" || !target || target.id === source.id) return;
+    const folder = typeof target.data?.folder === "string" ? target.data.folder : null;
 
-    if (source.type !== "connection") return;
-    const profileById = new Map(profiles.map((profile) => [connectionDndId(profile.id), profile]));
-    const grouped = Object.fromEntries(folders.map((folder) => [
-      folderDndId(folder),
-      profiles.filter((profile) => profile.group === folder).map((profile) => connectionDndId(profile.id)),
+    // Follow dnd-kit's controlled multiple-list pattern: update a temporary
+    // React-owned projection during dragover. This gives the optimistic plugin
+    // fresh groups/indexes, so it animates displacement without reparenting DOM
+    // nodes behind React's back.
+    const currentProfiles = dragPreviewProfilesRef.current ?? profiles;
+    const profileById = new Map(currentProfiles.map((profile) => [connectionDndId(profile.id), profile]));
+    const grouped = Object.fromEntries(folders.map((folderName) => [
+      folderDndId(folderName),
+      currentProfiles
+        .filter((profile) => profile.group === folderName)
+        .map((profile) => connectionDndId(profile.id)),
     ]));
-    const reorderedGroups = move(grouped, event);
-    const reorderedProfiles: ConnectionProfile[] = [];
-    let destinationFolder: string | null = null;
-    for (const folder of folders) {
-      for (const id of reorderedGroups[folderDndId(folder)] ?? []) {
+    const projectedGroups = move(grouped, event);
+    const sourceGroup = "group" in source && source.group != null ? String(source.group) : null;
+    const targetFolder = resolveConnectionDropFolder(folders, folder, sourceGroup, folder);
+    if (!targetFolder) return;
+    const destinationGroup = folderDndId(targetFolder);
+    const projectedIndex = "index" in source && typeof source.index === "number"
+      ? source.index
+      : projectedGroups[destinationGroup]?.length ?? 0;
+    const destinationIndex = target.type === "folder" || sourceGroup === "folder-order"
+      ? projectedGroups[destinationGroup]?.length ?? 0
+      : projectedIndex;
+    const previewGroups = reconcileItemGroup(
+      projectedGroups,
+      String(source.id),
+      destinationGroup,
+      destinationIndex,
+    );
+    const previewProfiles: ConnectionProfile[] = [];
+    for (const folderName of folders) {
+      for (const id of previewGroups[folderDndId(folderName)] ?? []) {
         const profile = profileById.get(String(id));
-        if (!profile) continue;
-        reorderedProfiles.push({ ...profile, group: folder });
-        if (String(id) === String(source.id)) destinationFolder = folder;
+        if (profile) previewProfiles.push({ ...profile, group: folderName });
       }
     }
-    if (reorderedProfiles.length !== profiles.length) return;
-    if (destinationFolder) {
-      setCollapsed((previous) => {
-        const next = new Set(previous);
-        next.delete(destinationFolder);
-        return next;
+    if (previewProfiles.length !== currentProfiles.length) return;
+    dragPreviewProfilesRef.current = previewProfiles;
+    setDragPreviewProfiles(previewProfiles);
+    setCollapsed((previous) => {
+      if (!previous.has(targetFolder)) return previous;
+      const next = new Set(previous);
+      next.delete(targetFolder);
+      return next;
+    });
+  }
+
+  async function handleDndEnd(event: DragEndEvent) {
+    const { source, target, canceled } = event.operation;
+    const previewProfiles = dragPreviewProfilesRef.current;
+    dragPreviewProfilesRef.current = null;
+    setDragPreviewProfiles(null);
+    if (canceled || !source || !target || isFiltering) return;
+
+    try {
+      if (source.type === "folder") {
+        const folderById = new Map(folders.map((folder) => [folderDndId(folder), folder]));
+        const reorderedIds = move([...folderById.keys()], event);
+        const reordered = reorderedIds.map((id) => folderById.get(String(id))).filter((folder): folder is string => !!folder);
+        if (reordered.length === folders.length) await reorderFolders(reordered);
+        return;
+      }
+
+      if (source.type !== "connection") return;
+      if (previewProfiles?.length === profiles.length) await reorderProfiles(previewProfiles);
+    } catch (error) {
+      console.error("[connections] could not persist drag order:", error);
+      setStatusMsg({
+        type: "error",
+        text: error instanceof Error ? error.message : "Could not save connection order",
       });
     }
-    void reorderProfiles(reorderedProfiles);
   }
 
   const isSqlite = draft.type === "sqlite";
@@ -614,7 +663,11 @@ export function ConnectionManagerWindow() {
           onKeyDown={handleTreeKeyDown}
           className="flex-1 overflow-y-auto px-2 py-1 focus:outline-none"
         >
-          <DragDropProvider onDragEnd={handleDndEnd}>
+          <DragDropProvider
+            onDragStart={handleDndStart}
+            onDragOver={handleDndOver}
+            onDragEnd={handleDndEnd}
+          >
             {folders.map((folder, folderIndex) => {
               const members = filteredProfiles.filter((profile) => profile.group === folder);
               if (isFiltering && members.length === 0) return null;
@@ -1097,6 +1150,10 @@ function SortableFolder({
     group: "folder-order",
     type: "folder",
     accept: ["folder", "connection"],
+    // The folder target wraps its connection rows. Keep it below the default
+    // row priority so a row wins when both targets overlap; the folder still
+    // accepts drops over its header, whitespace, and empty body.
+    collisionPriority: 1, // CollisionPriority.Low
     disabled,
     data: { folder },
   });

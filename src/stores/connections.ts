@@ -75,13 +75,23 @@ interface ConnectionsState {
   getProfileWithPassword: (id: string) => Promise<ConnectionProfile | null>;
 }
 
-/** Save profiles (without passwords) to the encrypted store */
-async function saveEncrypted(profiles: ConnectionProfile[], folders: string[]): Promise<void> {
-  // Strip passwords before encryption (they're in the keychain)
+// Tauri commands run concurrently. Keep writes ordered so a slower, older save
+// cannot overwrite a more recent drag/drop update on disk.
+let encryptedSaveQueue: Promise<void> = Promise.resolve();
+
+/** Save profiles (without passwords) to the encrypted store. */
+function saveEncrypted(profiles: ConnectionProfile[], folders: string[]): Promise<void> {
+  // Snapshot the payload now: callers often update Zustand immediately after
+  // scheduling a save, and queued writes must retain their original state.
   const clean = profiles.map((p) => ({ ...p, password: "", sshPassword: "" }));
-  await invoke("encrypted_store_save", {
-    data: { version: 2, profiles: clean, folders: normalizeFolders(folders, clean) },
-  });
+  const data = { version: 2, profiles: clean, folders: normalizeFolders(folders, clean) };
+  const save = encryptedSaveQueue
+    .catch(() => undefined)
+    .then(() => invoke<void>("encrypted_store_save", { data }));
+
+  // A failed write must reject its own caller without blocking later writes.
+  encryptedSaveQueue = save.catch(() => undefined);
+  return save;
 }
 
 /** Load profiles and folders, migrating the legacy profile-array format. */
