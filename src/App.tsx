@@ -954,7 +954,7 @@ function App() {
                   <button
                     onClick={addQueryTab}
                     disabled={!activeTab.activeDbName}
-                    title="New SQL query tab"
+                    title="New SQL query tab (⌘E)"
                     className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold tracking-wide text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer border border-border disabled:opacity-30 disabled:cursor-not-allowed"
                   >
                     <Plus size={10} />

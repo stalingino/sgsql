@@ -238,6 +238,13 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   const executionPhase = useExecutionQueue((s) => s.connections.get(connectionId)?.phase ?? "idle");
   const limitMenuRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (containerRef.current) {
+      setEditorHeight(Math.round(containerRef.current.offsetHeight * 0.8));
+    }
+  }, []);
   const lastExecutedQueryRef = useRef<string | null>(null);
   const selectedResultRef = useRef<CellSelection | null>(null);
   const lastDataRevisionRef = useRef(dataRevision);
@@ -646,7 +653,8 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
     const onMouseMove = (ev: MouseEvent) => {
       if (!dragRef.current) return;
       const delta = ev.clientY - dragRef.current.startY;
-      setEditorHeight(Math.max(60, Math.min(500, dragRef.current.startH + delta)));
+      const maxH = (containerRef.current?.offsetHeight ?? 800) - 60;
+      setEditorHeight(Math.max(40, Math.min(maxH, dragRef.current.startH + delta)));
     };
     const onMouseUp = () => {
       dragRef.current = null;
@@ -672,7 +680,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   const limitLabel = ROW_LIMITS.find((l) => l.value === rowLimit)?.label ?? `${rowLimit} rows`;
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div ref={containerRef} className="flex flex-col h-full min-h-0">
       {/* SQL Editor area — resizable */}
       <div className="flex flex-col shrink-0" style={{ height: editorHeight }}>
         <div className="relative flex-1 min-h-0">
