@@ -24,7 +24,7 @@ import {
 } from "../lib/schema";
 import { useQueryLog } from "../lib/queryLog";
 import { useEditStore, buildRowKey, tableRefreshKey } from "../lib/editStore";
-import { ResultGrid, type SortState, type CellSelection } from "./ResultGrid";
+import { ResultGrid, type SortState, type CellSelection, type CellRevealRequest } from "./ResultGrid";
 import { getConfig } from "../lib/config";
 import { parseDefaultOrderBy } from "../lib/defaultOrder";
 import { HighlightedSQL } from "../lib/highlightSQL";
@@ -38,6 +38,7 @@ interface DataTableProps {
   schema: string;
   table: string;
   onCellSelect?: (selection: CellSelection | null) => void;
+  revealCell?: CellRevealRequest | null;
   viewMode?: ViewMode;
   onViewModeChange?: (mode: ViewMode) => void;
 }
@@ -264,7 +265,7 @@ function ResizableTh({
 
 /* ── Main component ────────────────────────────────────── */
 
-export function DataTable({ connectionId, connectionType, db, schema, table, onCellSelect, viewMode, onViewModeChange }: DataTableProps) {
+export function DataTable({ connectionId, connectionType, db, schema, table, onCellSelect, revealCell, viewMode, onViewModeChange }: DataTableProps) {
   const [internalMode, setInternalMode] = useState<ViewMode>(viewMode ?? "data");
   const mode = viewMode ?? internalMode;
   const changeMode = (next: ViewMode) => {
@@ -521,6 +522,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
             sort={sort}
             onSortChange={(s) => { setSort(s); setOffset(0); }}
             onCellSelect={onCellSelect}
+            revealCell={revealCell}
             onSelectionChange={setSelectedRows}
             pkColumns={pkColumns}
             columnMeta={columnMeta}
@@ -805,6 +807,7 @@ function DataView({
   sort,
   onSortChange,
   onCellSelect,
+  revealCell,
   onSelectionChange,
   pkColumns,
   columnMeta,
@@ -822,6 +825,7 @@ function DataView({
   sort: SortState | null;
   onSortChange: (s: SortState | null) => void;
   onCellSelect?: (selection: CellSelection | null) => void;
+  revealCell?: CellRevealRequest | null;
   onSelectionChange?: (selectedIndices: Set<number>) => void;
   pkColumns: string[];
   columnMeta: { name: string; dataType: string; udtName: string; enumValues?: string[]; defaultValue: string | null }[];
@@ -973,6 +977,7 @@ function DataView({
       sort={sort}
       onSortChange={onSortChange}
       onCellSelect={handleCellSelect}
+      revealCell={revealCell}
       tableName={table}
       isCellDirty={pkColumns.length > 0 ? isCellDirty : undefined}
       isRowDirty={pkColumns.length > 0 ? isRowDirty : undefined}

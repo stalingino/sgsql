@@ -11,9 +11,11 @@ interface DetailPanelProps {
   selection: CellSelection | null;
   /** Was the panel already visible before the selection changed? */
   wasAlreadyOpen?: boolean;
+  /** Reveal the corresponding table cell while leaving focus in this panel. */
+  onFieldActivate?: (columnIndex: number) => void;
 }
 
-export function DetailPanel({ selection, wasAlreadyOpen }: DetailPanelProps) {
+export function DetailPanel({ selection, wasAlreadyOpen, onFieldActivate }: DetailPanelProps) {
   // Subscribe for reactivity on changes
   const _editChanges = useEditStore((s) => s.changes);
   const _editInserts = useEditStore((s) => s.inserts);
@@ -164,6 +166,7 @@ export function DetailPanel({ selection, wasAlreadyOpen }: DetailPanelProps) {
               enumValues={meta?.enumValues}
               defaultValue={meta?.defaultValue ?? null}
               insertId={isInsertRow ? selection.insertId : undefined}
+              onActivate={onFieldActivate}
             />
           );
         })}
@@ -321,6 +324,7 @@ function FieldRow({
   enumValues,
   defaultValue,
   insertId,
+  onActivate,
 }: {
   index: number;
   name: string;
@@ -331,6 +335,7 @@ function FieldRow({
   enumValues?: string[];
   defaultValue: string | null;
   insertId?: string;
+  onActivate?: (columnIndex: number) => void;
 }) {
   const isNull = value === null || value === undefined;
   const isBoolean = typeof value === "boolean";
@@ -406,7 +411,11 @@ function FieldRow({
   const inputBorder = isDirty ? (insertId ? "border-row-insert/60" : "border-warning/60") : "border-border-light";
 
   return (
-    <div className={fieldClasses} data-field-index={index}>
+    <div
+      className={fieldClasses}
+      data-field-index={index}
+      onPointerDown={() => onActivate?.(index)}
+    >
       {/* Column name + quick-set */}
       <div className="flex items-center gap-1 min-w-0">
         <div className="flex items-baseline gap-1 min-w-0 flex-1 overflow-hidden">

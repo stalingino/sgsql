@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, ArrowDown, Copy, ClipboardCopy, ChevronRight, CopyPlus } from "lucide-react";
+import { horizontalVisibilityDelta } from "../lib/scrollVisibility";
 
 /* ── Constants ─────────────────────────────────────────── */
 
@@ -38,6 +39,12 @@ export interface CellSelection {
   };
   /** If this is a pending insert row, its ID in the edit store */
   insertId?: string;
+}
+
+export interface CellRevealRequest {
+  rowIndex: number;
+  colIndex: number;
+  requestId: number;
 }
 
 /* ── Copy format helpers ───────────────────────────────── */
@@ -484,6 +491,8 @@ interface ResultGridProps {
   onDuplicateRows?: (rowIndices: number[]) => void;
   /** Table name for copy-as-insert */
   tableName?: string;
+  /** Visually activate and horizontally reveal a cell without taking DOM focus. */
+  revealCell?: CellRevealRequest | null;
 }
 
 export function ResultGrid({
@@ -502,6 +511,7 @@ export function ResultGrid({
   onSelectionChange,
   onDuplicateRows,
   tableName: _tableName,
+  revealCell,
 }: ResultGridProps) {
   const [internalSort, setInternalSort] = useState<SortState | null>(null);
   // Multi-selection state
@@ -756,6 +766,46 @@ export function ResultGrid({
     autoSizeData,
   );
 
+  useEffect(() => {
+    if (!revealCell) return;
+    const { rowIndex, colIndex } = revealCell;
+    if (rowIndex < 0 || rowIndex >= displayRows.length || colIndex < 0 || colIndex >= columns.length) return;
+
+    setActiveRow(rowIndex);
+    setActiveCol(colIndex);
+
+    const frame = requestAnimationFrame(() => {
+      const container = containerRef.current;
+      const cell = tableRef.current?.querySelector(
+        `[data-row-idx="${rowIndex}"] [data-col-idx="${colIndex}"]`,
+      ) as HTMLElement | null;
+      if (!container || !cell) return;
+
+      const viewport = container.getBoundingClientRect();
+      const item = cell.getBoundingClientRect();
+      const delta = horizontalVisibilityDelta({
+        viewportLeft: viewport.left,
+        viewportRight: viewport.right,
+        itemLeft: item.left,
+        itemRight: item.right,
+      });
+      if (delta !== 0) {
+        container.scrollTo({ left: container.scrollLeft + delta, behavior: "smooth" });
+      }
+
+      // Keep the shared selection snapshot aligned with the visually active
+      // cell. This does not focus the grid, so the detail field keeps focus.
+      onCellSelect?.({
+        rowIndex,
+        colIndex,
+        row: displayRows[rowIndex] as unknown[],
+        columns,
+      });
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [revealCell?.requestId, columns.length, displayRows.length, tableRef]);
+
   if (columns.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-text-muted text-sm">
@@ -844,6 +894,7 @@ export function ResultGrid({
                     return (
                       <td
                         key={j}
+                        data-col-idx={j}
                         className={`px-3 py-0.5 whitespace-nowrap border-r border-border overflow-hidden text-ellipsis cursor-pointer ${
                           isCellActive
                             ? focused

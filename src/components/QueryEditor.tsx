@@ -13,7 +13,7 @@ import {
   type SqlCompletion,
 } from "../lib/sqlAutocomplete";
 import { HighlightedSQL } from "../lib/highlightSQL";
-import { ResultGrid, type CellSelection } from "./ResultGrid";
+import { ResultGrid, type CellSelection, type CellRevealRequest } from "./ResultGrid";
 import { useSchemaRevision } from "../lib/schemaRevision";
 
 interface QueryEditorProps {
@@ -23,6 +23,7 @@ interface QueryEditorProps {
   initialSql?: string;
   onSqlChange?: (sql: string) => void;
   onCellSelect?: (selection: CellSelection | null) => void;
+  revealCell?: CellRevealRequest | null;
 }
 
 const PAGE_SIZE = 100;
@@ -208,7 +209,7 @@ function completionPopupPosition(textarea: HTMLTextAreaElement, value: string, c
 
 /* ── Component ──────────────────────────────────────────── */
 
-export function QueryEditor({ connectionId, connectionType, activeDb, initialSql = "", onSqlChange, onCellSelect }: QueryEditorProps) {
+export function QueryEditor({ connectionId, connectionType, activeDb, initialSql = "", onSqlChange, onCellSelect, revealCell }: QueryEditorProps) {
   const [sql, setSql] = useState(initialSql);
   const [result, setResult] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -852,6 +853,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
                 emptyMessage="Query returned no rows."
                 clientSort
                 onCellSelect={handleResultCellSelect}
+                revealCell={revealCell}
               />
             </div>
 

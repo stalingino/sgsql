@@ -39,7 +39,7 @@ import { DetailPanel } from "./components/DetailPanel";
 import { SettingsModal } from "./components/SettingsModal";
 import { CommandPalette } from "./components/CommandPalette";
 import { ChangeHistoryPanel } from "./components/ChangeHistoryPopup";
-import type { CellSelection } from "./components/ResultGrid";
+import type { CellSelection, CellRevealRequest } from "./components/ResultGrid";
 import type { ConnectionProfile } from "./lib/types";
 import { envBadgeStyle } from "./lib/types";
 
@@ -119,6 +119,8 @@ function App() {
   const [consoleVisible, setConsoleVisible] = useState(false);
   const [detailPanelVisible, setDetailPanelVisible] = useState(false);
   const [cellSelection, setCellSelection] = useState<CellSelection | null>(null);
+  const [cellRevealRequest, setCellRevealRequest] = useState<CellRevealRequest | null>(null);
+  const cellRevealRequestIdRef = useRef(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState<false | "all" | "db-only">(false);
   const [reconnectNotice, setReconnectNotice] = useState<string | null>(null);
@@ -617,12 +619,22 @@ function App() {
 
   const handleCellSelection = useCallback((sel: CellSelection | null) => {
     detailPanelWasOpenRef.current = detailPanelVisible;
+    setCellRevealRequest(null);
     setCellSelection(sel);
     // Auto-open detail pane for new insert rows
     if (sel?.insertId && !detailPanelVisible) {
       setDetailPanelVisible(true);
     }
   }, [detailPanelVisible]);
+
+  const handleDetailFieldActivate = useCallback((colIndex: number) => {
+    if (!cellSelection) return;
+    setCellRevealRequest({
+      rowIndex: cellSelection.rowIndex,
+      colIndex,
+      requestId: ++cellRevealRequestIdRef.current,
+    });
+  }, [cellSelection]);
 
   /* ── Loading ──────────────────────────────────────────── */
 
@@ -955,6 +967,7 @@ function App() {
                           activeDb={ct.db}
                           initialSql={ct.sql || ""}
                           onCellSelect={handleCellSelection}
+                          revealCell={workspace.db === activeTab.activeDbName && ct.id === workspace.activeContentTabId ? cellRevealRequest : null}
                           onSqlChange={(sql) => {
                             setTabs((prev) => prev.map((tab) => {
                               if (tab.id !== activeTab.id) return tab;
@@ -978,6 +991,7 @@ function App() {
                           schema={ct.schema}
                           table={ct.table}
                           onCellSelect={handleCellSelection}
+                          revealCell={workspace.db === activeTab.activeDbName && ct.id === workspace.activeContentTabId ? cellRevealRequest : null}
                           viewMode={ct.viewMode ?? "data"}
                           onViewModeChange={(viewMode) => {
                             setTabs((prev) => prev.map((tab) => {
@@ -1031,7 +1045,11 @@ function App() {
             {detailPanelVisible && activeContentTab?.viewMode !== "structure" && (
               <ResizableDetailPanel>
                 <aside className="h-full border-l border-border bg-bg-primary">
-                  <DetailPanel selection={cellSelection} wasAlreadyOpen={detailPanelWasOpenRef.current} />
+                  <DetailPanel
+                    selection={cellSelection}
+                    wasAlreadyOpen={detailPanelWasOpenRef.current}
+                    onFieldActivate={handleDetailFieldActivate}
+                  />
                 </aside>
               </ResizableDetailPanel>
             )}
