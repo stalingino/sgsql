@@ -26,6 +26,7 @@ import { useQueryLog } from "../lib/queryLog";
 import { useEditStore, buildRowKey, tableRefreshKey } from "../lib/editStore";
 import { ResultGrid, type SortState, type CellSelection } from "./ResultGrid";
 import { getConfig } from "../lib/config";
+import { parseDefaultOrderBy } from "../lib/defaultOrder";
 import { HighlightedSQL } from "../lib/highlightSQL";
 import { FilterPanel, type FilterRow, createFilter, buildWhereClause } from "./FilterPanel";
 import { SchemaEditor } from "./SchemaEditor";
@@ -285,15 +286,9 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   const [sqlPreview, setSqlPreview] = useState(false);
   const [schemaDdlOpen, setSchemaDdlOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [sort, setSort] = useState<SortState | null>(() => {
-    // Initialize from settings default
-    const defaultOrder = getConfig().settings?.defaultOrderBy?.trim();
-    if (!defaultOrder) return null;
-    const parts = defaultOrder.split(/\s+/);
-    const col = parts[0];
-    const dir = (parts[1] || "DESC").toUpperCase();
-    return { column: col, dir: dir === "ASC" ? "ASC" : "DESC" };
-  });
+  const [sort, setSort] = useState<SortState | null>(() =>
+    parseDefaultOrderBy(getConfig().settings?.defaultOrderBy),
+  );
 
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
   const refreshKey = tableRefreshKey({ connectionId, db, schema, table });
@@ -404,14 +399,8 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     setAppliedWhere("");
     setSqlPreview(false);
     setSchemaDdlOpen(false);
-    // Re-apply default sort from settings
-    const defaultOrder = getConfig().settings?.defaultOrderBy?.trim();
-    if (defaultOrder) {
-      const parts = defaultOrder.split(/\s+/);
-      setSort({ column: parts[0], dir: (parts[1] || "DESC").toUpperCase() === "ASC" ? "ASC" : "DESC" });
-    } else {
-      setSort(null);
-    }
+    // Re-apply the configured sort (or the built-in default) for the new table.
+    setSort(parseDefaultOrderBy(getConfig().settings?.defaultOrderBy));
   }, [connectionId, db, schema, table]);
 
   // Fetch structure (columns) on mount / table change

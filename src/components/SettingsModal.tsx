@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { getConfig, saveConfig, type AppSettings } from "../lib/config";
+import { DEFAULT_ORDER_BY } from "../lib/defaultOrder";
 
 interface SettingsModalProps {
   open: boolean;
@@ -68,7 +69,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             </label>
             <input
               type="text"
-              value={settings.defaultOrderBy ?? "id DESC"}
+              value={settings.defaultOrderBy ?? DEFAULT_ORDER_BY}
               onChange={(e) => updateSetting("defaultOrderBy", e.target.value)}
               placeholder="e.g. id DESC, created_at DESC, or leave empty"
               className="w-full px-3 py-2 text-[13px] rounded-md border border-border bg-bg-primary text-text-primary placeholder-text-muted outline-none focus:border-accent transition-colors font-mono"
