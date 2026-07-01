@@ -1,5 +1,7 @@
 export type ConnectionEnv = "production" | "staging" | "testing" | "development" | "local" | "";
 
+export const DEFAULT_CONNECTION_FOLDER = "Connections";
+
 export interface ConnectionProfile {
   id: string;
   name: string;
@@ -12,6 +14,7 @@ export interface ConnectionProfile {
   ssl: boolean;
   color: string;
   env: ConnectionEnv;
+  group: string;
   useSsh: boolean;
   sshHost: string;
   sshPort: number;
@@ -41,6 +44,7 @@ export function createDefaultProfile(): ConnectionProfile {
     ssl: false,
     color: "#ff4d4d",
     env: "",
+    group: DEFAULT_CONNECTION_FOLDER,
     useSsh: false,
     sshHost: "127.0.0.1",
     sshPort: 22,

@@ -202,6 +202,10 @@ function App() {
         e.preventDefault();
         addQueryTabRef.current?.();
       }
+      if ((e.metaKey || e.ctrlKey) && e.key === "n") {
+        e.preventDefault();
+        openConnectionManager();
+      }
       if ((e.metaKey || e.ctrlKey) && e.key === "l") {
         e.preventDefault();
         setSidebarVisible((v) => {
