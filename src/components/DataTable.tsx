@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { modKey } from "../lib/platform";
 import {
   Loader2,
   ChevronLeft,
@@ -595,7 +596,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
               <button
                 onClick={handleAddRow}
                 className="flex items-center gap-1 px-2 py-0.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
-                title="Add row (⌘I)"
+                title={`Add row (${modKey("I")})`}
               >
                 <Plus size={10} />
                 Add Row
@@ -691,7 +692,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
                       ? "bg-warning/15 text-warning"
                       : "hover:bg-bg-hover text-text-muted"
                 }`}
-                title="Toggle filters (⌘F)"
+                title={`Toggle filters (${modKey("F")})`}
               >
                 <Filter size={11} />
                 Filters

@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { X, Keyboard } from "lucide-react";
 import { getConfig, saveConfig, type AppSettings } from "../lib/config";
 import { DEFAULT_ORDER_BY } from "../lib/defaultOrder";
+import { modKey } from "../lib/platform";
 
 interface SettingsModalProps {
   open: boolean;
   onClose: () => void;
+  onShowShortcuts?: () => void;
 }
 
-export function SettingsModal({ open, onClose }: SettingsModalProps) {
+export function SettingsModal({ open, onClose, onShowShortcuts }: SettingsModalProps) {
   const [settings, setSettings] = useState<AppSettings>({});
   const backdropRef = useRef<HTMLDivElement>(null);
 
@@ -81,7 +83,18 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border bg-bg-secondary">
+        <div className="flex items-center justify-between gap-2 px-5 py-3 border-t border-border bg-bg-secondary">
+          {onShowShortcuts && (
+            <button
+              onClick={onShowShortcuts}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-border text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+              title={`Keyboard shortcuts (${modKey("/")})`}
+            >
+              <Keyboard size={12} />
+              Keyboard shortcuts
+            </button>
+          )}
+          <div className="flex items-center gap-2">
           <button
             onClick={onClose}
             className="px-4 py-1.5 text-xs rounded-md border border-border text-text-secondary hover:bg-bg-hover transition-colors cursor-pointer"
@@ -94,6 +107,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           >
             Save
           </button>
+          </div>
         </div>
       </div>
     </div>

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { modKey } from "../lib/platform";
 import {
   Database,
   Table2,
@@ -118,7 +119,7 @@ export function SchemaTree({
         {!isSqlite && (
           <button
             onClick={onAddDb}
-            title="Add database (⌘K)"
+            title={`Add database (${modKey("K")})`}
             className="flex flex-col items-center gap-0.5 w-full px-1.5 py-4 text-text-muted hover:text-text-secondary hover:bg-bg-hover transition-colors cursor-pointer border-b border-border"
           >
             <Plus size={13} />

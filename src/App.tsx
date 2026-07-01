@@ -37,11 +37,13 @@ import { QueryEditor } from "./components/QueryEditor";
 import { QueryConsole } from "./components/QueryConsole";
 import { DetailPanel } from "./components/DetailPanel";
 import { SettingsModal } from "./components/SettingsModal";
+import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { CommandPalette } from "./components/CommandPalette";
 import { ChangeHistoryPanel } from "./components/ChangeHistoryPopup";
 import type { CellSelection, CellRevealRequest } from "./components/ResultGrid";
 import type { ConnectionProfile } from "./lib/types";
 import { envBadgeStyle } from "./lib/types";
+import { modKey } from "./lib/platform";
 
 /* ── Tab types ──────────────────────────────────────────── */
 
@@ -122,6 +124,7 @@ function App() {
   const [cellRevealRequest, setCellRevealRequest] = useState<CellRevealRequest | null>(null);
   const cellRevealRequestIdRef = useRef(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState<false | "all" | "db-only">(false);
   const [reconnectNotice, setReconnectNotice] = useState<string | null>(null);
   const [reloadingConnection, setReloadingConnection] = useState(false);
@@ -219,6 +222,10 @@ function App() {
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
         e.preventDefault();
         setSettingsOpen(true);
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "/") {
+        e.preventDefault();
+        setShortcutsOpen((v) => !v);
       }
       if ((e.metaKey || e.ctrlKey) && e.key === ".") {
         e.preventDefault();
@@ -786,7 +793,7 @@ function App() {
           <button
             onClick={reloadActiveConnection}
             disabled={!activeTab?.connectionId || reloadingConnection}
-            title="Reload connection (Cmd+R)"
+            title={`Reload connection (${modKey("R")})`}
             className="flex items-center p-1.5 rounded-md transition-colors cursor-pointer text-text-muted hover:text-text-secondary hover:bg-bg-hover disabled:opacity-35 disabled:cursor-default disabled:hover:bg-transparent"
           >
             <RefreshCw size={14} className={reloadingConnection ? "animate-spin" : ""} />
@@ -799,7 +806,7 @@ function App() {
               saveConfig({ sidebar: { ...getConfig().sidebar, visible: next, width: getConfig().sidebar?.width ?? 280 } });
               return next;
             })}
-            title={`${sidebarVisible ? "Hide" : "Show"} sidebar (Cmd+L)`}
+            title={`${sidebarVisible ? "Hide" : "Show"} sidebar (${modKey("L")})`}
             className={`flex items-center p-1.5 rounded-md transition-colors cursor-pointer ${
               sidebarVisible
                 ? "text-text-primary bg-bg-active"
@@ -816,7 +823,7 @@ function App() {
               saveConfig({ detailPanel: { ...getConfig().detailPanel, visible: next, width: getConfig().detailPanel?.width ?? 300 } });
               return next;
             })}
-            title={`${detailPanelVisible ? "Hide" : "Show"} detail panel (Cmd+O)`}
+            title={`${detailPanelVisible ? "Hide" : "Show"} detail panel (${modKey("O")})`}
             className={`flex items-center p-1.5 rounded-md transition-colors cursor-pointer ${
               detailPanelVisible
                 ? "text-text-primary bg-bg-active"
@@ -829,7 +836,7 @@ function App() {
           {/* Settings */}
           <button
             onClick={() => setSettingsOpen(true)}
-            title="Settings (Cmd+,)"
+            title={`Settings (${modKey(",")})`}
             className="flex items-center p-1.5 rounded-md transition-colors cursor-pointer text-text-muted hover:text-text-secondary hover:bg-bg-hover"
           >
             <Settings size={14} />
@@ -838,7 +845,12 @@ function App() {
       </div>
 
       {/* Settings modal */}
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onShowShortcuts={() => { setSettingsOpen(false); setShortcutsOpen(true); }}
+      />
+      <KeyboardShortcutsModal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
 
       {/* Command Palette */}
       {commandPaletteOpen && activeTab?.connectionId && (
@@ -954,7 +966,7 @@ function App() {
                   <button
                     onClick={addQueryTab}
                     disabled={!activeTab.activeDbName}
-                    title="New SQL query tab (⌘E)"
+                    title={`New SQL query tab (${modKey("E")})`}
                     className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold tracking-wide text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer border border-border disabled:opacity-30 disabled:cursor-not-allowed"
                   >
                     <Plus size={10} />
@@ -1477,8 +1489,8 @@ function StatusBar({
         <button
           onClick={onToggleBottomPanel}
           title={bottomPanelVisible
-            ? "Hide bottom panel (Cmd+.)"
-            : `Show query log and ${editChangeCount} pending change${editChangeCount !== 1 ? "s" : ""} (Cmd+.)`}
+            ? `Hide bottom panel (${modKey(".")})`
+            : `Show query log and ${editChangeCount} pending change${editChangeCount !== 1 ? "s" : ""} (${modKey(".")})`}
           className={`flex items-center gap-2 px-2 py-1 rounded transition-colors cursor-pointer ${
             bottomPanelVisible
               ? "text-text-primary bg-bg-active"

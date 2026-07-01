@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from "react";
+import { modKey } from "../lib/platform";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -604,7 +605,7 @@ export function ConnectionManagerWindow() {
           )}
           <button
             onClick={handleNewConnection}
-            title="New connection (⌘N)"
+            title={`New connection (${modKey("N")})`}
             className="flex shrink-0 items-center justify-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm text-white transition-colors hover:bg-accent-hover cursor-pointer"
           >
             <Plus size={14} />

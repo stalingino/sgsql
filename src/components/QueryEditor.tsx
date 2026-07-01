@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useMemo } from "react";
+import { ctrlKey } from "../lib/platform";
 import { Loader2, Play, Sparkles, ChevronLeft, ChevronRight, ChevronDown, Columns3, Table2, Layers3 } from "lucide-react";
 import { fetchColumns, fetchSchemas, fetchTables, type ColumnInfo, type QueryResult } from "../lib/schema";
 import { useQueryLog } from "../lib/queryLog";
@@ -723,7 +724,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
               setCompletionOpen(false);
               setCompletionForced(false);
             }}
-            placeholder="Enter SQL query... (Ctrl+Enter to run)"
+            placeholder={`Enter SQL query... (${ctrlKey("↩", "Enter")} to run)`}
             spellCheck={false}
             className="absolute inset-0 w-full h-full bg-transparent text-text-primary caret-text-primary text-[13px] font-mono p-3 outline-none placeholder-text-muted z-10 resize-none"
             style={{ caretColor: "var(--color-text-primary)", color: "transparent" }}
@@ -766,7 +767,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
               )}
               {completions.length > 0 && (
                 <div className="px-3 pt-2 pb-1 text-[9px] text-text-muted border-t border-border mt-1">
-                  <span>↑↓ Navigate · Enter/Tab Insert · Esc Close · Ctrl+Space Open</span>
+                  <span>{`↑↓ Navigate · Enter/Tab Insert · Esc Close · ${ctrlKey("Space")} Open`}</span>
                 </div>
               )}
             </div>
@@ -820,7 +821,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
         <button
           onClick={runQuery}
           disabled={loading || !sql.trim()}
-          title="Run query (Ctrl+Enter)"
+          title={`Run query (${ctrlKey("↩", "Enter")})`}
           className="flex items-center gap-1 px-3 py-1 rounded-md bg-accent hover:bg-accent-hover text-white text-[11px] font-medium disabled:opacity-40 disabled:cursor-default cursor-pointer transition-colors"
         >
           {loading ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
@@ -904,7 +905,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
         {/* Empty state */}
         {!result && !error && !loading && (
           <div className="flex-1 flex items-center justify-center text-text-muted text-xs">
-            Write a query and press Ctrl+Enter to run
+            {`Write a query and press ${ctrlKey("↩", "Enter")} to run`}
           </div>
         )}
 
