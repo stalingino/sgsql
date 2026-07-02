@@ -27,7 +27,6 @@ import { closeConnection, reloadConnection } from "./lib/schema";
 import { useThemeStore, type ThemeMode, initTheme } from "./lib/theme";
 import { useWindowPersist } from "./lib/useWindowPersist";
 import { loadConfig, getConfig, saveConfig, queryStackPop, queryStackPush } from "./lib/config";
-import { useQueryLog } from "./lib/queryLog";
 import { useExecutionQueue } from "./lib/executionQueue";
 import { useEditStore } from "./lib/editStore";
 import { notifySchemaChanged } from "./lib/schemaRevision";
@@ -154,12 +153,6 @@ function App() {
       setConfigReady(true);
     });
   }, []);
-
-  // Enable/disable query logging when console visibility changes
-  const setLogEnabled = useQueryLog((s) => s.setEnabled);
-  useEffect(() => {
-    setLogEnabled(consoleVisible);
-  }, [consoleVisible, setLogEnabled]);
 
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
@@ -600,18 +593,8 @@ function App() {
 
     const refreshedTables = [];
     for (const { sql, type, id, connectionId, db, schema, table, rowKey } of statements) {
-      const startedAt = performance.now();
       try {
-        const result = await execQueue(connectionId, sql, db);
-        useQueryLog.getState().addEntry({
-          timestamp: new Date(),
-          query: sql,
-          db,
-          schema,
-          table,
-          duration: result.duration,
-          rowCount: result.affectedRows ?? result.rowCount,
-        });
+        await execQueue(connectionId, sql, db);
         // Remove from store on success
         if (type === "update") {
           if (rowKey) store.removeRow(rowKey);
@@ -622,15 +605,6 @@ function App() {
         }
         refreshedTables.push({ connectionId, db, schema, table });
       } catch (err) {
-        useQueryLog.getState().addEntry({
-          timestamp: new Date(),
-          query: sql,
-          db,
-          schema,
-          table,
-          duration: performance.now() - startedAt,
-          error: err instanceof Error ? err.message : String(err),
-        });
         console.error("Failed to save:", err);
         break; // Stop on first error
       }

@@ -10,6 +10,7 @@ import {
   handleQuery,
   handleCancel,
 } from "./routes/schema";
+import { clearQueryLog, subscribeQueryLog, unsubscribeQueryLog, type QueryLogSocketData } from "./lib/queryLogHub";
 
 const DEFAULT_PORT = 45821; // distinctive high port — avoids collisions
 
@@ -25,7 +26,7 @@ async function main() {
   const server = Bun.serve({
     port,
     reusePort: true, // allow quick restart without TIME_WAIT issues
-    async fetch(req) {
+    async fetch(req, server) {
       const url = new URL(req.url);
       const path = url.pathname;
 
@@ -38,6 +39,11 @@ async function main() {
         "Access-Control-Allow-Headers": "Content-Type",
         "Content-Type": "application/json",
       };
+
+      if (path === "/query-log") {
+        if (server.upgrade(req, { data: { channel: "query-log" } satisfies QueryLogSocketData })) return;
+        return new Response(JSON.stringify({ error: "WebSocket upgrade required" }), { status: 426, headers });
+      }
 
       if (req.method === "OPTIONS") {
         return new Response(null, { status: 204, headers });
@@ -106,6 +112,13 @@ async function main() {
           { status: 500, headers },
         );
       }
+    },
+    websocket: {
+      open: subscribeQueryLog,
+      message(_socket, message) {
+        if (String(message) === "clear") clearQueryLog();
+      },
+      close: unsubscribeQueryLog,
     },
   });
 

@@ -1,6 +1,7 @@
 import type { ConnectionProfile } from "../lib/types";
 import { friendlyError } from "../lib/friendlyError";
 import { createSshTunnel } from "../lib/sshTunnel";
+import { instrumentConnection } from "../lib/queryTrace";
 
 export async function handleTestConnection(
   req: Request,
@@ -35,8 +36,10 @@ export async function handleTestConnection(
         ssl: profile.ssl ? {} : undefined,
         connectTimeout: 5000,
       });
-      await conn.query("SELECT 1");
-      await conn.end();
+      const entry = instrumentConnection(profile.id, profile.database, { type: "mysql", client: conn });
+      if (entry.type !== "mysql") throw new Error("Unexpected connection type");
+      await entry.client.query("SELECT 1");
+      await entry.client.end();
       await tunnel?.close();
       return jsonResponse({ ok: true, latency: elapsed(start) }, headers);
     }
@@ -53,8 +56,10 @@ export async function handleTestConnection(
       connect_timeout: 5,
       max: 1,
     });
-    await sql`SELECT 1`;
-    await sql.end();
+    const entry = instrumentConnection(profile.id, profile.database, { type: "postgres", client: sql });
+    if (entry.type !== "postgres") throw new Error("Unexpected connection type");
+    await entry.client`SELECT 1`;
+    await entry.client.end();
     await tunnel?.close();
     return jsonResponse({ ok: true, latency: elapsed(start) }, headers);
   } catch (e: unknown) {

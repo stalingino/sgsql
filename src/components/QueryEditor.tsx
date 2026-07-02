@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { ctrlKey } from "../lib/platform";
 import { Loader2, Play, Sparkles, ChevronLeft, ChevronRight, ChevronDown, Columns3, Table2, Layers3 } from "lucide-react";
 import { fetchColumns, fetchSchemas, fetchTables, type ColumnInfo, type QueryResult } from "../lib/schema";
-import { useQueryLog } from "../lib/queryLog";
 import { useExecutionQueue } from "../lib/executionQueue";
 import { useEditStore } from "../lib/editStore";
 import {
@@ -254,9 +253,6 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   const pendingColumnsRef = useRef<Set<string>>(new Set());
   const metadataGenerationRef = useRef(0);
 
-  const addLogEntryRef = useRef(useQueryLog.getState().addEntry);
-  addLogEntryRef.current = useQueryLog.getState().addEntry;
-
   // Auto-focus the editor on mount
   useEffect(() => {
     textareaRef.current?.focus();
@@ -496,35 +492,11 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
       setEditableContext(context);
       editableContextRef.current = context;
       lastExecutedQueryRef.current = finalQuery;
-      addLogEntryRef.current({
-        timestamp: new Date(),
-        query: finalQuery,
-        db: activeDb,
-        schema: "",
-        table: "",
-        duration: res.duration,
-        rowCount: res.rowCount ?? res.affectedRows,
-      });
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
       const isCancelled = raw === "Cancelled" || raw.includes("aborted") || (err instanceof DOMException && err.name === "AbortError");
       const msg = isCancelled ? "Query killed" : raw;
       setError(msg);
-      // Read cancel detail from the execution queue (set by server response before abort)
-      const cancelDetail = isCancelled
-        ? useExecutionQueue.getState().connections.get(connectionId)?.lastCancelDetail ?? undefined
-        : undefined;
-      addLogEntryRef.current({
-        timestamp: new Date(),
-        query: finalQuery,
-        db: activeDb,
-        schema: "",
-        table: "",
-        duration: 0,
-        cancelled: isCancelled || undefined,
-        cancelDetail,
-        error: msg,
-      });
     } finally {
       setLoading(false);
     }
@@ -549,15 +521,6 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
         setEditableContext(context);
         editableContextRef.current = context;
         publishRefreshedSelection(res, context);
-        addLogEntryRef.current({
-          timestamp: new Date(),
-          query: executedSql,
-          db: activeDb,
-          schema: context?.schema ?? "",
-          table: context?.table ?? "",
-          duration: res.duration,
-          rowCount: res.rowCount ?? res.affectedRows,
-        });
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));

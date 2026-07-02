@@ -3,6 +3,7 @@ import type { Connection } from "mysql2/promise";
 import { Database } from "bun:sqlite";
 import type { ConnectionProfile } from "./types";
 import { createSshTunnel, type SshTunnel } from "./sshTunnel";
+import { instrumentConnection } from "./queryTrace";
 
 export type PoolEntry =
   | { type: "postgres"; client: Sql; tunnel?: SshTunnel }
@@ -29,7 +30,7 @@ export function getProfile(id: string): ConnectionProfile | undefined {
 }
 
 export function setConnection(id: string, entry: PoolEntry, profile: ConnectionProfile): void {
-  pool.set(id, { entry, profile, lastUsedAt: Date.now() });
+  pool.set(id, { entry: instrumentConnection(id, profile.database, entry), profile, lastUsedAt: Date.now() });
 }
 
 export function markConnectionUsed(id: string): void {
@@ -154,9 +155,10 @@ async function reconnectInternal(id: string): Promise<PoolEntry> {
         connect_timeout: 5,
         max: 4,
       });
+      newEntry = instrumentConnection(id, profile.database, { type: "postgres", client: sql, tunnel: tunnel ?? undefined });
+      if (newEntry.type !== "postgres") throw new Error("Unexpected connection type");
       // Verify connection is alive
-      await sql`SELECT 1`;
-      newEntry = { type: "postgres", client: sql, tunnel: tunnel ?? undefined };
+      await newEntry.client`SELECT 1`;
     } else if (profile.type === "mysql") {
       const mysql = await import("mysql2/promise");
       const conn = await mysql.createConnection({
@@ -179,6 +181,7 @@ async function reconnectInternal(id: string): Promise<PoolEntry> {
     throw error;
   }
 
+  newEntry = instrumentConnection(id, profile.database, newEntry);
   pool.set(id, { entry: newEntry, profile, lastUsedAt: Date.now() });
   console.log(`[pool] reconnected ${id} successfully`);
   return newEntry;

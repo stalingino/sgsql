@@ -23,7 +23,6 @@ import {
   type TableRowsResult,
   type ColumnInfo,
 } from "../lib/schema";
-import { useQueryLog } from "../lib/queryLog";
 import { useEditStore, buildRowKey, tableRefreshKey } from "../lib/editStore";
 import { ResultGrid, type SortState, type CellSelection, type CellRevealRequest } from "./ResultGrid";
 import { getConfig } from "../lib/config";
@@ -313,8 +312,6 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   const [copied, setCopied] = useState(false);
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
 
-  const addLogEntryRef = useRef(useQueryLog.getState().addEntry);
-  addLogEntryRef.current = useQueryLog.getState().addEntry;
   const lastFilterRefreshRevisionRef = useRef(filterRefreshRevision);
 
   const pkColumns = useMemo(
@@ -492,35 +489,16 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     }
 
     setLoading(true);
-    const start = performance.now();
     fetchTableRows(connectionId, db, schema, table, PAGE_SIZE, offset, orderBy, appliedWhere || undefined)
       .then((result) => {
         cacheTableRows(target, result);
         if (!cancelled) {
           setData(result);
-          addLogEntryRef.current({
-            timestamp: new Date(),
-            query: result.query || `SELECT * FROM ${table}`,
-            db,
-            schema,
-            table,
-            duration: Math.round(performance.now() - start),
-            rowCount: result.rows.length,
-          });
         }
       })
       .catch((err) => {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : String(err));
-          addLogEntryRef.current({
-            timestamp: new Date(),
-            query: `-- Failed: SELECT * FROM ${db}.${table}`,
-            db,
-            schema,
-            table,
-            duration: Math.round(performance.now() - start),
-            error: err instanceof Error ? err.message : String(err),
-          });
         }
       })
       .finally(() => {

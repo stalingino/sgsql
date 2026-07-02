@@ -36,6 +36,7 @@ function withConnectionStatus<T extends object>(
 }
 
 import { friendlyError } from "../lib/friendlyError";
+import { instrumentConnection } from "../lib/queryTrace";
 
 function extractConnId(path: string): string | null {
   // /schema/:connId/...
@@ -101,9 +102,11 @@ export async function handleOpenConnection(
         connect_timeout: 5,
         max: 4,
       });
-      const [row] = await sql`SHOW server_version`;
+      const entry = instrumentConnection(profile.id, profile.database, { type: "postgres", client: sql, tunnel: tunnel ?? undefined });
+      if (entry.type !== "postgres") throw new Error("Unexpected connection type");
+      const [row] = await entry.client`SHOW server_version`;
       serverVersion = row?.server_version ?? "";
-      setConnection(profile.id, { type: "postgres", client: sql, tunnel: tunnel ?? undefined }, profile);
+      setConnection(profile.id, entry, profile);
     } else if (profile.type === "mysql") {
       const mysql = await import("mysql2/promise");
       const conn = await mysql.createConnection({
@@ -115,15 +118,19 @@ export async function handleOpenConnection(
         ssl: profile.ssl ? {} : undefined,
         connectTimeout: 5000,
       });
-      const [rows] = await conn.query("SELECT version() AS v");
+      const entry = instrumentConnection(profile.id, profile.database, { type: "mysql", client: conn, tunnel: tunnel ?? undefined });
+      if (entry.type !== "mysql") throw new Error("Unexpected connection type");
+      const [rows] = await entry.client.query("SELECT version() AS v");
       serverVersion = (rows as any)?.[0]?.v ?? "";
-      setConnection(profile.id, { type: "mysql", client: conn, tunnel: tunnel ?? undefined }, profile);
+      setConnection(profile.id, entry, profile);
     } else if (profile.type === "sqlite") {
       const { Database } = await import("bun:sqlite");
       const db = new Database(profile.database, { readonly: false });
-      const row = db.query("SELECT sqlite_version() AS v").get() as any;
+      const entry = instrumentConnection(profile.id, profile.database, { type: "sqlite", client: db });
+      if (entry.type !== "sqlite") throw new Error("Unexpected connection type");
+      const row = entry.client.query("SELECT sqlite_version() AS v").get() as any;
       serverVersion = row?.v ?? "";
-      setConnection(profile.id, { type: "sqlite", client: db }, profile);
+      setConnection(profile.id, entry, profile);
     } else {
       return errorResponse(`Unsupported connection type: ${(profile as any).type}`, headers, 400);
     }
@@ -920,8 +927,10 @@ export async function handleCancel(
           password: profile?.password ?? "",
           connectTimeout: 5000,
         });
-        await killer.query(`KILL QUERY ${threadId}`);
-        await killer.end();
+        const killerEntry = instrumentConnection(connectionId, profile?.database ?? "", { type: "mysql", client: killer });
+        if (killerEntry.type !== "mysql") throw new Error("Unexpected connection type");
+        await killerEntry.client.query(`KILL QUERY ${threadId}`);
+        await killerEntry.client.end();
         detail = `Killed MySQL query on thread ${threadId}`;
         console.log(`[sidecar] ${detail}`);
         break;
