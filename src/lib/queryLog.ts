@@ -51,7 +51,14 @@ export const useQueryLog = create<QueryLogState>((set) => ({
 }));
 
 function connect(): void {
-  socket = new WebSocket(QUERY_LOG_URL);
+  try {
+    socket = new WebSocket(QUERY_LOG_URL);
+  } catch (error) {
+    console.warn("[query-log] WebSocket connection failed:", error);
+    socket = null;
+    reconnectTimer = setTimeout(connect, 1_000);
+    return;
+  }
   socket.onopen = () => {
     if (clearPending) {
       clearPending = false;
