@@ -243,6 +243,7 @@ async function dispatchSchemaAction(
 ): Promise<unknown> {
   switch (action) {
     case "databases": return getDatabases(entry);
+    case "catalog": return getCatalog(entry, db);
     case "schemas": return getSchemas(entry, db);
     case "tables": return getTables(entry, db, schema);
     case "columns":
@@ -510,6 +511,64 @@ async function getDatabases(entry: PoolEntry): Promise<{ databases: string[] }> 
     case "sqlite": {
       // SQLite has no concept of multiple databases
       return { databases: ["main"] };
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Search catalog: all searchable relations without one request per database
+// ---------------------------------------------------------------------------
+
+async function getCatalog(
+  entry: PoolEntry,
+  currentDb?: string,
+): Promise<{ databases: string[]; tables: { db: string; schema: string; name: string; type: string }[] }> {
+  const { databases } = await getDatabases(entry);
+  switch (entry.type) {
+    case "postgres": {
+      const rows = await entry.client`
+        SELECT table_catalog, table_schema, table_name, table_type
+        FROM information_schema.tables
+        WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+        ORDER BY table_schema, table_name
+      `;
+      return {
+        databases,
+        tables: rows.map((row: any) => ({
+          db: currentDb || row.table_catalog || databases[0] || "",
+          schema: row.table_schema,
+          name: row.table_name,
+          type: row.table_type,
+        })),
+      };
+    }
+    case "mysql": {
+      const [rows] = await entry.client.query(
+        "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES ORDER BY TABLE_SCHEMA, TABLE_NAME",
+      );
+      return {
+        databases,
+        tables: (rows as any[]).map((row: any) => ({
+          db: row.TABLE_SCHEMA,
+          schema: "",
+          name: row.TABLE_NAME,
+          type: row.TABLE_TYPE,
+        })),
+      };
+    }
+    case "sqlite": {
+      const rows = entry.client.query(
+        "SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name",
+      ).all() as any[];
+      return {
+        databases,
+        tables: rows.map((row) => ({
+          db: currentDb || "main",
+          schema: "main",
+          name: row.name,
+          type: row.type === "view" ? "VIEW" : "BASE TABLE",
+        })),
+      };
     }
   }
 }

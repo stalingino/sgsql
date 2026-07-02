@@ -3,6 +3,8 @@ import type { ColumnInfo, TableRowsResult } from "./schema";
 const MAX_ENTRIES = 100;
 const rows = new Map<string, TableRowsResult>();
 const columns = new Map<string, ColumnInfo[]>();
+const pendingRows = new Map<string, Promise<TableRowsResult>>();
+const pendingColumns = new Map<string, Promise<ColumnInfo[]>>();
 
 export interface TableRowsCacheTarget {
   connectionId: string;
@@ -69,6 +71,32 @@ export function cacheTableRows(target: TableRowsCacheTarget, value: TableRowsRes
   setLru(rows, rowsKey(target), value);
 }
 
+/** Reuses both completed and in-flight row loads for the same table state. */
+export function loadTableRows(
+  target: TableRowsCacheTarget,
+  load: () => Promise<TableRowsResult>,
+  force = false,
+): Promise<TableRowsResult> {
+  const cacheKey = rowsKey(target);
+  const pending = pendingRows.get(cacheKey);
+  if (pending) return pending;
+  if (!force) {
+    const cached = getLru(rows, cacheKey);
+    if (cached) return Promise.resolve(cached);
+  }
+
+  const request = load()
+    .then((result) => {
+      if (pendingRows.get(cacheKey) === request) setLru(rows, cacheKey, result);
+      return result;
+    })
+    .finally(() => {
+      if (pendingRows.get(cacheKey) === request) pendingRows.delete(cacheKey);
+    });
+  pendingRows.set(cacheKey, request);
+  return request;
+}
+
 export function getCachedTableColumns(target: TableColumnsCacheTarget): ColumnInfo[] | undefined {
   return getLru(columns, columnsKey(target));
 }
@@ -77,7 +105,35 @@ export function cacheTableColumns(target: TableColumnsCacheTarget, value: Column
   setLru(columns, columnsKey(target), value);
 }
 
+/** Reuses both completed and in-flight metadata loads for the same table. */
+export function loadTableColumns(
+  target: TableColumnsCacheTarget,
+  load: () => Promise<ColumnInfo[]>,
+  force = false,
+): Promise<ColumnInfo[]> {
+  const cacheKey = columnsKey(target);
+  const pending = pendingColumns.get(cacheKey);
+  if (pending) return pending;
+  if (!force) {
+    const cached = getLru(columns, cacheKey);
+    if (cached) return Promise.resolve(cached);
+  }
+
+  const request = load()
+    .then((result) => {
+      if (pendingColumns.get(cacheKey) === request) setLru(columns, cacheKey, result);
+      return result;
+    })
+    .finally(() => {
+      if (pendingColumns.get(cacheKey) === request) pendingColumns.delete(cacheKey);
+    });
+  pendingColumns.set(cacheKey, request);
+  return request;
+}
+
 export function clearTableDataCache(): void {
   rows.clear();
   columns.clear();
+  pendingRows.clear();
+  pendingColumns.clear();
 }

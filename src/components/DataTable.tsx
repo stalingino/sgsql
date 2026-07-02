@@ -28,10 +28,10 @@ import { ResultGrid, type SortState, type CellSelection, type CellRevealRequest 
 import { getConfig } from "../lib/config";
 import { parseDefaultOrderBy } from "../lib/defaultOrder";
 import {
-  cacheTableColumns,
-  cacheTableRows,
   getCachedTableColumns,
   getCachedTableRows,
+  loadTableColumns,
+  loadTableRows,
 } from "../lib/tableDataCache";
 import { HighlightedSQL } from "../lib/highlightSQL";
 import { FilterPanel, type FilterRow, createFilter, buildWhereClause } from "./FilterPanel";
@@ -272,6 +272,10 @@ function ResizableTh({
   );
 }
 
+function sameSort(left: SortState | null, right: SortState | null): boolean {
+  return left?.column === right?.column && left?.dir === right?.dir;
+}
+
 /* ── Main component ────────────────────────────────────── */
 
 export function DataTable({ connectionId, connectionType, db, schema, table, onCellSelect, revealCell, viewMode, onViewModeChange }: DataTableProps) {
@@ -417,16 +421,20 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     setSqlPreview(false);
     setSchemaDdlOpen(false);
     // Re-apply the configured sort (or the built-in default) for the new table.
-    setSort(parseDefaultOrderBy(getConfig().settings?.defaultOrderBy));
+    const nextSort = parseDefaultOrderBy(getConfig().settings?.defaultOrderBy);
+    setSort((current) => sameSort(current, nextSort) ? current : nextSort);
   }, [connectionId, db, schema, table]);
 
   // Fetch structure (columns) on mount / table change
   const refreshStructure = useCallback(async () => {
     setStructLoading(true);
     try {
-      const cols = await fetchColumns(connectionId, db, schema, table);
-      const sorted = cols.sort((a, b) => a.position - b.position);
-      cacheTableColumns({ connectionId, db, schema, table }, sorted);
+      const target = { connectionId, db, schema, table };
+      const sorted = await loadTableColumns(
+        target,
+        async () => (await fetchColumns(connectionId, db, schema, table)).sort((a, b) => a.position - b.position),
+        true,
+      );
       setColumns(sorted);
       setStructureRevision((revision) => revision + 1);
     } finally {
@@ -445,10 +453,11 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     }
 
     setStructLoading(true);
-    fetchColumns(connectionId, db, schema, table)
-      .then((cols) => {
-        const sorted = cols.sort((a, b) => a.position - b.position);
-        cacheTableColumns(target, sorted);
+    loadTableColumns(
+      target,
+      async () => (await fetchColumns(connectionId, db, schema, table)).sort((a, b) => a.position - b.position),
+    )
+      .then((sorted) => {
         if (!cancelled) setColumns(sorted);
       })
       .catch(() => {
@@ -489,9 +498,12 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     }
 
     setLoading(true);
-    fetchTableRows(connectionId, db, schema, table, PAGE_SIZE, offset, orderBy, appliedWhere || undefined)
+    loadTableRows(
+      target,
+      () => fetchTableRows(connectionId, db, schema, table, PAGE_SIZE, offset, orderBy, appliedWhere || undefined),
+      forceRefresh,
+    )
       .then((result) => {
-        cacheTableRows(target, result);
         if (!cancelled) {
           setData(result);
         }

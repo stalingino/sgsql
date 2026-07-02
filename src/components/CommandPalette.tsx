@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Database, Table2, Eye, Loader2, Search } from "lucide-react";
-import { fetchDatabases, fetchTables } from "../lib/schema";
 import { getSearchLru, touchSearchLru } from "../lib/searchLru";
 import { fuzzySearchResults } from "../lib/fuzzySearch";
+import {
+  comparePaletteNames,
+  getCachedCatalog,
+  getCachedDatabases,
+  peekCachedCatalog,
+  peekCachedDatabases,
+} from "../lib/commandPaletteCache";
+import { useSchemaRevision } from "../lib/schemaRevision";
+import type { CatalogInfo } from "../lib/schema";
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -32,6 +40,28 @@ function defaultSchema(type: "postgres" | "mysql" | "sqlite"): string {
   return "";
 }
 
+function paletteItems(
+  catalog: CatalogInfo,
+  connectionType: "postgres" | "mysql" | "sqlite",
+  preferredDb: string,
+): PaletteItem[] {
+  const items: PaletteItem[] = catalog.databases.map((db) => ({ kind: "db", db, schema: "", name: db, score: 0 }));
+  const orderedTables = [...catalog.tables].sort((a, b) => {
+    if ((a.db === preferredDb) !== (b.db === preferredDb)) return a.db === preferredDb ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  for (const table of orderedTables) {
+    items.push({
+      kind: table.type === "view" ? "view" : "table",
+      db: table.db,
+      schema: table.schema || defaultSchema(connectionType),
+      name: table.name,
+      score: 0,
+    });
+  }
+  return items;
+}
+
 /* ── Component ─────────────────────────────────────────── */
 
 export function CommandPalette({
@@ -45,53 +75,35 @@ export function CommandPalette({
   onSelectTable,
   onClose,
 }: CommandPaletteProps) {
+  const schemaRevision = useSchemaRevision(connectionId);
+  const preferredDb = currentDatabase || connectionDatabase;
+  const initialCatalog = mode === "db-only"
+    ? (() => {
+        const databases = peekCachedDatabases(connectionId, schemaRevision);
+        return databases ? { databases, tables: [] } satisfies CatalogInfo : undefined;
+      })()
+    : peekCachedCatalog(connectionId, connectionDatabase, schemaRevision);
   const [query, setQuery] = useState("");
-  const [items, setItems] = useState<PaletteItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [items, setItems] = useState<PaletteItem[]>(() => initialCatalog ? paletteItems(initialCatalog, connectionType, preferredDb) : []);
+  const [loading, setLoading] = useState(!initialCatalog);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const lruScope = cacheKey || connectionId;
   const [recentItems, setRecentItems] = useState(() => getSearchLru(lruScope));
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const schema = defaultSchema(connectionType);
-
-  // Load all databases and their tables on mount
+  // The sidecar returns the whole searchable catalog in one request. Keep the
+  // promise cached across palette mounts and invalidate it with schema changes.
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
-      setLoading(true);
+      if (!initialCatalog) setLoading(true);
       try {
-        const dbs = await fetchDatabases(connectionId);
-        const allItems: PaletteItem[] = [];
-
-        // Add databases
-        for (const db of dbs) {
-          allItems.push({ kind: "db", db, schema: "", name: db, score: 0 });
-        }
-
-        // Fetch tables only in "all" mode
-        if (mode !== "db-only") {
-          const preferredDb = currentDatabase || connectionDatabase;
-          const orderedDbs = [preferredDb, ...dbs.filter((d) => d !== preferredDb)];
-          for (const db of orderedDbs) {
-            try {
-              const tables = await fetchTables(connectionId, db, schema);
-              for (const t of tables) {
-                allItems.push({
-                  kind: t.type === "view" ? "view" : "table",
-                  db,
-                  schema,
-                  name: t.name,
-                  score: 0,
-                });
-              }
-            } catch {
-              // skip dbs we can't read tables from
-            }
-          }
-        }
+        const catalog = mode === "db-only"
+          ? { databases: await getCachedDatabases(connectionId, schemaRevision), tables: [] }
+          : await getCachedCatalog(connectionId, connectionDatabase, schemaRevision);
+        const allItems = paletteItems(catalog, connectionType, preferredDb);
 
         if (!cancelled) {
           setItems(allItems);
@@ -103,7 +115,7 @@ export function CommandPalette({
     })();
 
     return () => { cancelled = true; };
-  }, [connectionId, connectionDatabase, schema, mode]);
+  }, [connectionId, connectionType, connectionDatabase, currentDatabase, mode, schemaRevision]);
 
   // Focus input on mount
   useEffect(() => {
@@ -115,8 +127,8 @@ export function CommandPalette({
     [],
   );
 
-  // Keep fuzzy relevance primary while searching, then use recency. With an
-  // empty query, recently opened objects are shown first.
+  // While searching, prefer name prefixes and shorter names before fuzzy
+  // relevance. With an empty query, recently opened objects stay first.
   const sortedFiltered = useMemo(() => {
     const search = query.trim();
     const recency = new Map(recentItems.map((key, index) => [key, index]));
@@ -132,11 +144,15 @@ export function CommandPalette({
       keys: [{ name: "name", weight: 2 }, "qualifiedName", "db", "schema"],
     })
       .sort((a, b) => {
+        if (search) {
+          const nameOrder = comparePaletteNames(a.item.item.name, b.item.item.name, search);
+          if (nameOrder !== 0) return nameOrder;
+          if (a.score !== b.score) return a.score - b.score;
+        }
+
         const aIsCurrentTable = a.item.item.kind !== "db" && a.item.item.db === currentDatabase;
         const bIsCurrentTable = b.item.item.kind !== "db" && b.item.item.db === currentDatabase;
         if (aIsCurrentTable !== bIsCurrentTable) return aIsCurrentTable ? -1 : 1;
-
-        if (search && a.score !== b.score) return a.score - b.score;
 
         const aRecent = recency.get(itemKey(a.item.item)) ?? Number.MAX_SAFE_INTEGER;
         const bRecent = recency.get(itemKey(b.item.item)) ?? Number.MAX_SAFE_INTEGER;
@@ -147,7 +163,7 @@ export function CommandPalette({
         return a.refIndex - b.refIndex;
       })
       .map((result) => result.item.item);
-  }, [items, itemKey, query, recentItems]);
+  }, [currentDatabase, items, itemKey, query, recentItems]);
 
   // Reset selection when query changes
   useEffect(() => {
@@ -269,7 +285,7 @@ export function CommandPalette({
           {!loading &&
             sortedFiltered.map((item, i) => (
               <div
-                key={`${item.kind}:${item.db}:${item.name}`}
+                key={`${item.kind}:${item.db}:${item.schema}:${item.name}`}
                 className={`flex items-center gap-2.5 px-4 py-2 cursor-pointer transition-colors ${
                   i === selectedIdx ? "bg-accent/20" : "hover:bg-bg-hover"
                 }`}

@@ -8,6 +8,11 @@ export interface TableInfo {
   type: "table" | "view";
 }
 
+export interface CatalogInfo {
+  databases: string[];
+  tables: Array<TableInfo & { db: string; schema: string }>;
+}
+
 export interface ColumnInfo {
   name: string;
   dataType: string;
@@ -128,6 +133,22 @@ export async function fetchTables(
     ...table,
     type: String(table.type).toUpperCase().includes("VIEW") ? "view" : "table",
   }));
+}
+
+export async function fetchCatalog(
+  connId: string,
+  db: string,
+): Promise<CatalogInfo> {
+  const result = await sidecarFetch<{ databases: string[]; tables: Array<{ db: string; schema: string; name: string; type: string }> }>(
+    `/schema/${connId}/catalog?db=${encodeURIComponent(db)}`,
+  );
+  return {
+    databases: result.databases,
+    tables: result.tables.map((table) => ({
+      ...table,
+      type: String(table.type).toUpperCase().includes("VIEW") ? "view" : "table",
+    })),
+  };
 }
 
 export interface TableRowsResult {
