@@ -150,7 +150,10 @@ function useResizableColumns(
   columnKeys: string[],
   autoSizeData?: { columns: string[]; rows?: unknown[][] },
 ) {
-  const [widths, setWidths] = useState<Record<string, number>>({});
+  const [widths, setWidths] = useState<Record<string, number>>(() => {
+    if (autoSizeData) return estimateColWidths(autoSizeData.columns, autoSizeData.rows);
+    return Object.fromEntries(columnKeys.map((key) => [key, DEFAULT_COL_WIDTH]));
+  });
   const widthsRef = useRef<Record<string, number>>({});
   const tableRef = useRef<HTMLTableElement | null>(null);
   const dragRef = useRef<{ col: string; startX: number; startW: number } | null>(null);

@@ -28,6 +28,12 @@ import { useEditStore, buildRowKey, tableRefreshKey } from "../lib/editStore";
 import { ResultGrid, type SortState, type CellSelection, type CellRevealRequest } from "./ResultGrid";
 import { getConfig } from "../lib/config";
 import { parseDefaultOrderBy } from "../lib/defaultOrder";
+import {
+  cacheTableColumns,
+  cacheTableRows,
+  getCachedTableColumns,
+  getCachedTableRows,
+} from "../lib/tableDataCache";
 import { HighlightedSQL } from "../lib/highlightSQL";
 import { FilterPanel, type FilterRow, createFilter, buildWhereClause } from "./FilterPanel";
 import { SchemaEditor } from "./SchemaEditor";
@@ -127,7 +133,10 @@ function useResizableColumns(
   columnKeys: string[],
   autoSizeData?: { columns: string[]; rows?: unknown[][] },
 ) {
-  const [widths, setWidths] = useState<Record<string, number>>({});
+  const [widths, setWidths] = useState<Record<string, number>>(() => {
+    if (autoSizeData) return estimateColWidths(autoSizeData.columns, autoSizeData.rows);
+    return Object.fromEntries(columnKeys.map((key) => [key, DEFAULT_COL_WIDTH]));
+  });
   const widthsRef = useRef<Record<string, number>>({});
   const tableRef = useRef<HTMLTableElement | null>(null);
   const dragRef = useRef<{ col: string; startX: number; startW: number } | null>(null);
@@ -267,6 +276,20 @@ function ResizableTh({
 /* ── Main component ────────────────────────────────────── */
 
 export function DataTable({ connectionId, connectionType, db, schema, table, onCellSelect, revealCell, viewMode, onViewModeChange }: DataTableProps) {
+  const initialSort = parseDefaultOrderBy(getConfig().settings?.defaultOrderBy);
+  const refreshKey = tableRefreshKey({ connectionId, db, schema, table });
+  const tableRevision = useEditStore((s) => s.tableRevisions.get(refreshKey) ?? 0);
+  const [sort, setSort] = useState<SortState | null>(initialSort);
+  const [initialData] = useState(() => getCachedTableRows({
+    connectionId,
+    db,
+    schema,
+    table,
+    offset: 0,
+    orderBy: initialSort ? `${initialSort.column} ${initialSort.dir}` : undefined,
+    tableRevision,
+  }));
+  const [initialColumns] = useState(() => getCachedTableColumns({ connectionId, db, schema, table }));
   const [internalMode, setInternalMode] = useState<ViewMode>(viewMode ?? "data");
   const mode = viewMode ?? internalMode;
   const changeMode = (next: ViewMode) => {
@@ -274,10 +297,10 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     onViewModeChange?.(next);
     if (next === "structure") onCellSelect?.(null);
   };
-  const [data, setData] = useState<TableRowsResult | null>(null);
-  const [columns, setColumns] = useState<ColumnInfo[] | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [structLoading, setStructLoading] = useState(true);
+  const [data, setData] = useState<TableRowsResult | null>(initialData ?? null);
+  const [columns, setColumns] = useState<ColumnInfo[] | null>(initialColumns ?? null);
+  const [loading, setLoading] = useState(!initialData);
+  const [structLoading, setStructLoading] = useState(!initialColumns);
   const [structureRevision, setStructureRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
@@ -288,16 +311,11 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   const [sqlPreview, setSqlPreview] = useState(false);
   const [schemaDdlOpen, setSchemaDdlOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [sort, setSort] = useState<SortState | null>(() =>
-    parseDefaultOrderBy(getConfig().settings?.defaultOrderBy),
-  );
-
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
-  const refreshKey = tableRefreshKey({ connectionId, db, schema, table });
-  const tableRevision = useEditStore((s) => s.tableRevisions.get(refreshKey) ?? 0);
 
   const addLogEntryRef = useRef(useQueryLog.getState().addEntry);
   addLogEntryRef.current = useQueryLog.getState().addEntry;
+  const lastFilterRefreshRevisionRef = useRef(filterRefreshRevision);
 
   const pkColumns = useMemo(
     () => columns?.filter((c) => c.isPk).map((c) => c.name) ?? [],
@@ -410,7 +428,9 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     setStructLoading(true);
     try {
       const cols = await fetchColumns(connectionId, db, schema, table);
-      setColumns(cols.sort((a, b) => a.position - b.position));
+      const sorted = cols.sort((a, b) => a.position - b.position);
+      cacheTableColumns({ connectionId, db, schema, table }, sorted);
+      setColumns(sorted);
       setStructureRevision((revision) => revision + 1);
     } finally {
       setStructLoading(false);
@@ -419,11 +439,20 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
 
   useEffect(() => {
     let cancelled = false;
-    setStructLoading(true);
+    const target = { connectionId, db, schema, table };
+    const cached = getCachedTableColumns(target);
+    if (cached) {
+      setColumns(cached);
+      setStructLoading(false);
+      return;
+    }
 
+    setStructLoading(true);
     fetchColumns(connectionId, db, schema, table)
       .then((cols) => {
-        if (!cancelled) setColumns(cols.sort((a, b) => a.position - b.position));
+        const sorted = cols.sort((a, b) => a.position - b.position);
+        cacheTableColumns(target, sorted);
+        if (!cancelled) setColumns(sorted);
       })
       .catch(() => {
         if (!cancelled) setColumns(null);
@@ -438,13 +467,35 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   // Fetch data rows
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
     setError(null);
 
     const orderBy = sort ? `${sort.column} ${sort.dir}` : undefined;
+    const target = {
+      connectionId,
+      db,
+      schema,
+      table,
+      offset,
+      orderBy,
+      where: appliedWhere || undefined,
+      tableRevision,
+    };
+    const forceRefresh = lastFilterRefreshRevisionRef.current !== filterRefreshRevision;
+    lastFilterRefreshRevisionRef.current = filterRefreshRevision;
+    if (!forceRefresh) {
+      const cached = getCachedTableRows(target);
+      if (cached) {
+        setData(cached);
+        setLoading(false);
+        return;
+      }
+    }
+
+    setLoading(true);
     const start = performance.now();
     fetchTableRows(connectionId, db, schema, table, PAGE_SIZE, offset, orderBy, appliedWhere || undefined)
       .then((result) => {
+        cacheTableRows(target, result);
         if (!cancelled) {
           setData(result);
           addLogEntryRef.current({
