@@ -43,3 +43,21 @@ export function resolveConnectionDropFolder(
   return [hoveredFolder, projectedFolder, targetFolder]
     .find((folder): folder is string => !!folder && folders.includes(folder)) ?? null;
 }
+
+/**
+ * Move an item between folders without interpreting a filtered list as an
+ * ordering operation. Existing items keep their relative order and the moved
+ * item becomes the last item in its destination folder.
+ */
+export function moveFilteredConnectionToFolder<T extends { id: string; group: string }>(
+  items: T[],
+  itemId: string,
+  destinationFolder: string,
+): T[] {
+  const item = items.find((candidate) => candidate.id === itemId);
+  if (!item || item.group === destinationFolder) return items;
+  return [
+    ...items.filter((candidate) => candidate.id !== itemId),
+    { ...item, group: destinationFolder },
+  ];
+}

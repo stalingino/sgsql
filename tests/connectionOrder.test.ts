@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { reconcileItemGroup, resolveConnectionDropFolder } from "../src/lib/connectionOrder";
+import {
+  moveFilteredConnectionToFolder,
+  reconcileItemGroup,
+  resolveConnectionDropFolder,
+} from "../src/lib/connectionOrder";
 
 describe("connection folder ordering", () => {
   test("moves a connection into the folder identified by the drop target", () => {
@@ -35,5 +39,20 @@ describe("connection folder ordering", () => {
       "folder-order",
       "Connections",
     )).toBe("Production");
+  });
+
+  test("moves a filtered connection without reordering the remaining items", () => {
+    const items = [
+      { id: "a", group: "Connections" },
+      { id: "hidden", group: "Production" },
+      { id: "b", group: "Connections" },
+    ];
+
+    expect(moveFilteredConnectionToFolder(items, "b", "Production")).toEqual([
+      { id: "a", group: "Connections" },
+      { id: "hidden", group: "Production" },
+      { id: "b", group: "Production" },
+    ]);
+    expect(moveFilteredConnectionToFolder(items, "a", "Connections")).toBe(items);
   });
 });

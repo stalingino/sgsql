@@ -24,6 +24,7 @@ import {
   Pencil,
   X,
   FolderPlus,
+  GripVertical,
   Menu,
   Upload,
   Download,
@@ -41,8 +42,17 @@ import {
 import { formatConnectionUrl, isConnectionUrl, parseConnectionUrl } from "../lib/parseConnectionUrl";
 import { openConnection } from "../lib/schema";
 import { useWindowPersist } from "../lib/useWindowPersist";
-import { reconcileItemGroup, resolveConnectionDropFolder } from "../lib/connectionOrder";
+import {
+  moveFilteredConnectionToFolder,
+  reconcileItemGroup,
+  resolveConnectionDropFolder,
+} from "../lib/connectionOrder";
 import { fuzzySearch } from "../lib/fuzzySearch";
+import {
+  COLLAPSED_CONNECTION_FOLDERS_KEY,
+  decodeCollapsedConnectionFolders,
+  encodeCollapsedConnectionFolders,
+} from "../lib/connectionFolderState";
 
 export function ConnectionManagerWindow() {
   useWindowPersist();
@@ -59,7 +69,13 @@ export function ConnectionManagerWindow() {
   const [statusMsg, setStatusMsg] = useState<{ type: "url" | "ok" | "error"; text: string } | null>(null);
   const [filter, setFilter] = useState("");
   const [contextMenu, setContextMenu] = useState<{ profile: ConnectionProfile; x: number; y: number } | null>(null);
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try {
+      return decodeCollapsedConnectionFolders(localStorage.getItem(COLLAPSED_CONNECTION_FOLDERS_KEY));
+    } catch {
+      return new Set();
+    }
+  });
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
@@ -119,6 +135,17 @@ export function ConnectionManagerWindow() {
     if (folderDialogOpen) requestAnimationFrame(() => folderNameRef.current?.focus());
   }, [folderDialogOpen]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        COLLAPSED_CONNECTION_FOLDERS_KEY,
+        encodeCollapsedConnectionFolders(collapsed),
+      );
+    } catch {
+      // A read-only webview storage should not prevent folder navigation.
+    }
+  }, [collapsed]);
+
   const isFiltering = filter.trim().length > 0;
   const visibleProfiles = dragPreviewProfiles ?? profiles;
 
@@ -141,7 +168,6 @@ export function ConnectionManagerWindow() {
     const out: ListRow[] = [];
     for (const g of folders) {
       const members = filteredProfiles.filter((p) => (p.group || DEFAULT_CONNECTION_FOLDER) === g);
-      if (isFiltering && members.length === 0) continue;
       out.push({ type: "group", name: g, count: members.length });
       // While filtering, force-expand so matches are always visible.
       if (isFiltering || !collapsed.has(g)) {
@@ -277,18 +303,21 @@ export function ConnectionManagerWindow() {
       e.preventDefault();
       if (!row) return;
       if (row.type === "group") {
-        if (!collapsed.has(row.name)) toggleGroup(row.name);
+        if (!isFiltering && !collapsed.has(row.name)) toggleGroup(row.name);
       } else {
         const g = row.profile.group || DEFAULT_CONNECTION_FOLDER;
-        if (!collapsed.has(g)) toggleGroup(g);
+        if (!isFiltering && !collapsed.has(g)) toggleGroup(g);
         setFocusKey(`group:${g}`);
         listRef.current?.focus();
       }
     } else if (e.key === "Enter") {
       e.preventDefault();
       if (!row) return;
-      if (row.type === "group") toggleGroup(row.name);
-      else void connectSavedProfile(row.profile);
+      if (row.type === "group") {
+        if (!isFiltering) toggleGroup(row.name);
+      } else {
+        void connectSavedProfile(row.profile);
+      }
     }
   }
 
@@ -505,6 +534,21 @@ export function ConnectionManagerWindow() {
     if (!source || source.type !== "connection" || !target || target.id === source.id) return;
     const folder = typeof target.data?.folder === "string" ? target.data.folder : null;
 
+    if (isFiltering) {
+      const sourceId = String(source.id).replace(/^connection:/, "");
+      const dragged = profiles.find((profile) => profile.id === sourceId);
+      const targetFolder = resolveConnectionDropFolder(folders, folder, null, folder);
+      if (!dragged || !targetFolder) return;
+
+      // Reordering a filtered subset is ambiguous because hidden siblings have
+      // no visible insertion point. Cross-folder moves are deterministic: keep
+      // every existing relative order and append the connection to the folder.
+      const previewProfiles = moveFilteredConnectionToFolder(profiles, dragged.id, targetFolder);
+      dragPreviewProfilesRef.current = previewProfiles;
+      setDragPreviewProfiles(previewProfiles);
+      return;
+    }
+
     // Follow dnd-kit's controlled multiple-list pattern: update a temporary
     // React-owned projection during dragover. This gives the optimistic plugin
     // fresh groups/indexes, so it animates displacement without reparenting DOM
@@ -557,10 +601,11 @@ export function ConnectionManagerWindow() {
     const previewProfiles = dragPreviewProfilesRef.current;
     dragPreviewProfilesRef.current = null;
     setDragPreviewProfiles(null);
-    if (canceled || !source || !target || isFiltering) return;
+    if (canceled || !source || !target) return;
 
     try {
       if (source.type === "folder") {
+        if (isFiltering) return;
         const folderById = new Map(folders.map((folder) => [folderDndId(folder), folder]));
         const reorderedIds = move([...folderById.keys()], event);
         const reordered = reorderedIds.map((id) => folderById.get(String(id))).filter((folder): folder is string => !!folder);
@@ -569,6 +614,12 @@ export function ConnectionManagerWindow() {
       }
 
       if (source.type !== "connection") return;
+      if (isFiltering) {
+        const sourceId = String(source.id).replace(/^connection:/, "");
+        const originalFolder = profiles.find((profile) => profile.id === sourceId)?.group;
+        const destinationFolder = previewProfiles?.find((profile) => profile.id === sourceId)?.group;
+        if (!originalFolder || !destinationFolder || originalFolder === destinationFolder) return;
+      }
       if (previewProfiles?.length === profiles.length) await reorderProfiles(previewProfiles);
     } catch (error) {
       console.error("[connections] could not persist drag order:", error);
@@ -680,7 +731,6 @@ export function ConnectionManagerWindow() {
           >
             {folders.map((folder, folderIndex) => {
               const members = filteredProfiles.filter((profile) => profile.group === folder);
-              if (isFiltering && members.length === 0) return null;
               const isOpen = isFiltering || !collapsed.has(folder);
               return (
                 <SortableFolder
@@ -690,8 +740,12 @@ export function ConnectionManagerWindow() {
                   count={members.length}
                   open={isOpen}
                   focused={focusKey === `group:${folder}`}
-                  disabled={isFiltering}
-                  onToggle={() => { toggleGroup(folder); setFocusKey(`group:${folder}`); listRef.current?.focus(); }}
+                  dragDisabled={isFiltering}
+                  onToggle={() => {
+                    if (!isFiltering) toggleGroup(folder);
+                    setFocusKey(`group:${folder}`);
+                    listRef.current?.focus();
+                  }}
                 >
                   {isOpen && members.map((profile, index) => (
                     <SortableConnection
@@ -700,7 +754,6 @@ export function ConnectionManagerWindow() {
                       index={index}
                       folder={folder}
                       focused={focusKey === `conn:${profile.id}`}
-                      disabled={isFiltering}
                       isDark={isDark}
                       onFocus={() => { setFocusKey(`conn:${profile.id}`); listRef.current?.focus(); }}
                       onConnect={() => void connectSavedProfile(profile)}
@@ -719,7 +772,7 @@ export function ConnectionManagerWindow() {
               );
             })}
           </DragDropProvider>
-          {rows.length === 0 && loaded && (
+          {filteredProfiles.length === 0 && loaded && (
             <div className="flex flex-col items-center gap-2 px-3 py-8 text-center text-sm text-text-muted">
               <Database size={24} className="opacity-30" />
               {filter ? "No matches" : "No connections yet"}
@@ -1141,7 +1194,7 @@ function SortableFolder({
   count,
   open,
   focused,
-  disabled,
+  dragDisabled,
   onToggle,
   children,
 }: {
@@ -1150,7 +1203,7 @@ function SortableFolder({
   count: number;
   open: boolean;
   focused: boolean;
-  disabled: boolean;
+  dragDisabled: boolean;
   onToggle: () => void;
   children: React.ReactNode;
 }) {
@@ -1164,26 +1217,43 @@ function SortableFolder({
     // row priority so a row wins when both targets overlap; the folder still
     // accepts drops over its header, whitespace, and empty body.
     collisionPriority: 1, // CollisionPriority.Low
-    disabled,
+    disabled: { draggable: dragDisabled },
     data: { folder },
   });
 
   return (
     <div ref={ref} className={`rounded-md transition-opacity ${isDragSource ? "opacity-45" : ""}`}>
       <div
-        ref={handleRef}
         data-rowkey={`group:${folder}`}
         role="treeitem"
         aria-expanded={open}
-        onClick={onToggle}
         className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide transition-colors ${isDragSource ? "cursor-grabbing" : "cursor-default"} ${
           isDropTarget ? "bg-accent/15 ring-1 ring-accent/60" : focused ? "bg-bg-hover ring-1 ring-accent/50" : "text-text-muted hover:bg-bg-hover/50"
         }`}
       >
-        {open ? <ChevronDown size={12} className="shrink-0" /> : <ChevronRight size={12} className="shrink-0" />}
-        {open ? <FolderOpen size={12} className="shrink-0 text-accent" /> : <Folder size={12} className="shrink-0" />}
-        <span className="min-w-0 flex-1 truncate text-text-secondary">{folder}</span>
-        <span className="shrink-0 text-[10px] font-normal text-text-muted">{count}</span>
+        <button
+          type="button"
+          onClick={onToggle}
+          disabled={dragDisabled}
+          aria-label={`${open ? "Collapse" : "Expand"} ${folder}`}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left disabled:cursor-default"
+        >
+          {open ? <ChevronDown size={12} className="shrink-0" /> : <ChevronRight size={12} className="shrink-0" />}
+          {open ? <FolderOpen size={12} className="shrink-0 text-accent" /> : <Folder size={12} className="shrink-0" />}
+          <span className="min-w-0 flex-1 truncate text-text-secondary">{folder}</span>
+          <span className="shrink-0 text-[10px] font-normal text-text-muted">{count}</span>
+        </button>
+        {!dragDisabled && (
+          <button
+            ref={handleRef}
+            type="button"
+            title={`Move ${folder} folder`}
+            aria-label={`Move ${folder} folder`}
+            className="-mr-1 rounded p-0.5 text-text-muted hover:bg-bg-secondary hover:text-text-primary cursor-grab"
+          >
+            <GripVertical size={12} />
+          </button>
+        )}
       </div>
       {children}
     </div>
@@ -1195,7 +1265,6 @@ function SortableConnection({
   index,
   folder,
   focused,
-  disabled,
   isDark,
   onFocus,
   onConnect,
@@ -1206,7 +1275,6 @@ function SortableConnection({
   index: number;
   folder: string;
   focused: boolean;
-  disabled: boolean;
   isDark: boolean;
   onFocus: () => void;
   onConnect: () => void;
@@ -1219,7 +1287,6 @@ function SortableConnection({
     group: folderDndId(folder),
     type: "connection",
     accept: "connection",
-    disabled,
     data: { profileId: profile.id, folder },
   });
   const env = ENV_LABELS[profile.env] ?? ENV_LABELS[""];
