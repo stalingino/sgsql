@@ -305,13 +305,18 @@ function App() {
 
   useEffect(() => {
     const unlisten = getCurrentWindow().onCloseRequested(async () => {
-      for (const tab of tabsRef.current) {
-        if (tab.connectionId) {
-          await closeConnection(tab.connectionId).catch(() => {});
-        }
-      }
+      // Reset the UI and duplicate-event guard before closing connections. The
+      // connection manager is shown immediately by Tauri, so a user can start
+      // reconnecting while these requests are still in flight.
+      const tabsToClose = tabsRef.current;
+      tabsRef.current = [];
+      openedConnectionIdsRef.current.clear();
       setTabs([]);
       setActiveTabId(null);
+
+      await Promise.all(tabsToClose.map((tab) =>
+        tab.connectionId ? closeConnection(tab.connectionId).catch(() => {}) : Promise.resolve(),
+      ));
     });
     return () => { unlisten.then((fn) => fn()); };
   }, []);

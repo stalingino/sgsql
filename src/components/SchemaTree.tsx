@@ -21,6 +21,7 @@ import { notifySchemaChanged, useSchemaRevision } from "../lib/schemaRevision";
 import { CreateTableModal } from "./CreateTableModal";
 import { HighlightedSQL } from "../lib/highlightSQL";
 import { fuzzySearch } from "../lib/fuzzySearch";
+import { ConnectionSchemaCache, type SchemaCache } from "../lib/schemaCache";
 
 /* ── Props ──────────────────────────────────────────────── */
 
@@ -37,9 +38,6 @@ interface SchemaTreeProps {
   onTableDrop?: (db: string, schema: string, table: string) => void;
   tableListVisible?: boolean;
 }
-
-/* ── Layered cache ──────────────────────────────────────── */
-type SchemaCache = Map<string, Map<string, TableInfo[]>>;
 
 function defaultSchema(type: "postgres" | "mysql" | "sqlite"): string {
   if (type === "postgres") return "public";
@@ -62,23 +60,21 @@ export function SchemaTree({
   onTableDrop,
   tableListVisible = true,
 }: SchemaTreeProps) {
-  const cacheRef = useRef<SchemaCache>(new Map());
+  const cachesRef = useRef(new ConnectionSchemaCache<TableInfo>());
   const schemaRevision = useSchemaRevision(connectionId);
+  const cache = cachesRef.current.forConnection(connectionId, schemaRevision);
   const [schemas, setSchemas] = useState<string[]>([defaultSchema(connectionType)]);
   const [selectedSchemas, setSelectedSchemas] = useState<Record<string, string>>({});
   const [createOpen, setCreateOpen] = useState(false);
   const draggedDbRef = useRef<string | null>(null);
-  const schema = activeDb ? selectedSchemas[activeDb] ?? defaultSchema(connectionType) : defaultSchema(connectionType);
-
-  // Reset cache when connection changes
-  useEffect(() => {
-    cacheRef.current = new Map();
-  }, [connectionId, schemaRevision]);
+  const schemaSelectionKey = activeDb ? `${connectionId}\u0000${activeDb}` : "";
+  const schema = activeDb ? selectedSchemas[schemaSelectionKey] ?? defaultSchema(connectionType) : defaultSchema(connectionType);
 
   useEffect(() => {
     if (!activeDb || connectionType !== "postgres") { setSchemas([defaultSchema(connectionType)]); return; }
     let cancelled = false;
-    fetchSchemas(connectionId, activeDb).then((items) => { if (!cancelled) { const next = items.length ? items : ["public"]; setSchemas(next); setSelectedSchemas((current) => next.includes(current[activeDb]) ? current : { ...current, [activeDb]: next[0] }); } }).catch(() => { if (!cancelled) setSchemas(["public"]); });
+    const selectionKey = `${connectionId}\u0000${activeDb}`;
+    fetchSchemas(connectionId, activeDb).then((items) => { if (!cancelled) { const next = items.length ? items : ["public"]; setSchemas(next); setSelectedSchemas((current) => next.includes(current[selectionKey]) ? current : { ...current, [selectionKey]: next[0] }); } }).catch(() => { if (!cancelled) setSchemas(["public"]); });
     return () => { cancelled = true; };
   }, [connectionId, connectionType, activeDb, schemaRevision]);
 
@@ -136,12 +132,12 @@ export function SchemaTree({
             schema={schema}
             connectionId={connectionId}
             connectionType={connectionType}
-            cacheRef={cacheRef}
+            cache={cache}
             onTableSelect={onTableSelect}
             onTableDrop={onTableDrop}
             schemaRevision={schemaRevision}
             schemas={schemas}
-            onSchemaChange={(nextSchema) => activeDb && setSelectedSchemas((current) => ({ ...current, [activeDb]: nextSchema }))}
+            onSchemaChange={(nextSchema) => activeDb && setSelectedSchemas((current) => ({ ...current, [schemaSelectionKey]: nextSchema }))}
             onCreate={() => setCreateOpen(true)}
           />
         </ResizableTableList>
@@ -246,7 +242,7 @@ function TableList({
   schema,
   connectionId,
   connectionType,
-  cacheRef,
+  cache,
   onTableSelect,
   onTableDrop,
   schemaRevision,
@@ -258,7 +254,7 @@ function TableList({
   schema: string;
   connectionId: string;
   connectionType: "postgres" | "mysql" | "sqlite";
-  cacheRef: React.RefObject<SchemaCache>;
+  cache: SchemaCache<TableInfo>;
   onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view") => void;
   onTableDrop?: (db: string, schema: string, table: string) => void;
   schemaRevision: number;
@@ -277,7 +273,6 @@ function TableList({
   const [working, setWorking] = useState(false);
   const filterInputRef = useRef<HTMLInputElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
-  const revisionRef = useRef(schemaRevision);
 
   // Clear search when db changes
   useEffect(() => { setQuery(""); setSelectedTableKey(null); }, [db, schema]);
@@ -303,11 +298,7 @@ function TableList({
 
     (async () => {
       try {
-        if (revisionRef.current !== schemaRevision) {
-          cacheRef.current?.clear();
-          revisionRef.current = schemaRevision;
-        }
-        const cached = cacheRef.current?.get(db)?.get(schema);
+        const cached = cache.get(db)?.get(schema);
         if (cached) {
           if (!cancelled) { setTables(cached); setLoading(false); }
           return;
@@ -315,12 +306,10 @@ function TableList({
 
         const result = await fetchTables(connectionId, db, schema);
 
-        if (cacheRef.current) {
-          if (!cacheRef.current.has(db)) {
-            cacheRef.current.set(db, new Map());
-          }
-          cacheRef.current.get(db)!.set(schema, result);
+        if (!cache.has(db)) {
+          cache.set(db, new Map());
         }
+        cache.get(db)!.set(schema, result);
 
         if (!cancelled) setTables(result);
       } catch (err: unknown) {
@@ -331,7 +320,7 @@ function TableList({
     })();
 
     return () => { cancelled = true; };
-  }, [connectionId, connectionType, db, schema, cacheRef, schemaRevision]);
+  }, [connectionId, connectionType, db, schema, cache, schemaRevision]);
 
   const filtered = useMemo(
     () => fuzzySearch(tables, query, { keys: [{ name: "name", weight: 2 }, "type"] }),

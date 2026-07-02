@@ -59,7 +59,10 @@ export async function closeConnection(id: string): Promise<boolean> {
 
   await record.entry.tunnel?.close().catch(() => {});
 
-  pool.delete(id);
+  // A new connection with the same profile id may have been opened while the
+  // old client's asynchronous shutdown was in progress. Never delete that
+  // replacement from the pool.
+  if (pool.get(id) === record) pool.delete(id);
   return true;
 }
 
