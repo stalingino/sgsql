@@ -70,10 +70,21 @@ src-tauri/target/release/bundle/macos/SGSql.app
 src-tauri/target/release/bundle/dmg/SGSql_0.1.0_aarch64.dmg
 ```
 
+The macOS bundle and its embedded sidecar are ad-hoc signed for local and trusted
+internal testing. Verify the completed application bundle before sharing it:
+
+```bash
+codesign --verify --deep --strict --verbose=2 \
+  src-tauri/target/release/bundle/macos/SGSql.app
+```
+
 ### Architecture support
 
 The current sidecar build produces `dbsidecar-aarch64-apple-darwin`, so the packaged application supports Apple Silicon Macs only. Intel or universal macOS builds require additional sidecar binaries for their respective targets.
 
 ### Distribution
 
-Local unsigned builds can be used for development and testing. To distribute the application to other users without macOS security warnings, code-sign and notarize the application with an Apple Developer certificate.
+Ad-hoc signed builds can be used for development and trusted internal testing. A
+downloaded build may still require the user to approve it in macOS Privacy &
+Security. To distribute the application without that manual approval, code-sign
+and notarize it with an Apple Developer ID certificate.
