@@ -52,21 +52,3 @@ export function getCachedDatabases(connectionId: string, revision: number): Prom
 export function peekCachedDatabases(connectionId: string, revision: number): string[] | undefined {
   return databases.peek(connectionId, revision);
 }
-
-export function comparePaletteNames(a: string, b: string, query: string): number {
-  const search = query.trim().toLocaleLowerCase();
-  if (!search) return 0;
-  const left = a.toLocaleLowerCase();
-  const right = b.toLocaleLowerCase();
-
-  const leftPrefix = left.startsWith(search);
-  const rightPrefix = right.startsWith(search);
-  if (leftPrefix !== rightPrefix) return leftPrefix ? -1 : 1;
-
-  const leftFirstLetter = left.startsWith(search[0]);
-  const rightFirstLetter = right.startsWith(search[0]);
-  if (leftFirstLetter !== rightFirstLetter) return leftFirstLetter ? -1 : 1;
-
-  if (left.length !== right.length) return left.length - right.length;
-  return left.localeCompare(right);
-}

@@ -47,7 +47,7 @@ import {
   reconcileItemGroup,
   resolveConnectionDropFolder,
 } from "../lib/connectionOrder";
-import { fuzzySearch } from "../lib/fuzzySearch";
+import { fuzzyMatch, fuzzySearch, matchSegments } from "../lib/fuzzySearch";
 import {
   COLLAPSED_CONNECTION_FOLDERS_KEY,
   decodeCollapsedConnectionFolders,
@@ -755,6 +755,7 @@ export function ConnectionManagerWindow() {
                       folder={folder}
                       focused={focusKey === `conn:${profile.id}`}
                       isDark={isDark}
+                      filter={filter}
                       onFocus={() => { setFocusKey(`conn:${profile.id}`); listRef.current?.focus(); }}
                       onConnect={() => void connectSavedProfile(profile)}
                       onEdit={() => void openEditor(profile)}
@@ -1180,6 +1181,18 @@ export function ConnectionManagerWindow() {
   );
 }
 
+function highlightName(name: string, query: string): React.ReactNode {
+  const match = query.trim() ? fuzzyMatch(name, query) : null;
+  if (!match) return name;
+  return matchSegments(name, match.indices).map((segment, i) =>
+    segment.matched ? (
+      <mark key={i} className="bg-accent/25 text-inherit rounded-[2px]">{segment.text}</mark>
+    ) : (
+      <span key={i}>{segment.text}</span>
+    ),
+  );
+}
+
 function folderDndId(folder: string): string {
   return `folder:${folder}`;
 }
@@ -1266,6 +1279,7 @@ function SortableConnection({
   folder,
   focused,
   isDark,
+  filter,
   onFocus,
   onConnect,
   onEdit,
@@ -1276,6 +1290,7 @@ function SortableConnection({
   folder: string;
   focused: boolean;
   isDark: boolean;
+  filter: string;
   onFocus: () => void;
   onConnect: () => void;
   onEdit: () => void;
@@ -1311,7 +1326,9 @@ function SortableConnection({
       }`}
     >
       <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: profile.color }} />
-      <span className="max-w-[42%] shrink-0 truncate font-medium">{profile.name || "Untitled"}</span>
+      <span className="max-w-[42%] shrink-0 truncate font-medium">
+        {profile.name ? highlightName(profile.name, filter) : "Untitled"}
+      </span>
       {env.label && (
         <span className="shrink-0 rounded px-1 py-0.5 text-[9px] font-medium" style={{ backgroundColor: `${envColor}22`, color: envColor }}>
           {env.label}

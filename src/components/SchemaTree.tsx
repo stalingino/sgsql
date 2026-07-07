@@ -20,7 +20,7 @@ import { useEditStore } from "../lib/editStore";
 import { notifySchemaChanged, useSchemaRevision } from "../lib/schemaRevision";
 import { CreateTableModal } from "./CreateTableModal";
 import { HighlightedSQL } from "../lib/highlightSQL";
-import { fuzzySearch } from "../lib/fuzzySearch";
+import { fuzzyMatch, fuzzySearch, matchSegments } from "../lib/fuzzySearch";
 import { ConnectionSchemaCache, type SchemaCache } from "../lib/schemaCache";
 
 /* ── Props ──────────────────────────────────────────────── */
@@ -477,33 +477,15 @@ function TableList({
 /* ── Table node ──────────────────────────────────────────── */
 
 function highlightMatch(name: string, query: string): React.ReactNode {
-  if (!query) return name;
-  const q = query.toLowerCase();
-  const n = name.toLowerCase();
-  const idx = n.indexOf(q);
-  if (idx !== -1) {
-    return (
-      <>
-        {name.slice(0, idx)}
-        <mark className="bg-accent/25 text-inherit rounded-[2px]">{name.slice(idx, idx + q.length)}</mark>
-        {name.slice(idx + q.length)}
-      </>
-    );
-  }
-  // Fuzzy highlight
-  const result: React.ReactNode[] = [];
-  let qi = 0;
-  for (let i = 0; i < name.length; i++) {
-    if (qi < q.length && n[i] === q[qi]) {
-      result.push(
-        <mark key={i} className="bg-accent/25 text-inherit rounded-[2px]">{name[i]}</mark>,
-      );
-      qi++;
-    } else {
-      result.push(name[i]);
-    }
-  }
-  return <>{result}</>;
+  const match = query.trim() ? fuzzyMatch(name, query) : null;
+  if (!match) return name;
+  return matchSegments(name, match.indices).map((segment, i) =>
+    segment.matched ? (
+      <mark key={i} className="bg-accent/25 text-inherit rounded-[2px]">{segment.text}</mark>
+    ) : (
+      <span key={i}>{segment.text}</span>
+    ),
+  );
 }
 
 function TableNode({

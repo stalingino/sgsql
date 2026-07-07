@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Database, Table2, Eye, Loader2, Search } from "lucide-react";
 import { getSearchLru, touchSearchLru } from "../lib/searchLru";
-import { fuzzySearchResults } from "../lib/fuzzySearch";
+import { fuzzyMatch, fuzzySearchResults, matchSegments } from "../lib/fuzzySearch";
 import {
-  comparePaletteNames,
   getCachedCatalog,
   getCachedDatabases,
   peekCachedCatalog,
@@ -38,6 +37,18 @@ function defaultSchema(type: "postgres" | "mysql" | "sqlite"): string {
   if (type === "postgres") return "public";
   if (type === "sqlite") return "main";
   return "";
+}
+
+function highlightName(name: string, query: string): React.ReactNode {
+  const match = query.trim() ? fuzzyMatch(name, query) : null;
+  if (!match) return name;
+  return matchSegments(name, match.indices).map((segment, i) =>
+    segment.matched ? (
+      <mark key={i} className="bg-accent/25 text-inherit rounded-[2px]">{segment.text}</mark>
+    ) : (
+      <span key={i}>{segment.text}</span>
+    ),
+  );
 }
 
 function paletteItems(
@@ -144,11 +155,7 @@ export function CommandPalette({
       keys: [{ name: "name", weight: 2 }, "qualifiedName", "db", "schema"],
     })
       .sort((a, b) => {
-        if (search) {
-          const nameOrder = comparePaletteNames(a.item.item.name, b.item.item.name, search);
-          if (nameOrder !== 0) return nameOrder;
-          if (a.score !== b.score) return a.score - b.score;
-        }
+        if (search && a.score !== b.score) return a.score - b.score;
 
         const aIsCurrentTable = a.item.item.kind !== "db" && a.item.item.db === currentDatabase;
         const bIsCurrentTable = b.item.item.kind !== "db" && b.item.item.db === currentDatabase;
@@ -297,7 +304,7 @@ export function CommandPalette({
                   {item.kind !== "db" && item.db !== currentDatabase && (
                     <span className="text-text-muted">{item.db}.</span>
                   )}
-                  {item.name}
+                  {highlightName(item.name, query)}
                 </span>
                 <span className="text-[10px] text-text-muted shrink-0">
                   {kindLabel(item.kind)}

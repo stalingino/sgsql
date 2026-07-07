@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { comparePaletteNames, RevisionPromiseCache } from "../src/lib/commandPaletteCache";
+import { RevisionPromiseCache } from "../src/lib/commandPaletteCache";
+import { fuzzySearch } from "../src/lib/fuzzySearch";
 
 describe("command palette catalog cache", () => {
   test("deduplicates mounts until the schema revision changes", async () => {
@@ -21,19 +22,21 @@ describe("command palette catalog cache", () => {
 });
 
 describe("command palette ranking", () => {
-  test("prefers full prefixes, then first-letter matches", () => {
+  test("prefers full prefixes, then matches landing on a word boundary", () => {
+    // "audit_users" lands "user" right after a separator (a real word), so it
+    // outranks "xuser" where "user" is just a coincidental tail substring.
     const names = ["audit_users", "user_archive", "xuser", "users"];
-    expect(names.sort((a, b) => comparePaletteNames(a, b, "user"))).toEqual([
+    expect(fuzzySearch(names, "user")).toEqual([
       "users",
       "user_archive",
-      "xuser",
       "audit_users",
+      "xuser",
     ]);
   });
 
   test("prefers the shortest name within the same match class", () => {
     const names = ["accounts_archive", "account", "accounts"];
-    expect(names.sort((a, b) => comparePaletteNames(a, b, "acc"))).toEqual([
+    expect(fuzzySearch(names, "acc")).toEqual([
       "account",
       "accounts",
       "accounts_archive",
