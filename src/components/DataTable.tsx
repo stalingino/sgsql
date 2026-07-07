@@ -596,6 +596,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
       {filtersOpen && mode === "data" && (
         <FilterPanel
           columns={headerColumns}
+          connectionType={connectionType}
           filters={filters}
           onFiltersChange={setFilters}
           onApply={handleApplyFilters}

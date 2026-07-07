@@ -6,6 +6,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { fuzzySearch } from "../lib/fuzzySearch";
+import { getCompletionTarget, quoteCompletionIdentifier } from "../lib/sqlAutocomplete";
 
 /* ── Types ──────────────────────────────────────────────── */
 
@@ -29,6 +30,7 @@ const NO_VALUE_OPS = new Set(["IS NULL", "IS NOT NULL"]);
 
 interface FilterPanelProps {
   columns: string[];
+  connectionType: "postgres" | "mysql" | "sqlite";
   filters: FilterRow[];
   onFiltersChange: (filters: FilterRow[]) => void;
   onApply: () => void;
@@ -98,6 +100,7 @@ export function buildWhereClause(
 
 export function FilterPanel({
   columns,
+  connectionType,
   filters,
   onFiltersChange,
   onApply,
@@ -185,6 +188,7 @@ export function FilterPanel({
             key={f.id}
             filter={f}
             columns={columns}
+            connectionType={connectionType}
             onChange={(patch) => updateFilter(f.id, patch)}
             onRemove={() => removeFilter(f.id)}
             onApply={onApply}
@@ -202,6 +206,7 @@ export function FilterPanel({
 function FilterRowItem({
   filter,
   columns,
+  connectionType,
   onChange,
   onRemove,
   onApply,
@@ -209,6 +214,7 @@ function FilterRowItem({
 }: {
   filter: FilterRow;
   columns: string[];
+  connectionType: "postgres" | "mysql" | "sqlite";
   onChange: (patch: Partial<FilterRow>) => void;
   onRemove: () => void;
   onApply: () => void;
@@ -269,15 +275,14 @@ function FilterRowItem({
       />
 
       {filter.mode === "raw" ? (
-        /* Raw SQL input */
-        <input
-          ref={inputRef}
-          type="text"
+        /* Raw SQL input with column autocomplete */
+        <RawSqlInput
           value={filter.rawSql}
-          onChange={(e) => onChange({ rawSql: e.target.value })}
-          onKeyDown={applyOnEnter}
-          placeholder="e.g. age > 18 AND status = 'active'"
-          className="flex-1 px-2 py-1 text-[11px] font-mono bg-bg-primary border border-border rounded outline-none focus:border-accent transition-colors min-w-0"
+          columns={columns}
+          connectionType={connectionType}
+          onChange={(rawSql) => onChange({ rawSql })}
+          onApply={onApply}
+          inputRef={inputRef}
         />
       ) : (
         /* Column mode: operator + value */
@@ -328,6 +333,159 @@ function FilterRowItem({
       >
         <X size={12} />
       </button>
+    </div>
+  );
+}
+
+/* ── Raw SQL input with column autocomplete ─────────────── */
+
+function RawSqlInput({
+  value,
+  columns,
+  connectionType,
+  onChange,
+  onApply,
+  inputRef,
+}: {
+  value: string;
+  columns: string[];
+  connectionType: "postgres" | "mysql" | "sqlite";
+  onChange: (sql: string) => void;
+  onApply: () => void;
+  inputRef?: React.Ref<HTMLInputElement>;
+}) {
+  const localRef = useRef<HTMLInputElement | null>(null);
+  const activeRowRef = useRef<HTMLDivElement>(null);
+  const pendingCaret = useRef<number | null>(null);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [replaceRange, setReplaceRange] = useState<[number, number]>([0, 0]);
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+
+  // Merge the external first-input ref with the local ref.
+  const setRef = useCallback((node: HTMLInputElement | null) => {
+    localRef.current = node;
+    if (typeof inputRef === "function") inputRef(node);
+    else if (inputRef) (inputRef as React.MutableRefObject<HTMLInputElement | null>).current = node;
+  }, [inputRef]);
+
+  // Place the caret right after an accepted completion once the new value renders.
+  useEffect(() => {
+    if (pendingCaret.current != null && localRef.current) {
+      localRef.current.setSelectionRange(pendingCaret.current, pendingCaret.current);
+      pendingCaret.current = null;
+    }
+  }, [value]);
+
+  useEffect(() => {
+    if (suggestions.length > 0) activeRowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex, suggestions.length]);
+
+  const close = useCallback(() => setSuggestions([]), []);
+
+  const refresh = (sql: string, cursor: number) => {
+    const target = getCompletionTarget(sql, cursor);
+    // No suggestions without a typed prefix, or inside a string literal
+    // (an odd number of quotes before the token means we're inside one).
+    const quotesBefore = (sql.slice(0, target.replaceStart).match(/'/g) ?? []).length;
+    if (!target.prefix || quotesBefore % 2 === 1) {
+      close();
+      return;
+    }
+    const matches = fuzzySearch(columns, target.prefix).slice(0, 12);
+    if (matches.length === 0) {
+      close();
+      return;
+    }
+    setSuggestions(matches);
+    setActiveIndex(0);
+    setReplaceRange([target.replaceStart, target.replaceEnd]);
+    const rect = localRef.current?.getBoundingClientRect();
+    if (rect) setDropdownPos({ top: rect.top - 4, left: rect.left });
+  };
+
+  const accept = (col: string) => {
+    const [start, end] = replaceRange;
+    const insert = quoteCompletionIdentifier(col, connectionType);
+    pendingCaret.current = start + insert.length;
+    onChange(value.slice(0, start) + insert + value.slice(end));
+    close();
+    localRef.current?.focus();
+  };
+
+  const open = suggestions.length > 0;
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (open) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setActiveIndex((i) => Math.min(suggestions.length - 1, i + 1));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setActiveIndex((i) => Math.max(0, i - 1));
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        accept(suggestions[activeIndex]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        close();
+        return;
+      }
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      onApply();
+    }
+  };
+
+  return (
+    <div className="relative flex-1 min-w-0">
+      <input
+        ref={setRef}
+        type="text"
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+          refresh(e.target.value, e.target.selectionStart ?? e.target.value.length);
+        }}
+        onKeyDown={handleKeyDown}
+        onBlur={() => setTimeout(close, 100)}
+        placeholder="e.g. age > 18 AND status = 'active'"
+        className="w-full px-2 py-1 text-[11px] font-mono bg-bg-primary border border-border rounded outline-none focus:border-accent transition-colors"
+      />
+
+      {open && (
+        <div
+          className="fixed z-[9999] w-[220px] max-h-[190px] border border-border rounded bg-bg-primary shadow-xl overflow-y-auto py-0.5"
+          style={{ top: dropdownPos.top, left: dropdownPos.left, transform: "translateY(-100%)" }}
+        >
+          {suggestions.map((col, index) => (
+            <div
+              key={col}
+              ref={index === activeIndex ? activeRowRef : undefined}
+              onMouseEnter={() => setActiveIndex(index)}
+              onMouseDown={(e) => {
+                // Accept on mousedown so the input's blur doesn't close the list first.
+                e.preventDefault();
+                accept(col);
+              }}
+              className={`px-2.5 py-1 text-[11px] font-mono cursor-pointer transition-colors truncate ${
+                index === activeIndex
+                  ? "bg-accent/15 text-accent"
+                  : "text-text-secondary hover:bg-bg-hover"
+              }`}
+            >
+              {col}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
