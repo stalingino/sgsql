@@ -1,20 +1,19 @@
-import { useCallback, useEffect, useRef, useState, useMemo } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ctrlKey } from "../lib/platform";
-import { Loader2, Play, Sparkles, ChevronLeft, ChevronRight, ChevronDown, Columns3, Table2, Layers3 } from "lucide-react";
+import { Loader2, Play, Sparkles, ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
 import { fetchColumns, fetchSchemas, fetchTables, type ColumnInfo, type QueryResult } from "../lib/schema";
 import { useExecutionQueue } from "../lib/executionQueue";
 import { useEditStore } from "../lib/editStore";
-import {
-  buildSqlCompletions,
-  catalogTableKey,
-  findTableReferences,
-  getCompletionTarget,
-  type CatalogTable,
-  type SqlCompletion,
-} from "../lib/sqlAutocomplete";
-import { HighlightedSQL } from "../lib/highlightSQL";
+import { findTableReferences, catalogTableKey, type CatalogTable } from "../lib/sqlAutocomplete";
+import type { MonacoSqlEditorHandle } from "./MonacoSqlEditor";
+import type { EditorCompletionContext } from "../lib/monacoSetup";
+import { dialectToFormatterLanguage, formatSql } from "../lib/sqlFormat";
 import { ResultGrid, type CellSelection, type CellRevealRequest } from "./ResultGrid";
 import { useSchemaRevision } from "../lib/schemaRevision";
+
+// Monaco's core bundle is a few MB — code-split it into its own chunk so
+// app startup isn't penalized for sessions that never open a query tab.
+const MonacoSqlEditor = lazy(() => import("./MonacoSqlEditor"));
 
 interface QueryEditorProps {
   connectionId: string;
@@ -139,72 +138,10 @@ function parseEditableMysqlSource(sql: string, activeDb: string): MysqlTableSour
     : { db: activeDb, table: first };
 }
 
-/** Simple SQL beautifier — uppercase keywords, normalize whitespace. */
-function beautifySql(sql: string): string {
-  const keywords = [
-    "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL",
-    "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE",
-    "TABLE", "ALTER", "DROP", "INDEX", "JOIN", "LEFT", "RIGHT", "INNER",
-    "OUTER", "ON", "AS", "ORDER", "BY", "GROUP", "HAVING", "LIMIT",
-    "OFFSET", "DISTINCT", "UNION", "ALL", "EXISTS", "BETWEEN", "LIKE",
-    "CASE", "WHEN", "THEN", "ELSE", "END", "ASC", "DESC",
-    "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "DEFAULT",
-    "VIEW", "SHOW", "USE", "DESCRIBE", "EXPLAIN", "ANALYZE",
-    "SCHEMA", "DATABASE", "IF", "REPLACE", "COUNT", "SUM", "AVG",
-    "MIN", "MAX", "CASCADE", "CONSTRAINT", "CHECK", "UNIQUE",
-  ];
-  const kw = new Set(keywords);
-
-  // Tokenize preserving strings and identifiers
-  const tokens = sql.split(/(\s+|,|\(|\)|;|'[^']*'|"[^"]*"|`[^`]*`)/g).filter(Boolean);
-  const result: string[] = [];
-  const newlineBefore = new Set(["SELECT", "FROM", "WHERE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "ORDER", "GROUP", "HAVING", "LIMIT", "UNION", "SET", "VALUES", "ON"]);
-
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i];
-    if (/^\s+$/.test(t)) continue; // skip original whitespace
-    const upper = t.toUpperCase();
-    if (kw.has(upper)) {
-      if (newlineBefore.has(upper) && result.length > 0) {
-        result.push("\n" + upper);
-      } else {
-        result.push(upper);
-      }
-    } else {
-      result.push(t);
-    }
-  }
-
-  // Join with spaces, but respect newlines
-  let out = "";
-  for (let i = 0; i < result.length; i++) {
-    const t = result[i];
-    if (t.startsWith("\n")) {
-      out += t;
-    } else if (i > 0 && !result[i - 1].endsWith("\n") && t !== "," && t !== ")" && t !== ";") {
-      out += " " + t;
-    } else {
-      out += t;
-    }
-  }
-
-  return out.trim();
-}
-
 function defaultAutocompleteSchema(type: QueryEditorProps["connectionType"]): string {
   if (type === "postgres") return "public";
   if (type === "sqlite") return "main";
   return "";
-}
-
-function completionPopupPosition(textarea: HTMLTextAreaElement, value: string, cursor: number) {
-  const before = value.slice(0, cursor);
-  const lines = before.split("\n");
-  const column = (lines[lines.length - 1] ?? "").replace(/\t/g, "  ").length;
-  const left = Math.max(8, Math.min(textarea.clientWidth - 380, 12 + column * 7.8 - textarea.scrollLeft));
-  const naturalTop = 12 + lines.length * 19 - textarea.scrollTop;
-  const top = Math.max(26, Math.min(textarea.clientHeight - 150, naturalTop));
-  return { left, top };
 }
 
 /* ── Component ──────────────────────────────────────────── */
@@ -221,17 +158,11 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   const [editorHeight, setEditorHeight] = useState(120);
   const [editableContext, setEditableContext] = useState<EditableTableContext | null>(null);
   const [catalog, setCatalog] = useState<CatalogTable[]>([]);
-  const [catalogLoading, setCatalogLoading] = useState(false);
   const [columnRevision, setColumnRevision] = useState(0);
-  const [completionOpen, setCompletionOpen] = useState(false);
-  const [completionForced, setCompletionForced] = useState(false);
-  const [completionIndex, setCompletionIndex] = useState(0);
-  const [completionPosition, setCompletionPosition] = useState({ left: 12, top: 32 });
   const dataRevision = useEditStore((s) => s.dataRevision);
   const schemaRevision = useSchemaRevision(connectionId);
 
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const preRef = useRef<HTMLPreElement>(null);
+  const editorRef = useRef<MonacoSqlEditorHandle>(null);
   const onSqlChangeRef = useRef(onSqlChange);
   onSqlChangeRef.current = onSqlChange;
   const execQueue = useExecutionQueue((s) => s.execute);
@@ -253,18 +184,12 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   const pendingColumnsRef = useRef<Set<string>>(new Set());
   const metadataGenerationRef = useRef(0);
 
-  // Auto-focus the editor on mount
-  useEffect(() => {
-    textareaRef.current?.focus();
-  }, []);
-
   // Load relation metadata up front. Column metadata remains lazy and is only
   // requested for relations referenced by the active statement.
   useEffect(() => {
     let cancelled = false;
     const fallbackSchema = defaultAutocompleteSchema(connectionType);
     setCatalog([]);
-    setCatalogLoading(true);
     columnCacheRef.current = new Map();
     pendingColumnsRef.current = new Set();
     metadataGenerationRef.current += 1;
@@ -290,9 +215,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
         }
       }));
       if (!cancelled) setCatalog(groups.flat());
-    })().finally(() => {
-      if (!cancelled) setCatalogLoading(false);
-    });
+    })();
 
     return () => { cancelled = true; };
   }, [connectionId, connectionType, activeDb, schemaRevision]);
@@ -340,25 +263,16 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
     }
   }, [connectionId, tableReferences]);
 
-  const completionTarget = useMemo(
-    () => getCompletionTarget(sql, cursorPos, completionForced),
-    [sql, cursorPos, completionForced],
-  );
-  const completions = useMemo(
-    () => buildSqlCompletions({
-      target: completionTarget,
-      catalog,
-      references: tableReferences,
-      columnsByTable: columnCacheRef.current,
-      defaultSchema,
-      dialect: connectionType,
-    }),
-    [completionTarget, catalog, tableReferences, defaultSchema, connectionType, columnRevision],
-  );
-
-  useEffect(() => {
-    setCompletionIndex((index) => Math.min(index, Math.max(0, completions.length - 1)));
-  }, [completions.length]);
+  // Read fresh on every completion request — Monaco calls this at request
+  // time via a ref, so it always sees the latest catalog/columns/etc.
+  // without needing to re-register the (global, per-language) provider.
+  const getCompletionContext = useCallback((): EditorCompletionContext => ({
+    catalog,
+    tableReferences,
+    columnsByTable: columnCacheRef.current,
+    defaultSchema,
+    dialect: connectionType,
+  }), [catalog, tableReferences, defaultSchema, connectionType, columnRevision]);
 
   const resolveEditableContext = useCallback(async (
     executedSql: string,
@@ -453,17 +367,9 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   const runQuery = useCallback(async () => {
     if (loading) return;
 
-    const textarea = textareaRef.current;
-    let queryToRun = "";
-
-    // 1. If text is selected, run selection
-    if (textarea && textarea.selectionStart !== textarea.selectionEnd) {
-      queryToRun = sql.slice(textarea.selectionStart, textarea.selectionEnd).trim();
-    }
-    // 2. Otherwise, run the statement at cursor
-    if (!queryToRun) {
-      queryToRun = getStatementAtCursor(sql, cursorPos);
-    }
+    const selected = editorRef.current?.getSelectionText().trim();
+    // 1. If text is selected, run selection. 2. Otherwise, run the statement at cursor.
+    const queryToRun = selected || getStatementAtCursor(sql, cursorPos);
 
     if (!queryToRun) return;
 
@@ -532,80 +438,21 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
     return () => { cancelled = true; };
   }, [dataRevision, connectionId, activeDb, execQueue, resolveEditableContext, publishRefreshedSelection]);
 
-  const applyCompletion = useCallback((completion: SqlCompletion) => {
-    const nextSql = sql.slice(0, completionTarget.replaceStart) + completion.insertText + sql.slice(completionTarget.replaceEnd);
-    const nextCursor = completionTarget.replaceStart + completion.insertText.length;
-    setSql(nextSql);
-    setCursorPos(nextCursor);
-    setCompletionOpen(false);
-    setCompletionForced(false);
-    onSqlChangeRef.current?.(nextSql);
-    requestAnimationFrame(() => {
-      const textarea = textareaRef.current;
-      if (!textarea) return;
-      textarea.focus();
-      textarea.setSelectionRange(nextCursor, nextCursor);
-    });
-  }, [sql, completionTarget]);
-
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-      e.preventDefault();
-      setCompletionOpen(false);
-      runQuery();
-      return;
-    }
-    if ((e.ctrlKey || e.metaKey) && (e.key === " " || e.code === "Space")) {
-      e.preventDefault();
-      const textarea = textareaRef.current;
-      if (textarea) {
-        const position = textarea.selectionStart;
-        setCursorPos(position);
-        setCompletionPosition(completionPopupPosition(textarea, sql, position));
-      }
-      setCompletionForced(true);
-      setCompletionOpen(true);
-      setCompletionIndex(0);
-      return;
-    }
-    if (!completionOpen) return;
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setCompletionIndex((index) => completions.length ? (index + 1) % completions.length : 0);
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setCompletionIndex((index) => completions.length ? (index - 1 + completions.length) % completions.length : 0);
-    } else if ((e.key === "Enter" || e.key === "Tab") && completions[completionIndex]) {
-      e.preventDefault();
-      applyCompletion(completions[completionIndex]);
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      setCompletionOpen(false);
-      setCompletionForced(false);
-    }
-  }, [runQuery, completionOpen, completions, completionIndex, applyCompletion, sql]);
-
   const handleBeautify = useCallback(() => {
-    const beautified = beautifySql(sql);
-    setSql(beautified);
-    setCompletionOpen(false);
-    setCompletionForced(false);
-    onSqlChangeRef.current?.(beautified);
-  }, [sql]);
+    const value = editorRef.current?.getValue();
+    if (!value?.trim()) return;
+    const beautified = formatSql(value, {
+      language: dialectToFormatterLanguage(connectionType),
+      keywordCase: "upper",
+    });
+    editorRef.current?.setValue(beautified);
+    editorRef.current?.focus();
+  }, [connectionType]);
 
-  const handleSelectionChange = useCallback(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    const position = textarea.selectionStart;
-    setCursorPos(position);
-    setCompletionPosition(completionPopupPosition(textarea, sql, position));
-  }, [sql]);
-
-  const handleEditorClick = useCallback(() => {
-    handleSelectionChange();
-    setCompletionOpen(false);
-    setCompletionForced(false);
-  }, [handleSelectionChange]);
+  const handleEditorChange = useCallback((value: string) => {
+    setSql(value);
+    onSqlChangeRef.current?.(value);
+  }, []);
 
   // Resizable editor pane
   const onDragStart = useCallback((e: React.MouseEvent) => {
@@ -648,93 +495,19 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
       {/* SQL Editor area — resizable */}
       <div className="flex flex-col shrink-0" style={{ height: editorHeight }}>
         <div className="relative flex-1 min-h-0">
-          {/* Syntax-highlighted layer behind the textarea */}
-          <pre
-            ref={preRef}
-            aria-hidden
-            className="pointer-events-none absolute inset-0 p-3 text-[13px] font-mono whitespace-pre-wrap break-words overflow-auto"
-            style={{ color: "transparent" }}
-          >
-            <HighlightedSQL sql={sql || " "} activeRange={activeRange} />
-          </pre>
-          <textarea
-            ref={textareaRef}
-            value={sql}
-            onChange={(e) => {
-              const val = e.target.value;
-              const position = e.target.selectionStart;
-              const target = getCompletionTarget(val, position);
-              setSql(val);
-              onSqlChangeRef.current?.(val);
-              setCursorPos(position);
-              setCompletionForced(false);
-              setCompletionOpen(target.shouldOpen);
-              setCompletionIndex(0);
-              setCompletionPosition(completionPopupPosition(e.target, val, position));
-              // Sync scroll
-              if (preRef.current) preRef.current.scrollTop = e.target.scrollTop;
-            }}
-            onScroll={(e) => {
-              const textarea = e.target as HTMLTextAreaElement;
-              if (preRef.current) preRef.current.scrollTop = textarea.scrollTop;
-              setCompletionPosition(completionPopupPosition(textarea, sql, textarea.selectionStart));
-            }}
-            onClick={handleEditorClick}
-            onSelect={handleSelectionChange}
-            onKeyDown={handleKeyDown}
-            onBlur={(e) => {
-              if ((e.relatedTarget as HTMLElement | null)?.closest("[data-sql-completion]")) return;
-              setCompletionOpen(false);
-              setCompletionForced(false);
-            }}
-            placeholder={`Enter SQL query... (${ctrlKey("↩", "Enter")} to run)`}
-            spellCheck={false}
-            className="absolute inset-0 w-full h-full bg-transparent text-text-primary caret-text-primary text-[13px] font-mono p-3 outline-none placeholder-text-muted z-10 resize-none"
-            style={{ caretColor: "var(--color-text-primary)", color: "transparent" }}
-          />
-          {completionOpen && (completions.length > 0 || completionForced || catalogLoading) && (
-            <div
-              data-sql-completion
-              className="absolute z-30 w-[380px] max-w-[calc(100%-16px)] max-h-64 overflow-y-auto rounded-lg border border-border-light bg-bg-primary shadow-2xl py-1.5 text-[12px] no-select"
-              style={{ left: completionPosition.left, top: completionPosition.top }}
-              onMouseDown={(e) => e.preventDefault()}
-            >
-              {completions.map((completion, index) => (
-                <button
-                  key={completion.key}
-                  type="button"
-                  className={`flex items-start gap-2.5 w-full px-3 py-2 text-left cursor-pointer ${
-                    index === completionIndex ? "bg-accent/15 text-text-primary" : "hover:bg-bg-hover text-text-secondary"
-                  }`}
-                  onMouseEnter={() => setCompletionIndex(index)}
-                  onClick={() => applyCompletion(completion)}
-                >
-                  {completion.kind === "column" ? (
-                    <Columns3 size={13} className="shrink-0 mt-0.5 text-accent" />
-                  ) : completion.kind === "schema" ? (
-                    <Layers3 size={13} className="shrink-0 mt-0.5 text-purple-400" />
-                  ) : (
-                    <Table2 size={13} className="shrink-0 mt-0.5 text-sky-400" />
-                  )}
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-mono text-[12px] text-text-primary">{completion.label}</span>
-                    <span className="block truncate text-[10px] text-text-muted mt-0.5">{completion.detail}</span>
-                  </span>
-                </button>
-              ))}
-              {completions.length === 0 && (
-                <div className="flex items-center gap-2 px-3 py-2 text-text-muted">
-                  {catalogLoading && <Loader2 size={11} className="animate-spin" />}
-                  {catalogLoading ? "Loading schema metadata…" : "No schema suggestions"}
-                </div>
-              )}
-              {completions.length > 0 && (
-                <div className="px-3 pt-2 pb-1 text-[9px] text-text-muted border-t border-border mt-1">
-                  <span>{`↑↓ Navigate · Enter/Tab Insert · Esc Close · ${ctrlKey("Space")} Open`}</span>
-                </div>
-              )}
-            </div>
-          )}
+          <Suspense fallback={<div className="absolute inset-0 flex items-center justify-center text-text-muted text-xs">
+            <Loader2 size={14} className="animate-spin" />
+          </div>}>
+            <MonacoSqlEditor
+              ref={editorRef}
+              defaultValue={initialSql}
+              activeRange={activeRange}
+              onChange={handleEditorChange}
+              onCursorChange={setCursorPos}
+              onRunQuery={runQuery}
+              getCompletionContext={getCompletionContext}
+            />
+          </Suspense>
         </div>
       </div>
 
@@ -771,7 +544,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
         {/* Beautify button */}
         <button
           onClick={handleBeautify}
-          title="Beautify SQL"
+          title={`Beautify SQL (${ctrlKey("⇧⌥", "Shift+Alt")}+F)`}
           className="flex items-center gap-1 px-2 py-1 rounded text-[11px] text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer border border-border"
         >
           <Sparkles size={11} />
@@ -792,11 +565,13 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
         </button>
       </div>
 
-      {/* Drag handle for resizing editor */}
+      {/* Drag handle for resizing editor — thicker hit target with a visible grip. */}
       <div
         onMouseDown={onDragStart}
-        className="h-[3px] shrink-0 cursor-row-resize hover:bg-accent/30 active:bg-accent/50 transition-colors"
-      />
+        className="group h-[7px] shrink-0 cursor-row-resize flex items-center justify-center bg-border/15 hover:bg-accent/25 active:bg-accent/40 transition-colors"
+      >
+        <div className="w-8 h-[3px] rounded-full bg-border-light group-hover:bg-accent transition-colors" />
+      </div>
 
       {/* Results area */}
       <div className="flex-1 flex flex-col min-h-0">

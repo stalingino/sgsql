@@ -62,6 +62,18 @@ function identifierParts(value: string): string[] {
   return value.split(".").map(unquoteIdentifier).filter(Boolean);
 }
 
+// One table reference in a FROM/JOIN list: possibly qualified, possibly
+// quoted, with an optional alias ("db.t", "`a b`", "orders o", "orders AS o").
+const IDENT_PATTERN = "(?:\"[^\"]+\"|`[^`]+`|\\[[^\\]]+\\]|[A-Za-z_$][\\w$]*)";
+const TABLE_REF_PATTERN = `${IDENT_PATTERN}(?:\\s*\\.\\s*${IDENT_PATTERN})*(?:\\s+(?:as\\s+)?${IDENT_PATTERN})?`;
+
+// FROM/JOIN/UPDATE/INTO followed by a comma-terminated list of table refs —
+// the cursor sits after the comma, so the next token is another table name.
+const RELATION_LIST_TAIL = new RegExp(
+  `\\b(?:from|join|update|into)\\s+(?:${TABLE_REF_PATTERN}\\s*,\\s*)+$`,
+  "i",
+);
+
 export function quoteCompletionIdentifier(
   value: string,
   dialect: "postgres" | "mysql" | "sqlite",
@@ -84,7 +96,9 @@ export function getCompletionTarget(sql: string, cursor: number, forced = false)
   const rawPrefix = dot >= 0 ? rawToken.slice(dot + 1) : rawToken;
   const qualifier = dot >= 0 ? identifierParts(rawToken.slice(0, dot)).join(".") : null;
   const prefix = unquoteIdentifier(rawPrefix).toLowerCase();
-  const relationPosition = /\b(?:from|join|update|into)\s*$/i.test(sql.slice(0, tokenStart));
+  const beforeToken = sql.slice(0, tokenStart);
+  const relationPosition =
+    /\b(?:from|join|update|into)\s*$/i.test(beforeToken) || RELATION_LIST_TAIL.test(beforeToken);
   let replaceEnd = cursor;
   while (replaceEnd < sql.length && /[A-Za-z0-9_$-]/.test(sql[replaceEnd])) replaceEnd++;
 
@@ -123,20 +137,45 @@ export function findTableReferences(
 ): TableReference[] {
   const references: TableReference[] = [];
   const seen = new Set<string>();
-  const pattern = /\b(?:from|join|update|into)\s+([^\s,;()]+)(?:\s+(?:as\s+)?([A-Za-z_][\w$]*))?/gi;
-  let match: RegExpExecArray | null;
+  const headPattern = /\b(?:from|join|update|into)\s+/gi;
+  // Sticky patterns walk the comma-separated list "a, b c, d" ref by ref, so
+  // every table is found, not just the first. The alias is matched separately:
+  // when the word after a table is a clause keyword (JOIN, WHERE, ...) it is
+  // left unconsumed for headPattern to pick up as the next head.
+  const refPattern = /[^\s,;()]+/y;
+  const aliasPattern = /\s+(?:as\s+)?([A-Za-z_][\w$]*)/iy;
+  const separatorPattern = /\s*,\s*/y;
 
-  while ((match = pattern.exec(statement))) {
-    const table = resolveCatalogTable(match[1], catalog, defaultSchema);
-    if (!table) continue;
-    const candidateAlias = match[2];
-    const alias = candidateAlias && !CLAUSE_KEYWORDS.has(candidateAlias.toLowerCase())
-      ? candidateAlias
-      : undefined;
-    const key = `${catalogTableKey(table)}\u0000${alias ?? ""}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    references.push({ ...table, alias });
+  while (headPattern.exec(statement)) {
+    let pos = headPattern.lastIndex;
+    for (;;) {
+      refPattern.lastIndex = pos;
+      const refMatch = refPattern.exec(statement);
+      if (!refMatch) break;
+      pos = refPattern.lastIndex;
+
+      aliasPattern.lastIndex = pos;
+      const aliasMatch = aliasPattern.exec(statement);
+      let alias: string | undefined;
+      if (aliasMatch && !CLAUSE_KEYWORDS.has(aliasMatch[1].toLowerCase())) {
+        alias = aliasMatch[1];
+        pos = aliasPattern.lastIndex;
+      }
+
+      const table = resolveCatalogTable(refMatch[0], catalog, defaultSchema);
+      if (table) {
+        const key = `${catalogTableKey(table)}\u0000${alias ?? ""}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          references.push({ ...table, alias });
+        }
+      }
+
+      separatorPattern.lastIndex = pos;
+      if (!separatorPattern.exec(statement)) break;
+      pos = separatorPattern.lastIndex;
+    }
+    if (pos > headPattern.lastIndex) headPattern.lastIndex = pos;
   }
   return references;
 }

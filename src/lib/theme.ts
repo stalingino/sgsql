@@ -5,6 +5,7 @@ export type ThemeMode = "dark" | "light" | "system";
 
 interface ThemeState {
   mode: ThemeMode;
+  resolved: "dark" | "light";
   setMode: (mode: ThemeMode) => void;
 }
 
@@ -15,6 +16,7 @@ function getSystemTheme(): "dark" | "light" {
 export function applyTheme(mode: ThemeMode) {
   const resolved = mode === "system" ? getSystemTheme() : mode;
   document.documentElement.setAttribute("data-theme", resolved);
+  useThemeStore.setState({ resolved });
 }
 
 // Applied immediately when config is loaded (called from App.tsx after loadConfig)
@@ -32,6 +34,7 @@ export function initTheme() {
 
 export const useThemeStore = create<ThemeState>((set) => ({
   mode: "system",
+  resolved: getSystemTheme(),
   setMode: (mode) => {
     saveConfig({ theme: mode });
     applyTheme(mode);

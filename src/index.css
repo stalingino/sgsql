@@ -136,6 +136,12 @@ button:not(:disabled).hover\:text-error:hover {
 .group:hover .close-dot-color { display: none; }
 .group:hover .close-dot-x { display: flex; }
 
+/* Monaco: tint the statement the cursor is currently inside, mirroring the
+   accent-tinted <mark> the old textarea-based highlighter used. */
+.sgsql-active-statement {
+  background-color: color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+
 /* Hide scrollbar on tab bar */
 .no-scrollbar::-webkit-scrollbar {
   display: none;

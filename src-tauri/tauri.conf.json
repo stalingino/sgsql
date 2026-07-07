@@ -32,7 +32,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://localhost:7521 http://localhost:7522 http://localhost:7523 http://localhost:7524 http://localhost:7525 http://localhost:7526 http://localhost:7527 http://localhost:7528 http://localhost:7529 http://localhost:7530 http://localhost:45821 ws://localhost:45821; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; connect-src 'self' http://localhost:7521 http://localhost:7522 http://localhost:7523 http://localhost:7524 http://localhost:7525 http://localhost:7526 http://localhost:7527 http://localhost:7528 http://localhost:7529 http://localhost:7530 http://localhost:45821 ws://localhost:45821; style-src 'self' 'unsafe-inline'; worker-src 'self'"
     }
   },
   "bundle": {
