@@ -20,7 +20,7 @@ import { useEditStore } from "../lib/editStore";
 import { notifySchemaChanged, useSchemaRevision } from "../lib/schemaRevision";
 import { CreateTableModal } from "./CreateTableModal";
 import { HighlightedSQL } from "../lib/highlightSQL";
-import { fuzzyMatch, fuzzySearch, matchSegments } from "../lib/fuzzySearch";
+import { fuzzySearchResults, matchSegments } from "../lib/fuzzySearch";
 import { ConnectionSchemaCache, type SchemaCache } from "../lib/schemaCache";
 
 /* ── Props ──────────────────────────────────────────────── */
@@ -323,7 +323,11 @@ function TableList({
   }, [connectionId, connectionType, db, schema, cache, schemaRevision]);
 
   const filtered = useMemo(
-    () => fuzzySearch(tables, query, { keys: [{ name: "name", weight: 2 }, "type"] }),
+    () =>
+      fuzzySearchResults(tables, query, { keys: [{ name: "name", weight: 2 }, "type"] }).map((result) => ({
+        ...result.item,
+        indices: result.indices,
+      })),
     [tables, query],
   );
 
@@ -433,7 +437,7 @@ function TableList({
           <TableNode
             key={`${t.type}:${t.name}`}
             table={t}
-            query={query}
+            indices={t.indices}
             selected={i === selectedIdx}
             onSelect={() => selectTable(t)}
             onContextMenu={(event) => {
@@ -476,10 +480,9 @@ function TableList({
 
 /* ── Table node ──────────────────────────────────────────── */
 
-function highlightMatch(name: string, query: string): React.ReactNode {
-  const match = query.trim() ? fuzzyMatch(name, query) : null;
-  if (!match) return name;
-  return matchSegments(name, match.indices).map((segment, i) =>
+function highlightMatch(name: string, indices: readonly number[]): React.ReactNode {
+  if (indices.length === 0) return name;
+  return matchSegments(name, indices).map((segment, i) =>
     segment.matched ? (
       <mark key={i} className="bg-accent/25 text-inherit rounded-[2px]">{segment.text}</mark>
     ) : (
@@ -490,13 +493,13 @@ function highlightMatch(name: string, query: string): React.ReactNode {
 
 function TableNode({
   table,
-  query = "",
+  indices = [],
   selected,
   onSelect,
   onContextMenu,
 }: {
   table: TableInfo;
-  query?: string;
+  indices?: readonly number[];
   selected?: boolean;
   onSelect: () => void;
   onContextMenu: (event: React.MouseEvent) => void;
@@ -523,7 +526,7 @@ function TableNode({
         ? <Eye size={14} className="shrink-0 text-purple-400" />
         : <Table2 size={14} className="shrink-0 text-accent" />
       }
-      <span className="truncate text-[12px] font-mono text-text-primary">{highlightMatch(table.name, query)}</span>
+      <span className="truncate text-[12px] font-mono text-text-primary">{highlightMatch(table.name, indices)}</span>
     </div>
   );
 }

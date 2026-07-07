@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Database, Table2, Eye, Loader2, Search } from "lucide-react";
 import { getSearchLru, touchSearchLru } from "../lib/searchLru";
-import { fuzzyMatch, fuzzySearchResults, matchSegments } from "../lib/fuzzySearch";
+import { fuzzySearchResults, matchSegments } from "../lib/fuzzySearch";
 import {
   getCachedCatalog,
   getCachedDatabases,
@@ -39,10 +39,9 @@ function defaultSchema(type: "postgres" | "mysql" | "sqlite"): string {
   return "";
 }
 
-function highlightName(name: string, query: string): React.ReactNode {
-  const match = query.trim() ? fuzzyMatch(name, query) : null;
-  if (!match) return name;
-  return matchSegments(name, match.indices).map((segment, i) =>
+function highlightName(name: string, indices: readonly number[]): React.ReactNode {
+  if (indices.length === 0) return name;
+  return matchSegments(name, indices).map((segment, i) =>
     segment.matched ? (
       <mark key={i} className="bg-accent/25 text-inherit rounded-[2px]">{segment.text}</mark>
     ) : (
@@ -169,7 +168,7 @@ export function CommandPalette({
         if (a.item.item.kind !== "db" && b.item.item.kind === "db") return -1;
         return a.refIndex - b.refIndex;
       })
-      .map((result) => result.item.item);
+      .map((result) => ({ ...result.item.item, indices: result.indices }));
   }, [currentDatabase, items, itemKey, query, recentItems]);
 
   // Reset selection when query changes
@@ -304,7 +303,7 @@ export function CommandPalette({
                   {item.kind !== "db" && item.db !== currentDatabase && (
                     <span className="text-text-muted">{item.db}.</span>
                   )}
-                  {highlightName(item.name, query)}
+                  {highlightName(item.name, item.indices)}
                 </span>
                 <span className="text-[10px] text-text-muted shrink-0">
                   {kindLabel(item.kind)}
