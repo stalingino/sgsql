@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { Trash2 } from "lucide-react";
 import { useQueryLog, type QueryLogEntry } from "../lib/queryLog";
 import { HighlightedSQL } from "../lib/highlightSQL";
+import { formatLocalDateTime } from "../lib/formatDateTime";
 
 export function QueryConsole() {
   const entries = useQueryLog((s) => s.entries);
@@ -53,12 +54,7 @@ export function QueryConsole() {
 }
 
 function LogEntry({ entry }: { entry: QueryLogEntry }) {
-  const time = entry.timestamp.toLocaleTimeString("en-US", {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+  const time = formatLocalDateTime(entry.timestamp);
 
   const hasError = !!entry.error;
   const isCancelled = !!entry.cancelled;

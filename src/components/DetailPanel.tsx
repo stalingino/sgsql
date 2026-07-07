@@ -4,6 +4,7 @@ import type { CellSelection } from "./ResultGrid";
 import { useEditStore, buildRowKey, SqlExpression, type RowKey } from "../lib/editStore";
 import { useExecutionQueue } from "../lib/executionQueue";
 import { fuzzySearch } from "../lib/fuzzySearch";
+import { formatDateTimeValue } from "../lib/formatDateTime";
 
 /* ── Detail Panel ──────────────────────────────────────── */
 
@@ -520,6 +521,8 @@ function FieldRow({
 function formatValue(value: unknown): string {
   if (value === null || value === undefined) return "NULL";
   if (typeof value === "boolean") return value ? "true" : "false";
+  const dateFormatted = formatDateTimeValue(value);
+  if (dateFormatted !== null) return dateFormatted;
   if (typeof value === "object") return JSON.stringify(value, null, 2);
   return String(value);
 }

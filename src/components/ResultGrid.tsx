@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, ArrowDown, Copy, ClipboardCopy, ChevronRight, CopyPlus } from "lucide-react";
 import { horizontalVisibilityDelta } from "../lib/scrollVisibility";
+import { formatDateTimeValue } from "../lib/formatDateTime";
 
 /* ── Constants ─────────────────────────────────────────── */
 
@@ -51,6 +52,8 @@ export interface CellRevealRequest {
 
 function cellToText(value: unknown): string {
   if (value === null || value === undefined) return "NULL";
+  const dateFormatted = formatDateTimeValue(value);
+  if (dateFormatted !== null) return dateFormatted;
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }
@@ -309,6 +312,10 @@ export function CellValue({ value }: { value: unknown }) {
   }
   if (typeof value === "number") {
     return <span className="text-accent tabular-nums">{value}</span>;
+  }
+  const dateFormatted = formatDateTimeValue(value);
+  if (dateFormatted !== null) {
+    return <span className="text-text-primary tabular-nums">{dateFormatted}</span>;
   }
   if (typeof value === "object") {
     return <span className="text-text-muted font-mono">{JSON.stringify(value)}</span>;
