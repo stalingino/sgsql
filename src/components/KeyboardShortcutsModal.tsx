@@ -46,8 +46,10 @@ const GROUPS = [
   {
     label: "Data table",
     shortcuts: [
+      { action: "Toggle data / structure", keys: modKey("T") },
       { action: "Add row", keys: modKey("I") },
       { action: "Toggle filters", keys: modKey("F") },
+      { action: "Search columns (structure)", keys: modKey("F") },
       { action: "Copy selected rows", keys: modKey("C") },
       { action: "Select all rows", keys: modKey("A") },
       { action: "Delete selected rows", keys: isMac ? "⌫" : "Delete" },

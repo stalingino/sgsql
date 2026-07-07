@@ -47,6 +47,7 @@ interface DataTableProps {
   revealCell?: CellRevealRequest | null;
   viewMode?: ViewMode;
   onViewModeChange?: (mode: ViewMode) => void;
+  onTableRenamed?: (newName: string) => void;
 }
 
 const PAGE_SIZE = 50;
@@ -278,7 +279,7 @@ function sameSort(left: SortState | null, right: SortState | null): boolean {
 
 /* ── Main component ────────────────────────────────────── */
 
-export function DataTable({ connectionId, connectionType, db, schema, table, onCellSelect, revealCell, viewMode, onViewModeChange }: DataTableProps) {
+export function DataTable({ connectionId, connectionType, db, schema, table, onCellSelect, revealCell, viewMode, onViewModeChange, onTableRenamed }: DataTableProps) {
   const initialSort = parseDefaultOrderBy(getConfig().settings?.defaultOrderBy);
   const refreshKey = tableRefreshKey({ connectionId, db, schema, table });
   const tableRevision = useEditStore((s) => s.tableRevisions.get(refreshKey) ?? 0);
@@ -317,6 +318,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
 
   const lastFilterRefreshRevisionRef = useRef(filterRefreshRevision);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const pkColumns = useMemo(
     () => columns?.filter((c) => c.isPk).map((c) => c.name) ?? [],
@@ -393,10 +395,13 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     return () => window.removeEventListener("keydown", handler);
   }, [handleAddRow, handleDeleteRows, selectedRows.size]);
 
-  // Cmd+F to toggle filters
+  // Cmd+F to toggle filters (data view only; structure view handles its own
+  // column search). Guard on visibility so an inactive tab doesn't react.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        if (mode !== "data") return;
+        if (!containerRef.current || containerRef.current.offsetParent === null) return;
         e.preventDefault();
         setFiltersOpen((prev) => {
           if (!prev) {
@@ -409,7 +414,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [mode]);
 
   // Reset offset and sort when table changes
   useEffect(() => {
@@ -546,7 +551,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   const previewSql = buildPreviewSql({ connectionType, db, schema, table, where: previewWhere, sort });
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div ref={containerRef} className="flex flex-col h-full min-h-0">
       {/* Content area */}
       <div className="flex-1 min-h-0">
         {mode === "data" ? (
@@ -580,6 +585,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
             columns={columns ?? []}
             loading={structLoading}
             onRefresh={refreshStructure}
+            onTableRenamed={onTableRenamed}
             ddlOpen={schemaDdlOpen}
             onDdlClose={() => setSchemaDdlOpen(false)}
           />
@@ -609,6 +615,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
         <div className="flex items-center gap-0.5">
           <button
             onClick={() => changeMode("data")}
+            title={`Data view (${modKey("T")})`}
             className={`flex items-center gap-1 px-2 py-0.5 rounded transition-colors cursor-pointer ${
               mode === "data"
                 ? "bg-accent/15 text-accent"
@@ -620,6 +627,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
           </button>
           <button
             onClick={() => changeMode("structure")}
+            title={`Structure view (${modKey("T")})`}
             className={`flex items-center gap-1 px-2 py-0.5 rounded transition-colors cursor-pointer ${
               mode === "structure"
                 ? "bg-accent/15 text-accent"

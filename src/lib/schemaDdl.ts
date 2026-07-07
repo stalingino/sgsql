@@ -42,6 +42,10 @@ function tableRef(dialect: SqlDialect, db: string, schema: string, table: string
   return quoteIdent(dialect, table);
 }
 
+export function buildRenameTable(dialect: SqlDialect, db: string, schema: string, table: string, newName: string): string {
+  return `ALTER TABLE ${tableRef(dialect, db, schema, table)} RENAME TO ${quoteIdent(dialect, newName.trim())}`;
+}
+
 function columnDefinition(dialect: SqlDialect, column: EditableColumn, includePk = false): string {
   return `${quoteIdent(dialect, column.name)} ${column.type.trim()}${column.defaultValue.trim() ? ` DEFAULT ${column.defaultValue.trim()}` : ""}${column.nullable ? "" : " NOT NULL"}${column.unique ? " UNIQUE" : ""}${includePk && column.isPk ? " PRIMARY KEY" : ""}${column.extra?.trim() ? ` ${column.extra.trim()}` : ""}${dialect === "mysql" && column.comment?.trim() ? ` COMMENT ${quoteLiteral(column.comment.trim())}` : ""}`;
 }

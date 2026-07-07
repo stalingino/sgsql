@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Check, Clipboard, Columns3, KeyRound, Link2, Loader2, Pencil, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
+import { Check, Clipboard, Columns3, KeyRound, Link2, Loader2, Pencil, Plus, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import {
   applySchemaChanges,
   fetchForeignKeys,
@@ -17,11 +17,13 @@ import {
   buildDropForeignKey,
   buildDropIndex,
   buildEditIndex,
+  buildRenameTable,
   editableColumns,
   type EditableColumn,
 } from "../lib/schemaDdl";
 import { HighlightedSQL } from "../lib/highlightSQL";
 import { notifySchemaChanged } from "../lib/schemaRevision";
+import { fuzzySearch } from "../lib/fuzzySearch";
 
 interface Props {
   connectionId: string;
@@ -32,6 +34,7 @@ interface Props {
   columns: ColumnInfo[];
   loading: boolean;
   onRefresh: () => Promise<void> | void;
+  onTableRenamed?: (newName: string) => void;
   ddlOpen: boolean;
   onDdlClose: () => void;
 }
@@ -49,8 +52,9 @@ interface IndexDraft {
 const emptyIndex = (): IndexDraft => ({ name: "", columns: [], unique: false, method: "", predicate: "", includeColumns: [], expressionSql: "" });
 
 export function SchemaEditor(props: Props) {
-  const { connectionId, connectionType, db, schema, table, columns, loading, onRefresh, ddlOpen, onDdlClose } = props;
+  const { connectionId, connectionType, db, schema, table, columns, loading, onRefresh, onTableRenamed, ddlOpen, onDdlClose } = props;
   const [draft, setDraft] = useState<EditableColumn[]>(() => editableColumns(columns));
+  const [tableName, setTableName] = useState(table);
   const [indexes, setIndexes] = useState<IndexInfo[]>([]);
   const [foreignKeys, setForeignKeys] = useState<ForeignKeyInfo[]>([]);
   const [savedForeignKeys, setSavedForeignKeys] = useState<ForeignKeyInfo[]>([]);
@@ -67,6 +71,10 @@ export function SchemaEditor(props: Props) {
   const [newFk, setNewFk] = useState<ForeignKeyInfo>({ name: "", column: "", columns: [], foreignSchema: schema, foreignTable: "", foreignColumn: "", foreignColumns: [], onUpdate: "NO ACTION", onDelete: "NO ACTION" });
   const [editingFkName, setEditingFkName] = useState<string | null>(null);
   const [fkFormOpen, setFkFormOpen] = useState(false);
+  const [columnSearch, setColumnSearch] = useState("");
+  const [columnSearchOpen, setColumnSearchOpen] = useState(false);
+  const columnSearchRef = useRef<HTMLInputElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const rightPaneRef = useRef<HTMLDivElement>(null);
   const [rightWidth, setRightWidth] = useState(360);
@@ -99,6 +107,29 @@ export function SchemaEditor(props: Props) {
 
   useEffect(() => { void loadMetadata(); }, [loadMetadata]);
 
+  // Cmd+F opens column search, but only for the structure editor that is
+  // actually visible (offsetParent is null while an inactive tab is display:none).
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (!((event.metaKey || event.ctrlKey) && event.key === "f")) return;
+      if (!rootRef.current || rootRef.current.offsetParent === null) return;
+      event.preventDefault();
+      setColumnSearchOpen(true);
+      setTimeout(() => columnSearchRef.current?.select(), 30);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  const columnMatchIds = useMemo(() => {
+    const query = columnSearch.trim();
+    if (!columnSearchOpen || !query) return null;
+    const matched = new Set(fuzzySearch(draft.map((column) => column.name), query));
+    return new Set(draft.filter((column) => matched.has(column.name)).map((column) => column.id));
+  }, [columnSearchOpen, columnSearch, draft]);
+
+  const closeColumnSearch = useCallback(() => { setColumnSearchOpen(false); setColumnSearch(""); }, []);
+
   const runStatements = useCallback(async (statements: string[]) => {
     if (statements.length === 0) return;
     setWorking(true);
@@ -113,6 +144,13 @@ export function SchemaEditor(props: Props) {
       setEditingFkName(null);
       setFkFormOpen(false);
       setNewFk({ name: "", column: "", columns: [], foreignSchema: schema, foreignTable: "", foreignColumn: "", foreignColumns: [], onUpdate: "NO ACTION", onDelete: "NO ACTION" });
+      const renamed = tableName.trim().length > 0 && tableName.trim() !== table;
+      if (renamed && onTableRenamed) {
+        // The parent repoints the open tab to the new name, which remounts this
+        // editor and loads fresh metadata — refetching the old name would fail.
+        onTableRenamed(tableName.trim());
+        return;
+      }
       await onRefresh();
       await loadMetadata();
     } catch (cause) {
@@ -120,7 +158,7 @@ export function SchemaEditor(props: Props) {
     } finally {
       setWorking(false);
     }
-  }, [connectionId, connectionType, db, loadMetadata, onRefresh]);
+  }, [connectionId, connectionType, db, table, loadMetadata, onRefresh, tableName, onTableRenamed]);
 
   const propose = (factory: () => string[]) => {
     try {
@@ -138,8 +176,14 @@ export function SchemaEditor(props: Props) {
     }
   };
 
-  const columnStatements = () => buildColumnMigration({ dialect: connectionType, db, schema, table, original, columns: draft, foreignKeys, originalForeignKeys: savedForeignKeys, indexes, originalDdl: ddl, triggers });
-  const dirty = JSON.stringify(original) !== JSON.stringify(draft);
+  const tableRenamePending = tableName.trim().length > 0 && tableName.trim() !== table;
+  const columnStatements = () => {
+    const statements = buildColumnMigration({ dialect: connectionType, db, schema, table, original, columns: draft, foreignKeys, originalForeignKeys: savedForeignKeys, indexes, originalDdl: ddl, triggers });
+    // Rename runs last so column migrations still reference the current table name.
+    if (tableRenamePending) statements.push(buildRenameTable(connectionType, db, schema, table, tableName));
+    return statements;
+  };
+  const dirty = JSON.stringify(original) !== JSON.stringify(draft) || tableRenamePending;
   const foreignKeysDirty = JSON.stringify(savedForeignKeys) !== JSON.stringify(foreignKeys);
   const reviewIndex = () => propose(() => {
     return editingIndexName
@@ -205,15 +249,45 @@ export function SchemaEditor(props: Props) {
   if (!columns.length) return <Centered>No column information available.</Centered>;
 
   return (
-    <div className="relative flex flex-col h-full min-h-0">
+    <div ref={rootRef} className="relative flex flex-col h-full min-h-0">
       {error && <div className="flex items-center justify-between px-3 py-2 text-xs text-error bg-error/10 border-b border-error/20"><span>{error}</span><button onClick={() => setError(null)}><X size={12} /></button></div>}
       <div ref={workspaceRef} className="flex flex-1 min-h-0 overflow-hidden">
         <section className="flex flex-col flex-1 min-w-0 min-h-0">
-          <PaneHeader icon={<Columns3 size={12} />} title="Columns">
+          <div className="flex items-center gap-1.5 h-9 px-2.5 border-b border-border bg-bg-secondary shrink-0 text-[11px] font-semibold text-text-secondary">
+            <Columns3 size={12} className="shrink-0" />
+            <input
+              value={tableName}
+              onChange={(event) => setTableName(event.target.value)}
+              spellCheck={false}
+              placeholder="table name"
+              title="Edit to rename this table, then Review"
+              aria-label="Table name"
+              className={`min-w-0 max-w-[240px] px-1.5 py-0.5 rounded border bg-bg-primary font-mono text-[12px] text-text-primary outline-none transition-colors focus:border-accent ${tableRenamePending ? "border-warning" : "border-border"}`}
+            />
+            {tableRenamePending && <span className="shrink-0 text-[10px] font-semibold text-warning">will rename</span>}
+            <div className="flex-1" />
             <button onClick={() => { void onRefresh(); void loadMetadata(); }} className="p-1.5 rounded text-text-muted hover:bg-bg-hover cursor-pointer" title="Refresh schema"><RefreshCw size={12} /></button>
             <button disabled={!dirty || working} onClick={() => propose(columnStatements)} className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-accent text-white text-[11px] disabled:opacity-30 cursor-pointer"><Save size={11} />Review</button>
-          </PaneHeader>
-          <div className="flex-1 min-h-0 overflow-auto"><ColumnsEditor columns={draft} dialect={connectionType} onChange={setDraft} /></div>
+          </div>
+          {columnSearchOpen && (
+            <div className="relative flex items-center gap-1.5 px-2.5 py-1.5 border-b border-border bg-bg-secondary/60 shrink-0">
+              <Search size={12} className="shrink-0 text-text-muted" />
+              <input
+                ref={columnSearchRef}
+                value={columnSearch}
+                onChange={(event) => setColumnSearch(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeColumnSearch(); } }}
+                placeholder="Search columns…"
+                aria-label="Search columns"
+                className="flex-1 min-w-0 px-1.5 py-0.5 rounded border border-border bg-bg-primary text-[12px] text-text-primary outline-none focus:border-accent"
+              />
+              {columnSearch.trim() && (
+                <span className="shrink-0 text-[10px] text-text-muted">{columnMatchIds?.size ?? 0} match{(columnMatchIds?.size ?? 0) === 1 ? "" : "es"}</span>
+              )}
+              <button onClick={closeColumnSearch} title="Close search (Esc)" className="shrink-0 p-0.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover cursor-pointer"><X size={12} /></button>
+            </div>
+          )}
+          <div className="flex-1 min-h-0 overflow-auto"><ColumnsEditor columns={draft} dialect={connectionType} onChange={setDraft} matchIds={columnMatchIds} /></div>
         </section>
 
         <div onMouseDown={startVerticalResize} className="group relative w-[5px] shrink-0 cursor-col-resize bg-bg-secondary"><div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border group-hover:bg-accent/60" /></div>
@@ -278,7 +352,7 @@ const COLUMN_TYPES = {
   sqlite: ["INTEGER", "REAL", "TEXT", "BLOB", "NUMERIC"],
 } as const;
 
-function ColumnsEditor({ columns, dialect, onChange }: { columns: EditableColumn[]; dialect: "postgres" | "mysql" | "sqlite"; onChange: (columns: EditableColumn[]) => void }) {
+function ColumnsEditor({ columns, dialect, onChange, matchIds }: { columns: EditableColumn[]; dialect: "postgres" | "mysql" | "sqlite"; onChange: (columns: EditableColumn[]) => void; matchIds?: Set<string> | null }) {
   const typeListId = useId();
   const update = (id: string, patch: Partial<EditableColumn>) => onChange(columns.map((column) => column.id === id ? { ...column, ...patch } : column));
   const move = (index: number, direction: -1 | 1) => { const next = [...columns]; const target = index + direction; if (target < 0 || target >= next.length) return; [next[index], next[target]] = [next[target], next[index]]; onChange(next); };
@@ -286,7 +360,7 @@ function ColumnsEditor({ columns, dialect, onChange }: { columns: EditableColumn
     <div className="grid grid-cols-[44px_minmax(140px,1fr)_minmax(150px,1fr)_minmax(140px,1fr)_70px_54px_58px_minmax(170px,1fr)_minmax(140px,1fr)_48px] sticky top-0 z-10 bg-bg-secondary border-b border-border text-[10px] uppercase tracking-wider text-text-muted font-semibold">
       {['#','Column','Type','Default','Nullable','PK','Unique','Extra / identity / generated','Comment',''].map((label) => <div key={label} className="px-2 py-2 border-r border-border">{label}</div>)}
     </div>
-    {columns.map((column, index) => <div key={column.id} className="grid grid-cols-[44px_minmax(140px,1fr)_minmax(150px,1fr)_minmax(140px,1fr)_70px_54px_58px_minmax(170px,1fr)_minmax(140px,1fr)_48px] border-b border-border hover:bg-bg-hover/40 text-[12px]">
+    {columns.map((column, index) => <div key={column.id} className={`grid grid-cols-[44px_minmax(140px,1fr)_minmax(150px,1fr)_minmax(140px,1fr)_70px_54px_58px_minmax(170px,1fr)_minmax(140px,1fr)_48px] border-b border-border hover:bg-bg-hover/40 text-[12px] ${matchIds && !matchIds.has(column.id) ? "hidden" : ""}`}>
       <div className="px-2 py-1.5 border-r border-border text-text-muted flex flex-col items-center"><button disabled={dialect === "postgres"} title={dialect === "postgres" ? "PostgreSQL cannot safely reorder physical columns" : "Move up"} onClick={() => move(index, -1)} className="leading-3 disabled:opacity-20">▲</button><button disabled={dialect === "postgres"} title={dialect === "postgres" ? "PostgreSQL cannot safely reorder physical columns" : "Move down"} onClick={() => move(index, 1)} className="leading-3 disabled:opacity-20">▼</button></div>
       <CellInput value={column.name} onChange={(name) => update(column.id, { name })} />
       <TypeInput value={column.type} listId={typeListId} onChange={(type) => update(column.id, { type })} />

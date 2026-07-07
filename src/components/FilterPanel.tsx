@@ -214,10 +214,38 @@ function FilterRowItem({
   onApply: () => void;
   inputRef?: React.Ref<HTMLInputElement>;
 }) {
+  const operatorRef = useRef<HTMLSelectElement>(null);
+  const valueRef = useRef<HTMLInputElement>(null);
+
   const applyOnEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== "Enter") return;
     e.preventDefault();
     onApply();
+  };
+
+  // After a column is picked in the popup, move focus onto the operator so the
+  // user can keep going without touching the mouse.
+  const focusOperator = useCallback(() => {
+    setTimeout(() => operatorRef.current?.focus(), 0);
+  }, []);
+
+  // Merge the external first-input ref with the local value ref.
+  const setValueRef = useCallback((node: HTMLInputElement | null) => {
+    valueRef.current = node;
+    if (typeof inputRef === "function") inputRef(node);
+    else if (inputRef) (inputRef as React.MutableRefObject<HTMLInputElement | null>).current = node;
+  }, [inputRef]);
+
+  const handleOperatorKeyDown = (e: React.KeyboardEvent<HTMLSelectElement>) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    // For value-less operators (IS NULL / IS NOT NULL) there is nothing to type,
+    // so Enter runs the search straight from the operator.
+    if (NO_VALUE_OPS.has(filter.operator)) {
+      onApply();
+    } else {
+      valueRef.current?.focus();
+    }
   };
 
   return (
@@ -237,6 +265,7 @@ function FilterRowItem({
         columns={columns}
         onSelectRaw={() => onChange({ mode: "raw", column: "" })}
         onSelectColumn={(col) => onChange({ mode: "column", column: col })}
+        onColumnPicked={focusOperator}
       />
 
       {filter.mode === "raw" ? (
@@ -254,8 +283,15 @@ function FilterRowItem({
         /* Column mode: operator + value */
         <>
           <select
+            ref={operatorRef}
             value={filter.operator}
-            onChange={(e) => onChange({ operator: e.target.value })}
+            onChange={(e) => {
+              const nextOp = e.target.value;
+              onChange({ operator: nextOp });
+              // Selecting an operator that takes a value hands focus to the value input.
+              if (!NO_VALUE_OPS.has(nextOp)) setTimeout(() => valueRef.current?.focus(), 0);
+            }}
+            onKeyDown={handleOperatorKeyDown}
             className="px-1.5 py-1 text-[11px] bg-bg-primary border border-border rounded outline-none focus:border-accent cursor-pointer"
           >
             {OPERATORS.map((op) => (
@@ -264,7 +300,7 @@ function FilterRowItem({
           </select>
           {!NO_VALUE_OPS.has(filter.operator) && (
             <input
-              ref={inputRef}
+              ref={setValueRef}
               type="text"
               value={filter.value}
               onChange={(e) => onChange({ value: e.target.value })}
@@ -304,18 +340,22 @@ function ModeColumnPicker({
   columns,
   onSelectRaw,
   onSelectColumn,
+  onColumnPicked,
 }: {
   mode: "raw" | "column";
   column: string;
   columns: string[];
   onSelectRaw: () => void;
   onSelectColumn: (col: string) => void;
+  onColumnPicked?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const activeRowRef = useRef<HTMLDivElement>(null);
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
 
   // Close on outside click
@@ -334,6 +374,7 @@ function ModeColumnPicker({
   useEffect(() => {
     if (open && buttonRef.current) {
       setSearch("");
+      setActiveIndex(0);
       const rect = buttonRef.current.getBoundingClientRect();
       setDropdownPos({ top: rect.top - 4, left: rect.left });
       setTimeout(() => searchRef.current?.focus(), 30);
@@ -341,6 +382,34 @@ function ModeColumnPicker({
   }, [open]);
 
   const filtered = fuzzySearch(columns, search);
+
+  // Keep the highlighted option in range as the list narrows, and in view.
+  useEffect(() => { setActiveIndex(0); }, [search]);
+  useEffect(() => {
+    if (open) activeRowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex, open]);
+
+  const pickColumn = (col: string) => {
+    onSelectColumn(col);
+    setOpen(false);
+    onColumnPicked?.();
+  };
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      setOpen(false);
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((i) => Math.min(filtered.length - 1, i + 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((i) => Math.max(0, i - 1));
+    } else if (e.key === "Enter" && filtered.length > 0) {
+      e.preventDefault();
+      pickColumn(filtered[Math.min(activeIndex, filtered.length - 1)]);
+    }
+  };
 
   const label = mode === "raw" ? "Raw SQL" : column || "Column...";
 
@@ -372,15 +441,7 @@ function ModeColumnPicker({
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Filter..."
               className="w-full px-2 py-0.5 text-[11px] bg-bg-secondary border border-border rounded outline-none focus:border-accent"
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.stopPropagation();
-                  setOpen(false);
-                } else if (e.key === "Enter" && filtered.length > 0) {
-                  onSelectColumn(filtered[0]);
-                  setOpen(false);
-                }
-              }}
+              onKeyDown={handleSearchKeyDown}
             />
           </div>
 
@@ -405,17 +466,18 @@ function ModeColumnPicker({
             <div className="border-t border-border my-0.5" />
 
             {/* Columns */}
-            {filtered.map((col) => (
+            {filtered.map((col, index) => (
               <div
                 key={col}
-                onClick={() => {
-                  onSelectColumn(col);
-                  setOpen(false);
-                }}
+                ref={index === activeIndex ? activeRowRef : undefined}
+                onMouseEnter={() => setActiveIndex(index)}
+                onClick={() => pickColumn(col)}
                 className={`px-2.5 py-1 text-[11px] font-mono cursor-pointer transition-colors truncate ${
-                  mode === "column" && column === col
-                    ? "bg-accent/10 text-accent"
-                    : "text-text-secondary hover:bg-bg-hover"
+                  index === activeIndex
+                    ? "bg-accent/15 text-accent"
+                    : mode === "column" && column === col
+                      ? "bg-accent/10 text-accent"
+                      : "text-text-secondary hover:bg-bg-hover"
                 }`}
               >
                 {col}

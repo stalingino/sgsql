@@ -78,6 +78,9 @@ export function DetailPanel({ selection, wasAlreadyOpen, onFieldActivate }: Deta
   // Scroll to selected column field
   useEffect(() => {
     if (!selection || selection.colIndex < 0) return;
+    // When a field filter is active the list is reordered/narrowed, so jumping
+    // to the clicked cell's field is disorienting — leave the scroll position put.
+    if (filter.trim()) return;
     const container = scrollContainerRef.current;
     if (!container) return;
 
@@ -94,7 +97,7 @@ export function DetailPanel({ selection, wasAlreadyOpen, onFieldActivate }: Deta
         input?.focus();
       }
     });
-  }, [selection?.rowIndex, selection?.colIndex, wasAlreadyOpen]);
+  }, [selection?.rowIndex, selection?.colIndex, wasAlreadyOpen, filter]);
 
   if (!selection) {
     return (

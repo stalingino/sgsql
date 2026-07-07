@@ -165,6 +165,7 @@ function App() {
   const closeDbRef = useRef<(db: string) => void>(() => {});
   const closeTabRef = useRef<(id: string) => void>(() => {});
   const reloadActiveConnectionRef = useRef<(() => void) | null>(null);
+  const toggleViewModeRef = useRef<(() => void) | null>(null);
   const draggedConnectionTabIdRef = useRef<string | null>(null);
   const draggedContentTabIdRef = useRef<string | null>(null);
 
@@ -239,6 +240,10 @@ function App() {
       if ((e.metaKey || e.ctrlKey) && e.key === "r") {
         e.preventDefault();
         reloadActiveConnectionRef.current?.();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "t") {
+        e.preventDefault();
+        toggleViewModeRef.current?.();
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
@@ -703,6 +708,19 @@ function App() {
   };
   reloadActiveConnectionRef.current = reloadActiveConnection;
 
+  const toggleActiveViewMode = () => {
+    if (!activeTab || !activeWorkspace || !activeContentTab) return;
+    if (activeContentTab.type === "query") return;
+    const nextMode: "data" | "structure" = (activeContentTab.viewMode ?? "data") === "data" ? "structure" : "data";
+    setTabs((prev) => prev.map((tab) => {
+      if (tab.id !== activeTab.id) return tab;
+      const ws = tab.workspaces[activeWorkspace.db];
+      if (!ws) return tab;
+      return { ...tab, workspaces: { ...tab.workspaces, [activeWorkspace.db]: { ...ws, contentTabs: ws.contentTabs.map((content) => content.id === activeContentTab.id ? { ...content, viewMode: nextMode } : content) } } };
+    }));
+  };
+  toggleViewModeRef.current = toggleActiveViewMode;
+
   return (
     <div className="flex flex-col h-screen bg-bg-primary no-select">
       {/* ── Tab bar ─────────────────────────────────────────── */}
@@ -1003,6 +1021,15 @@ function App() {
                               if (!ws) return tab;
                               return { ...tab, workspaces: { ...tab.workspaces, [ct.db]: { ...ws, contentTabs: ws.contentTabs.map((content) => content.id === ct.id ? { ...content, viewMode } : content) } } };
                             }));
+                          }}
+                          onTableRenamed={(newName) => {
+                            setTabs((prev) => prev.map((tab) => {
+                              if (tab.id !== activeTab.id) return tab;
+                              const ws = tab.workspaces[ct.db];
+                              if (!ws) return tab;
+                              return { ...tab, workspaces: { ...tab.workspaces, [ct.db]: { ...ws, contentTabs: ws.contentTabs.map((content) => content.id === ct.id ? { ...content, table: newName } : content) } } };
+                            }));
+                            if (activeTab.connectionId) notifySchemaChanged(activeTab.connectionId);
                           }}
                         />
                       )}
