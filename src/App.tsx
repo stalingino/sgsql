@@ -639,6 +639,19 @@ function App() {
     });
   }, [cellSelection]);
 
+  const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+  const activeWorkspace = activeTab?.activeDbName
+    ? activeTab.workspaces[activeTab.activeDbName] ?? null
+    : null;
+  const activeContentTab = activeWorkspace?.contentTabs.find((tab) => tab.id === activeWorkspace.activeContentTabId);
+
+  // Clear the selected cell/row whenever the visible table/query view changes —
+  // otherwise the detail panel keeps showing a row from a tab/connection that's
+  // no longer on screen.
+  useEffect(() => {
+    setCellSelection(null);
+  }, [activeTabId, activeTab?.activeDbName, activeContentTab?.id]);
+
   /* ── Loading ──────────────────────────────────────────── */
 
   if (!configReady || (!sidecarReady && !sidecarError)) {
@@ -671,11 +684,6 @@ function App() {
     );
   }
 
-  const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
-  const activeWorkspace = activeTab?.activeDbName
-    ? activeTab.workspaces[activeTab.activeDbName] ?? null
-    : null;
-  const activeContentTab = activeWorkspace?.contentTabs.find((tab) => tab.id === activeWorkspace.activeContentTabId);
   const isRunning = activeTab?.connectionId
     ? (execConnections.get(activeTab.connectionId)?.running ?? false)
     : false;
