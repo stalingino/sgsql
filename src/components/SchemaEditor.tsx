@@ -78,7 +78,7 @@ export function SchemaEditor(props: Props) {
   const workspaceRef = useRef<HTMLDivElement>(null);
   const rightPaneRef = useRef<HTMLDivElement>(null);
   const [rightWidth, setRightWidth] = useState(360);
-  const [indexHeight, setIndexHeight] = useState(240);
+  const [fkHeight, setFkHeight] = useState(160);
 
   const original = useMemo(() => editableColumns(columns), [columns]);
   useEffect(() => setDraft(original), [original]);
@@ -229,12 +229,15 @@ export function SchemaEditor(props: Props) {
   const startHorizontalResize = (event: React.MouseEvent) => {
     event.preventDefault();
     const startY = event.clientY;
-    const startHeight = indexHeight;
+    const startHeight = fkHeight;
     document.body.classList.add("is-resizing");
     const onMove = (moveEvent: MouseEvent) => {
       const totalHeight = rightPaneRef.current?.clientHeight ?? 500;
-      const maxHeight = Math.max(140, totalHeight - 160);
-      setIndexHeight(Math.max(140, Math.min(maxHeight, startHeight + moveEvent.clientY - startY)));
+      const maxHeight = Math.max(100, totalHeight - 160);
+      // Handle sits above the (now fixed-height) Foreign Keys pane, so dragging
+      // down should shrink it and let Indexes (flex-1) grow — inverse of the
+      // vertical/index-height convention this was ported from.
+      setFkHeight(Math.max(100, Math.min(maxHeight, startHeight - (moveEvent.clientY - startY))));
     };
     const onUp = () => {
       document.body.classList.remove("is-resizing");
@@ -262,7 +265,7 @@ export function SchemaEditor(props: Props) {
               placeholder="table name"
               title="Edit to rename this table, then Review"
               aria-label="Table name"
-              className={`min-w-0 max-w-[240px] px-1.5 py-0.5 rounded border bg-bg-primary font-mono text-[12px] text-text-primary outline-none transition-colors focus:border-accent ${tableRenamePending ? "border-warning" : "border-border"}`}
+              className={`min-w-0 w-9/12 max-w-150 px-1.5 py-0.5 rounded border bg-bg-primary font-mono text-[12px] text-text-primary outline-none transition-colors focus:border-accent ${tableRenamePending ? "border-warning" : "border-border"}`}
             />
             {tableRenamePending && <span className="shrink-0 text-[10px] font-semibold text-warning">will rename</span>}
             <div className="flex-1" />
@@ -293,7 +296,7 @@ export function SchemaEditor(props: Props) {
         <div onMouseDown={startVerticalResize} className="group relative w-[5px] shrink-0 cursor-col-resize bg-bg-secondary"><div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border group-hover:bg-accent/60" /></div>
 
         <aside ref={rightPaneRef} className="flex flex-col min-h-0 shrink-0" style={{ width: rightWidth }}>
-          <section className="flex flex-col min-h-0" style={{ height: indexHeight }}>
+          <section className="flex flex-col flex-1 min-h-0">
             <PaneHeader icon={<KeyRound size={12} />} title="Indexes" count={indexes.length}>
               <button onClick={() => { setError(null); setEditingIndexName(null); setNewIndex(emptyIndex()); setIndexFormOpen(true); }} className="flex items-center gap-1 px-2 py-1 rounded bg-accent text-white text-[10px] cursor-pointer"><Plus size={10} />Add</button>
             </PaneHeader>
@@ -302,7 +305,7 @@ export function SchemaEditor(props: Props) {
 
           <div onMouseDown={startHorizontalResize} className="group relative h-[5px] shrink-0 cursor-row-resize bg-bg-secondary"><div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border group-hover:bg-accent/60" /></div>
 
-          <section className="flex flex-col flex-1 min-h-0">
+          <section className="flex flex-col min-h-0" style={{ height: fkHeight }}>
             <PaneHeader icon={<Link2 size={12} />} title="Foreign Keys" count={foreignKeys.length}>
               {connectionType === "sqlite" && <button disabled={!foreignKeysDirty || working} onClick={() => propose(columnStatements)} className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-accent text-white text-[11px] disabled:opacity-30 cursor-pointer"><Save size={11} />Review</button>}
               <button onClick={() => { setError(null); setEditingFkName(null); setNewFk({ name: "", column: "", columns: [], foreignSchema: schema, foreignTable: "", foreignColumn: "", foreignColumns: [], onUpdate: "NO ACTION", onDelete: "NO ACTION" }); setFkFormOpen(true); }} className="flex items-center gap-1 px-2 py-1 rounded bg-accent text-white text-[10px] cursor-pointer"><Plus size={10} />Add</button>

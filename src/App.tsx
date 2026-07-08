@@ -188,25 +188,35 @@ function App() {
   /* ── Global keyboard shortcuts ────────────────────────── */
 
   useEffect(() => {
+    // Capture phase: Monaco's own keybinding service listens on its container
+    // in the bubble phase and calls stopPropagation() for anything it recognizes
+    // (Cmd+/, Cmd+K chords, etc.), which otherwise swallows these before a
+    // bubble-phase document listener would ever see them. Intercepting during
+    // capture guarantees product shortcuts always win over the embedded editor.
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "p") {
         e.preventDefault();
+        e.stopPropagation();
         setCommandPaletteOpen((prev) => prev ? false : "all");
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
+        e.stopPropagation();
         setCommandPaletteOpen((prev) => prev ? false : "db-only");
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "e") {
         e.preventDefault();
+        e.stopPropagation();
         addQueryTabRef.current?.();
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "n") {
         e.preventDefault();
+        e.stopPropagation();
         openConnectionManager();
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "l") {
         e.preventDefault();
+        e.stopPropagation();
         setSidebarVisible((v) => {
           const next = !v;
           saveConfig({ sidebar: { ...getConfig().sidebar, visible: next, width: getConfig().sidebar?.width ?? 280 } });
@@ -215,14 +225,17 @@ function App() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
         e.preventDefault();
+        e.stopPropagation();
         setSettingsOpen(true);
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "/") {
         e.preventDefault();
+        e.stopPropagation();
         setShortcutsOpen((v) => !v);
       }
       if ((e.metaKey || e.ctrlKey) && e.key === ".") {
         e.preventDefault();
+        e.stopPropagation();
         setConsoleVisible((visible) => {
           const next = !visible;
           saveConfig({ console: { ...getConfig().console, visible: next, height: getConfig().console?.height ?? 180 } });
@@ -231,6 +244,7 @@ function App() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "o") {
         e.preventDefault();
+        e.stopPropagation();
         setDetailPanelVisible((v) => {
           const next = !v;
           saveConfig({ detailPanel: { ...getConfig().detailPanel, visible: next, width: getConfig().detailPanel?.width ?? 300 } });
@@ -239,18 +253,22 @@ function App() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "r") {
         e.preventDefault();
+        e.stopPropagation();
         reloadActiveConnectionRef.current?.();
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "t") {
         e.preventDefault();
+        e.stopPropagation();
         toggleViewModeRef.current?.();
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
+        e.stopPropagation();
         saveAllChangesRef.current?.();
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "w") {
         e.preventDefault();
+        e.stopPropagation();
         const curTabId = activeTabIdRef.current;
         if (!curTabId) {
           // No tabs left — close the window
@@ -281,13 +299,14 @@ function App() {
         const editStore = useEditStore.getState();
         if (editStore.changeCount() > 0) {
           e.preventDefault();
+          e.stopPropagation();
           editStore.revertLast();
         }
-        // Otherwise let native undo work (e.g. in textarea)
+        // Otherwise let native undo work (e.g. in the Monaco editor)
       }
     };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
+    document.addEventListener("keydown", handler, { capture: true });
+    return () => document.removeEventListener("keydown", handler, { capture: true });
   }, []);
 
   /* ── Sidecar boot ─────────────────────────────────────── */
@@ -1220,7 +1239,7 @@ function ContentTabItem({
       onDragEnd={onDragEnd}
       draggable
       title={contentTabTitle(ct)}
-      className={`group relative flex items-center gap-1.5 h-full px-3 text-[11px] cursor-pointer select-none border-r border-border min-w-0 max-w-[160px] transition-colors ${
+      className={`group relative flex items-center gap-1.5 h-full px-3 text-[11px] cursor-pointer select-none border-r border-border min-w-0 max-w-52 transition-colors ${
         active
           ? "bg-bg-primary text-text-primary"
           : "bg-bg-secondary text-text-muted hover:text-text-secondary hover:bg-bg-hover"

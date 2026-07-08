@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ctrlKey } from "../lib/platform";
 import { Loader2, Play, Sparkles, ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
 import { fetchColumns, fetchSchemas, fetchTables, type ColumnInfo, type QueryResult } from "../lib/schema";
@@ -171,7 +171,9 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
+  // Layout effect (not a plain effect) so the real height is committed before
+  // the browser paints — otherwise the fallback 120px height flashes first.
+  useLayoutEffect(() => {
     if (containerRef.current) {
       setEditorHeight(Math.round(containerRef.current.offsetHeight * 0.8));
     }
