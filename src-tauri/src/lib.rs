@@ -6,6 +6,8 @@ use std::sync::Mutex;
 mod keychain;
 mod encrypted_store;
 mod config;
+#[cfg(target_os = "macos")]
+mod macos_icon;
 
 struct SidecarChild(Mutex<Option<CommandChild>>);
 struct AppExiting(Mutex<bool>);
@@ -37,6 +39,9 @@ pub fn run() {
         ])
         .setup(|app| {
             app.manage(AppExiting(Mutex::new(false)));
+
+            #[cfg(target_os = "macos")]
+            macos_icon::init(app.handle());
 
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -170,6 +175,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if matches!(event, tauri::RunEvent::Ready) {
+                macos_icon::refresh(app);
+            }
+
             if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
                 stop_managed_sidecar(app);
             }
