@@ -24,6 +24,7 @@ import {
 import { HighlightedSQL } from "../lib/highlightSQL";
 import { notifySchemaChanged } from "../lib/schemaRevision";
 import { fuzzySearch } from "../lib/fuzzySearch";
+import { modKey } from "../lib/platform";
 
 interface Props {
   connectionId: string;
@@ -72,7 +73,6 @@ export function SchemaEditor(props: Props) {
   const [editingFkName, setEditingFkName] = useState<string | null>(null);
   const [fkFormOpen, setFkFormOpen] = useState(false);
   const [columnSearch, setColumnSearch] = useState("");
-  const [columnSearchOpen, setColumnSearchOpen] = useState(false);
   const columnSearchRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -114,7 +114,7 @@ export function SchemaEditor(props: Props) {
       if (!((event.metaKey || event.ctrlKey) && event.key === "f")) return;
       if (!rootRef.current || rootRef.current.offsetParent === null) return;
       event.preventDefault();
-      setColumnSearchOpen(true);
+      columnSearchRef.current?.focus();
       setTimeout(() => columnSearchRef.current?.select(), 30);
     };
     window.addEventListener("keydown", handler);
@@ -123,12 +123,12 @@ export function SchemaEditor(props: Props) {
 
   const columnMatchIds = useMemo(() => {
     const query = columnSearch.trim();
-    if (!columnSearchOpen || !query) return null;
+    if (!query) return null;
     const matched = new Set(fuzzySearch(draft.map((column) => column.name), query));
     return new Set(draft.filter((column) => matched.has(column.name)).map((column) => column.id));
-  }, [columnSearchOpen, columnSearch, draft]);
+  }, [columnSearch, draft]);
 
-  const closeColumnSearch = useCallback(() => { setColumnSearchOpen(false); setColumnSearch(""); }, []);
+  const clearColumnSearch = useCallback(() => setColumnSearch(""), []);
 
   const runStatements = useCallback(async (statements: string[]) => {
     if (statements.length === 0) return;
@@ -269,27 +269,24 @@ export function SchemaEditor(props: Props) {
             />
             {tableRenamePending && <span className="shrink-0 text-[10px] font-semibold text-warning">will rename</span>}
             <div className="flex-1" />
-            <button onClick={() => { void onRefresh(); void loadMetadata(); }} className="p-1.5 rounded text-text-muted hover:bg-bg-hover cursor-pointer" title="Refresh schema"><RefreshCw size={12} /></button>
-            <button disabled={!dirty || working} onClick={() => propose(columnStatements)} className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-accent text-white text-[11px] disabled:opacity-30 cursor-pointer"><Save size={11} />Review</button>
-          </div>
-          {columnSearchOpen && (
-            <div className="relative flex items-center gap-1.5 px-2.5 py-1.5 border-b border-border bg-bg-secondary/60 shrink-0">
-              <Search size={12} className="shrink-0 text-text-muted" />
+            <div className="relative flex items-center w-44 shrink-0">
+              <Search size={11} className="absolute left-1.5 text-text-muted pointer-events-none" />
               <input
                 ref={columnSearchRef}
                 value={columnSearch}
                 onChange={(event) => setColumnSearch(event.target.value)}
-                onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeColumnSearch(); } }}
-                placeholder="Search columns…"
+                onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); clearColumnSearch(); event.currentTarget.blur(); } }}
+                placeholder={`Search columns… (${modKey("F")})`}
                 aria-label="Search columns"
-                className="flex-1 min-w-0 px-1.5 py-0.5 rounded border border-border bg-bg-primary text-[12px] text-text-primary outline-none focus:border-accent"
+                className="w-full pl-6 pr-6 py-1 rounded border border-border bg-bg-primary font-normal text-[11px] text-text-primary outline-none focus:border-accent"
               />
               {columnSearch.trim() && (
-                <span className="shrink-0 text-[10px] text-text-muted">{columnMatchIds?.size ?? 0} match{(columnMatchIds?.size ?? 0) === 1 ? "" : "es"}</span>
+                <button onClick={clearColumnSearch} title="Clear search (Esc)" className="absolute right-1 p-0.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover cursor-pointer"><X size={11} /></button>
               )}
-              <button onClick={closeColumnSearch} title="Close search (Esc)" className="shrink-0 p-0.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover cursor-pointer"><X size={12} /></button>
             </div>
-          )}
+            <button onClick={() => { void onRefresh(); void loadMetadata(); }} className="p-1.5 rounded text-text-muted hover:bg-bg-hover cursor-pointer" title="Refresh schema"><RefreshCw size={12} /></button>
+            <button disabled={!dirty || working} onClick={() => propose(columnStatements)} className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-accent text-white text-[11px] disabled:opacity-30 cursor-pointer"><Save size={11} />Review</button>
+          </div>
           <div className="flex-1 min-h-0 overflow-auto"><ColumnsEditor columns={draft} dialect={connectionType} onChange={setDraft} matchIds={columnMatchIds} /></div>
         </section>
 
@@ -382,7 +379,7 @@ function ColumnsEditor({ columns, dialect, onChange, matchIds }: { columns: Edit
 
 function IndexesEditor({ indexes, loading, editingIndexName, onEdit, onDrop }: { indexes: IndexInfo[]; loading: boolean; editingIndexName: string | null; onEdit: (index: IndexInfo) => void; onDrop: (name: string) => void }) {
   return <Manager loading={loading} empty="No indexes found.">
-    {indexes.length ? indexes.map((index) => <ManagerRow key={index.name} title={index.name} detail={`${index.unique ? "UNIQUE · " : ""}${index.columns.join(", ")}`} protectedItem={index.primary} active={editingIndexName === index.name} onEdit={() => onEdit(index)} onDrop={() => onDrop(index.name)} />) : null}
+    {indexes.length ? indexes.map((index) => <ManagerRow key={index.name} title={index.name} badge={index.unique ? "UNIQUE" : undefined} detail={index.columns.join(", ")} protectedItem={index.primary} active={editingIndexName === index.name} onEdit={() => onEdit(index)} onDrop={() => onDrop(index.name)} />) : null}
   </Manager>;
 }
 
@@ -407,16 +404,115 @@ function EditorFormModal({ title, error, children, onClose }: { title: string; e
   </div>;
 }
 
+/** Type-to-filter column picker rendered as removable pills, backed only by
+ *  real column names — free text is never committed, so there's no way to
+ *  end up with a half-typed, invalid column in the list. */
+function ColumnPillsInput({ columns, selected, onChange, placeholder }: { columns: string[]; selected: string[]; onChange: (next: string[]) => void; placeholder?: string }) {
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [open, setOpen] = useState(false);
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number }>({ top: 0, left: 0, width: 0 });
+  const inputRef = useRef<HTMLInputElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const activeRowRef = useRef<HTMLDivElement>(null);
+
+  const available = columns.filter((column) => !selected.includes(column));
+  const suggestions = query ? fuzzySearch(available, query).slice(0, 12) : available.slice(0, 12);
+
+  useEffect(() => {
+    if (open) activeRowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex, open]);
+
+  const positionDropdown = () => {
+    const rect = boxRef.current?.getBoundingClientRect();
+    if (rect) setDropdownPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+  };
+
+  const addColumn = (column: string) => {
+    onChange([...selected, column]);
+    setQuery("");
+    setActiveIndex(0);
+    inputRef.current?.focus();
+  };
+
+  const removeColumn = (column: string) => onChange(selected.filter((c) => c !== column));
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (open && suggestions.length > 0) {
+      if (event.key === "ArrowDown") { event.preventDefault(); setActiveIndex((i) => Math.min(suggestions.length - 1, i + 1)); return; }
+      if (event.key === "ArrowUp") { event.preventDefault(); setActiveIndex((i) => Math.max(0, i - 1)); return; }
+      if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); addColumn(suggestions[activeIndex]); return; }
+      if (event.key === "Escape") { event.stopPropagation(); setOpen(false); return; }
+    }
+    if (event.key === "Backspace" && query === "" && selected.length > 0) {
+      onChange(selected.slice(0, -1));
+    }
+  };
+
+  return (
+    <div
+      ref={boxRef}
+      onClick={() => inputRef.current?.focus()}
+      className="input-field flex flex-wrap items-center gap-1 min-h-9 py-1 cursor-text"
+    >
+      {selected.map((column) => (
+        <span key={column} className="flex items-center gap-1 pl-2 pr-1 py-0.5 rounded bg-accent/15 text-accent text-[11px] font-mono">
+          {column}
+          <button type="button" onClick={(event) => { event.stopPropagation(); removeColumn(column); }} className="p-0.5 rounded hover:bg-accent/25 cursor-pointer">
+            <X size={10} />
+          </button>
+        </span>
+      ))}
+      <input
+        ref={inputRef}
+        value={query}
+        onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); setOpen(true); positionDropdown(); }}
+        onFocus={() => { setOpen(true); positionDropdown(); }}
+        onKeyDown={handleKeyDown}
+        onBlur={() => setTimeout(() => setOpen(false), 100)}
+        placeholder={selected.length === 0 ? placeholder : ""}
+        className="flex-1 min-w-[80px] bg-transparent outline-none text-[11px] font-mono px-1 py-0.5"
+      />
+      {open && suggestions.length > 0 && (
+        <div
+          className="fixed z-[9999] max-h-[190px] border border-border rounded bg-bg-primary shadow-xl overflow-y-auto py-0.5"
+          style={{ top: dropdownPos.top, left: dropdownPos.left, width: Math.max(160, dropdownPos.width) }}
+        >
+          {suggestions.map((column, index) => (
+            <div
+              key={column}
+              ref={index === activeIndex ? activeRowRef : undefined}
+              onMouseEnter={() => setActiveIndex(index)}
+              onMouseDown={(event) => { event.preventDefault(); addColumn(column); }}
+              className={`px-2.5 py-1 text-[11px] font-mono cursor-pointer transition-colors truncate ${index === activeIndex ? "bg-accent/15 text-accent" : "text-text-secondary hover:bg-bg-hover"}`}
+            >
+              {column}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function IndexFormModal({ dialect, columns, value, error, onChange, editingIndexName, onClose, onSubmit }: { dialect: "postgres" | "mysql" | "sqlite"; columns: string[]; value: IndexDraft; error: string | null; onChange: (value: IndexDraft) => void; editingIndexName: string | null; onClose: () => void; onSubmit: () => void }) {
   return <EditorFormModal title={editingIndexName ? "Edit index" : "Add index"} error={error} onClose={onClose}>
     <div className="flex flex-col gap-3 p-4">
       <SmallInput value={value.name} placeholder="Index name" onChange={(name) => onChange({ ...value, name })} />
-      <select multiple value={value.columns} onChange={(event) => onChange({ ...value, columns: Array.from(event.target.selectedOptions, (option) => option.value) })} className="input-field h-24">{columns.map((column) => <option key={column}>{column}</option>)}</select>
+      <ColumnPillsInput columns={columns} selected={value.columns} onChange={(next) => onChange({ ...value, columns: next })} placeholder="Add column…" />
       <SmallInput value={value.expressionSql} placeholder="Expression SQL (optional, e.g. lower(email))" onChange={(expressionSql) => onChange({ ...value, expressionSql })} />
       {dialect !== "sqlite" && <SmallInput value={value.method} placeholder={dialect === "postgres" ? "Method (btree, hash, gin, gist…)" : "Method (BTREE or HASH)"} onChange={(method) => onChange({ ...value, method })} />}
-      {dialect === "postgres" && <select multiple value={value.includeColumns} onChange={(event) => onChange({ ...value, includeColumns: Array.from(event.target.selectedOptions, (option) => option.value) })} className="input-field h-20" title="INCLUDE columns">{columns.filter((column) => !value.columns.includes(column)).map((column) => <option key={column}>{column}</option>)}</select>}
+      {dialect === "postgres" && <ColumnPillsInput columns={columns.filter((column) => !value.columns.includes(column))} selected={value.includeColumns} onChange={(next) => onChange({ ...value, includeColumns: next })} placeholder="INCLUDE columns (optional)…" />}
       {dialect !== "mysql" && <SmallInput value={value.predicate} placeholder="Partial index WHERE predicate" onChange={(predicate) => onChange({ ...value, predicate })} />}
-      <div className="flex items-center gap-2"><label className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={value.unique} onChange={(event) => onChange({ ...value, unique: event.target.checked })} />Unique</label><div className="flex-1" /><button onClick={onClose} className="px-3 py-1.5 rounded border border-border text-xs cursor-pointer">Cancel</button><button onClick={onSubmit} className="flex items-center gap-1.5 px-3 py-1.5 bg-accent text-white rounded text-xs cursor-pointer">{editingIndexName ? <Save size={11} /> : <Plus size={11} />}{editingIndexName ? "Review update" : "Add index"}</button></div>
+      <div className="flex items-center gap-2">
+        <label className={`flex items-center gap-2 px-3 py-1.5 rounded-md border cursor-pointer transition-colors select-none ${value.unique ? "border-accent bg-accent/10 text-accent" : "border-border text-text-secondary hover:bg-bg-hover"}`}>
+          <input type="checkbox" checked={value.unique} onChange={(event) => onChange({ ...value, unique: event.target.checked })} className="w-4 h-4 accent-accent cursor-pointer" />
+          <span className="text-[12px] font-semibold">Unique</span>
+        </label>
+        <div className="flex-1" />
+        <button onClick={onClose} className="px-3 py-1.5 rounded border border-border text-xs cursor-pointer">Cancel</button>
+        <button onClick={onSubmit} className="flex items-center gap-1.5 px-3 py-1.5 bg-accent text-white rounded text-xs cursor-pointer">{editingIndexName ? <Save size={11} /> : <Plus size={11} />}{editingIndexName ? "Review update" : "Add index"}</button>
+      </div>
     </div>
   </EditorFormModal>;
 }
@@ -438,7 +534,7 @@ function ForeignKeyFormModal({ columns, value, error, onChange, editingFkName, o
 }
 
 function Manager({ children, loading, empty }: { children: React.ReactNode; loading: boolean; empty: string }) { return <div>{loading ? <Centered><Loader2 size={13} className="animate-spin" />Loading…</Centered> : children || <Centered>{empty}</Centered>}</div>; }
-function ManagerRow({ title, detail, protectedItem, active, onEdit, onDrop }: { title: string; detail: string; protectedItem?: boolean; active?: boolean; onEdit?: () => void; onDrop: () => void }) { return <div className={`flex items-center px-3 py-2 border-b border-border ${active ? "bg-accent/10" : ""}`}><div className="flex-1 min-w-0"><div className="text-xs font-medium truncate">{title}</div><div className="text-[11px] font-mono text-text-muted mt-0.5 truncate">{detail}</div></div>{!protectedItem && onEdit && <button onClick={onEdit} className="p-1.5 text-text-muted hover:text-text-primary" title="Edit index"><Pencil size={12} /></button>}{!protectedItem && <button onClick={onDrop} className="p-1.5 text-text-muted hover:text-error"><Trash2 size={12} /></button>}</div>; }
+function ManagerRow({ title, detail, badge, protectedItem, active, onEdit, onDrop }: { title: string; detail: string; badge?: string; protectedItem?: boolean; active?: boolean; onEdit?: () => void; onDrop: () => void }) { return <div className={`flex items-center px-3 py-2 border-b border-border ${active ? "bg-accent/10" : ""}`}><div className="flex-1 min-w-0"><div className="text-xs font-medium truncate">{title}</div><div className="flex items-center gap-1.5 mt-0.5 min-w-0">{badge && <span className="shrink-0 px-1 py-px rounded text-[9px] font-bold tracking-wide bg-accent/15 text-accent">{badge}</span>}<div className="text-[11px] font-mono text-text-muted truncate">{detail}</div></div></div>{!protectedItem && onEdit && <button onClick={onEdit} className="p-1.5 text-text-muted hover:text-text-primary" title="Edit index"><Pencil size={12} /></button>}{!protectedItem && <button onClick={onDrop} className="p-1.5 text-text-muted hover:text-error"><Trash2 size={12} /></button>}</div>; }
 function CellInput({ value, placeholder, onChange }: { value: string; placeholder?: string; onChange: (value: string) => void }) { return <div className="border-r border-border p-1"><input value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} className="w-full h-full px-2 py-1 bg-transparent outline-none focus:bg-bg-primary focus:ring-1 focus:ring-accent/50 rounded font-mono" /></div>; }
 function TypeInput({ value, listId, onChange }: { value: string; listId: string; onChange: (value: string) => void }) { return <div className="border-r border-border p-1"><input list={listId} value={value} onChange={(event) => onChange(event.target.value)} className="w-full h-full px-2 py-1 bg-transparent outline-none focus:bg-bg-primary focus:ring-1 focus:ring-accent/50 rounded font-mono" /></div>; }
 function SmallInput({ value, placeholder, onChange }: { value: string; placeholder: string; onChange: (value: string) => void }) { return <input value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} className="input-field" />; }
