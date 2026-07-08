@@ -160,6 +160,8 @@ function App() {
   activeTabIdRef.current = activeTabId;
   const openedConnectionIdsRef = useRef(new Set<string>());
   const addQueryTabRef = useRef<(() => void) | null>(null);
+  const requestAddQueryTabRef = useRef<(() => void) | null>(null);
+  const pendingAddQueryTabRef = useRef(false);
   const saveAllChangesRef = useRef<(() => void) | null>(null);
   const closeContentTabRef = useRef<(id: string) => void>(() => {});
   const closeDbRef = useRef<(db: string) => void>(() => {});
@@ -207,7 +209,7 @@ function App() {
       if ((e.metaKey || e.ctrlKey) && e.key === "e") {
         e.preventDefault();
         e.stopPropagation();
-        addQueryTabRef.current?.();
+        requestAddQueryTabRef.current?.();
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "n") {
         e.preventDefault();
@@ -361,10 +363,21 @@ function App() {
         const initialDbs = profile.database ? [profile.database] : [];
         const initialWorkspaces: Record<string, DbWorkspace> = {};
         if (profile.database) {
+          // Default database known up front — jump straight into a fresh query
+          // tab instead of making the user click "+ SQL" after connecting.
+          const restoredSql = queryStackPop();
+          const ct: ContentTab = {
+            id: nextContentTabId(),
+            db: profile.database,
+            schema: defaultSchema(profile.type),
+            table: "Query 1",
+            type: "query",
+            sql: restoredSql || "",
+          };
           initialWorkspaces[profile.database] = {
             db: profile.database,
-            contentTabs: [],
-            activeContentTabId: null,
+            contentTabs: [ct],
+            activeContentTabId: ct.id,
           };
         }
 
@@ -381,6 +394,12 @@ function App() {
 
         setTabs((prev) => [...prev, newTab]);
         setActiveTabId(tabId);
+
+        // No default database — prompt for one right away instead of leaving
+        // the user staring at an empty schema tree.
+        if (!profile.database) {
+          setCommandPaletteOpen("db-only");
+        }
 
         await getCurrentWindow().show();
         await getCurrentWindow().setFocus();
@@ -659,6 +678,21 @@ function App() {
   }, [cellSelection]);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+
+  // Opening a new SQL query tab requires an active database. If none is set yet
+  // (e.g. a server-level connection with no default database), open the database
+  // picker instead of no-op'ing — selecting a db there chains straight into
+  // creating the query tab (see onSelectDb below).
+  const requestAddQueryTab = useCallback(() => {
+    if (activeTab?.activeDbName) {
+      addQueryTab();
+    } else {
+      pendingAddQueryTabRef.current = true;
+      setCommandPaletteOpen("db-only");
+    }
+  }, [activeTab, addQueryTab]);
+  requestAddQueryTabRef.current = requestAddQueryTab;
+
   const activeWorkspace = activeTab?.activeDbName
     ? activeTab.workspaces[activeTab.activeDbName] ?? null
     : null;
@@ -887,14 +921,20 @@ function App() {
           mode={commandPaletteOpen}
           onSelectDb={(db) => {
             openDb(db);
+            if (pendingAddQueryTabRef.current) {
+              pendingAddQueryTabRef.current = false;
+              // Use setTimeout to let state settle before opening the query tab
+              setTimeout(() => addQueryTabRef.current?.(), 0);
+            }
           }}
           onSelectTable={(db, schema, table, type) => {
             // Ensure db is open first
             openDb(db);
+            pendingAddQueryTabRef.current = false;
             // Use setTimeout to let state settle before opening the table
             setTimeout(() => handleTableSelect(db, schema, table, type), 0);
           }}
-          onClose={() => setCommandPaletteOpen(false)}
+          onClose={() => { pendingAddQueryTabRef.current = false; setCommandPaletteOpen(false); }}
         />
       )}
 
@@ -988,10 +1028,9 @@ function App() {
                 </div>
                 <div className="flex items-center px-1.5 shrink-0 border-l border-border">
                   <button
-                    onClick={addQueryTab}
-                    disabled={!activeTab.activeDbName}
-                    title={`New SQL query tab (${modKey("E")})`}
-                    className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold tracking-wide text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer border border-border disabled:opacity-30 disabled:cursor-not-allowed"
+                    onClick={requestAddQueryTab}
+                    title={activeTab.activeDbName ? `New SQL query tab (${modKey("E")})` : `Select a database, then start a new SQL query tab (${modKey("E")})`}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold tracking-wide text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer border border-border"
                   >
                     <Plus size={10} />
                     SQL
