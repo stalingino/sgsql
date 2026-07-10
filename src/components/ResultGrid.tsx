@@ -546,9 +546,9 @@ export function ResultGrid({
       const current = clientSort ? internalSort : (externalSort ?? null);
       let next: SortState | null;
       if (current?.column !== col) {
-        next = { column: col, dir: "ASC" };
-      } else if (current.dir === "ASC") {
         next = { column: col, dir: "DESC" };
+      } else if (current.dir === "DESC") {
+        next = { column: col, dir: "ASC" };
       } else {
         next = null;
       }
