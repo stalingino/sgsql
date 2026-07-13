@@ -229,11 +229,15 @@ function FilterRowItem({
     onApply();
   };
 
-  // After a column is picked in the popup, move focus onto the operator so the
-  // user can keep going without touching the mouse.
-  const focusOperator = useCallback(() => {
-    setTimeout(() => operatorRef.current?.focus(), 0);
-  }, []);
+  // After a column is picked in the popup, jump straight to the value input so the
+  // user can keep going without touching the mouse. Value-less operators (IS NULL /
+  // IS NOT NULL) don't render a value input, so fall back to the operator select.
+  const focusAfterColumnPick = useCallback(() => {
+    setTimeout(() => {
+      if (NO_VALUE_OPS.has(filter.operator)) operatorRef.current?.focus();
+      else valueRef.current?.focus();
+    }, 0);
+  }, [filter.operator]);
 
   // Merge the external first-input ref with the local value ref.
   const setValueRef = useCallback((node: HTMLInputElement | null) => {
@@ -271,7 +275,7 @@ function FilterRowItem({
         columns={columns}
         onSelectRaw={() => onChange({ mode: "raw", column: "" })}
         onSelectColumn={(col) => onChange({ mode: "column", column: col })}
-        onColumnPicked={focusOperator}
+        onColumnPicked={focusAfterColumnPick}
       />
 
       {filter.mode === "raw" ? (
@@ -515,6 +519,9 @@ function ModeColumnPicker({
   const searchRef = useRef<HTMLInputElement>(null);
   const activeRowRef = useRef<HTMLDivElement>(null);
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  // Holds a character typed on the closed button so the dropdown opens pre-seeded
+  // with it, instead of always opening with an empty search.
+  const seededSearchRef = useRef<string | null>(null);
 
   // Close on outside click
   useEffect(() => {
@@ -531,13 +538,28 @@ function ModeColumnPicker({
   // Auto-focus search on open + compute position
   useEffect(() => {
     if (open && buttonRef.current) {
-      setSearch("");
+      const seeded = seededSearchRef.current;
+      seededSearchRef.current = null;
+      setSearch(seeded ?? "");
       setActiveIndex(0);
       const rect = buttonRef.current.getBoundingClientRect();
       setDropdownPos({ top: rect.top - 4, left: rect.left });
-      setTimeout(() => searchRef.current?.focus(), 30);
+      setTimeout(() => {
+        searchRef.current?.focus();
+        if (seeded) searchRef.current?.setSelectionRange(seeded.length, seeded.length);
+      }, 30);
     }
   }, [open]);
+
+  // Typing a printable character while the closed button is focused opens the
+  // dropdown and starts filtering immediately, instead of requiring a click first.
+  const handleButtonKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    // Space/Enter fall through to the button's native activation (opens empty).
+    if (open || e.key === " " || e.key.length !== 1 || e.metaKey || e.ctrlKey || e.altKey) return;
+    e.preventDefault();
+    seededSearchRef.current = e.key;
+    setOpen(true);
+  };
 
   const filtered = fuzzySearch(columns, search);
 
@@ -576,6 +598,7 @@ function ModeColumnPicker({
       <button
         ref={buttonRef}
         onClick={() => setOpen(!open)}
+        onKeyDown={handleButtonKeyDown}
         className={`flex items-center gap-0.5 px-2 py-1 text-[11px] rounded border transition-colors cursor-pointer min-w-[80px] max-w-[160px] truncate ${
           open
             ? "border-accent bg-accent/10 text-accent"

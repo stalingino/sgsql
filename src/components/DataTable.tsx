@@ -50,6 +50,12 @@ interface DataTableProps {
   onTableRenamed?: (newName: string) => void;
   sort?: SortState | null;
   onSortChange?: (sort: SortState | null) => void;
+  filters?: FilterRow[];
+  onFiltersChange?: (filters: FilterRow[]) => void;
+  appliedWhere?: string;
+  onAppliedWhereChange?: (where: string) => void;
+  filtersOpen?: boolean;
+  onFiltersOpenChange?: (open: boolean) => void;
 }
 
 const PAGE_SIZE = 50;
@@ -281,7 +287,7 @@ function sameSort(left: SortState | null, right: SortState | null): boolean {
 
 /* ── Main component ────────────────────────────────────── */
 
-export function DataTable({ connectionId, connectionType, db, schema, table, onCellSelect, revealCell, viewMode, onViewModeChange, onTableRenamed, sort: sortProp, onSortChange }: DataTableProps) {
+export function DataTable({ connectionId, connectionType, db, schema, table, onCellSelect, revealCell, viewMode, onViewModeChange, onTableRenamed, sort: sortProp, onSortChange, filters: filtersProp, onFiltersChange, appliedWhere: appliedWhereProp, onAppliedWhereChange, filtersOpen: filtersOpenProp, onFiltersOpenChange }: DataTableProps) {
   const initialSort = sortProp !== undefined ? sortProp : parseDefaultOrderBy(getConfig().settings?.defaultOrderBy);
   const refreshKey = tableRefreshKey({ connectionId, db, schema, table });
   const tableRevision = useEditStore((s) => s.tableRevisions.get(refreshKey) ?? 0);
@@ -320,9 +326,30 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   const [structureRevision, setStructureRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const [filters, setFilters] = useState<FilterRow[]>([]);
-  const [appliedWhere, setAppliedWhere] = useState<string>("");
+  const [internalFiltersOpen, setInternalFiltersOpen] = useState(false);
+  const filtersOpen = filtersOpenProp !== undefined ? filtersOpenProp : internalFiltersOpen;
+  const setFiltersOpen = useCallback((updater: boolean | ((current: boolean) => boolean)) => {
+    const resolved = typeof updater === "function" ? (updater as (current: boolean) => boolean)(filtersOpen) : updater;
+    if (onFiltersOpenChange) onFiltersOpenChange(resolved);
+    else setInternalFiltersOpen(resolved);
+  }, [filtersOpen, onFiltersOpenChange]);
+
+  const [internalFilters, setInternalFilters] = useState<FilterRow[]>([]);
+  // Controlled when the parent persists filters per-tab (filtersProp defined); otherwise
+  // falls back to local state so the component still works without a persisting parent.
+  const filters = filtersProp !== undefined ? filtersProp : internalFilters;
+  const setFilters = useCallback((updater: FilterRow[] | ((current: FilterRow[]) => FilterRow[])) => {
+    const resolved = typeof updater === "function" ? (updater as (current: FilterRow[]) => FilterRow[])(filters) : updater;
+    if (onFiltersChange) onFiltersChange(resolved);
+    else setInternalFilters(resolved);
+  }, [filters, onFiltersChange]);
+
+  const [internalAppliedWhere, setInternalAppliedWhere] = useState<string>("");
+  const appliedWhere = appliedWhereProp !== undefined ? appliedWhereProp : internalAppliedWhere;
+  const setAppliedWhere = useCallback((where: string) => {
+    if (onAppliedWhereChange) onAppliedWhereChange(where);
+    else setInternalAppliedWhere(where);
+  }, [onAppliedWhereChange]);
   const [filterRefreshRevision, setFilterRefreshRevision] = useState(0);
   const [sqlPreview, setSqlPreview] = useState(false);
   const [schemaDdlOpen, setSchemaDdlOpen] = useState(false);
@@ -432,9 +459,6 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   useEffect(() => {
     setOffset(0);
     setInternalMode("data");
-    setFiltersOpen(false);
-    setFilters([]);
-    setAppliedWhere("");
     setSqlPreview(false);
     setSchemaDdlOpen(false);
     // Re-apply the configured sort (or the built-in default) for the new table,
@@ -442,6 +466,16 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     if (sortProp === undefined) {
       const nextSort = parseDefaultOrderBy(getConfig().settings?.defaultOrderBy);
       setSort((current) => sameSort(current, nextSort) ? current : nextSort);
+    }
+    // Likewise, only clear filters here when the parent isn't already persisting
+    // them per-tab — otherwise this mount-time reset would wipe out filters that
+    // were just restored from props (e.g. switching back to a connection tab).
+    if (filtersProp === undefined) {
+      setFiltersOpen(false);
+      setFilters([]);
+    }
+    if (appliedWhereProp === undefined) {
+      setAppliedWhere("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionId, db, schema, table]);

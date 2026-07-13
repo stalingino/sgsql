@@ -42,6 +42,7 @@ import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { CommandPalette } from "./components/CommandPalette";
 import { ChangeHistoryPanel } from "./components/ChangeHistoryPopup";
 import type { CellSelection, CellRevealRequest, SortState } from "./components/ResultGrid";
+import type { FilterRow } from "./components/FilterPanel";
 import type { ConnectionProfile } from "./lib/types";
 import { envBadgeStyle } from "./lib/types";
 import { modKey } from "./lib/platform";
@@ -57,6 +58,9 @@ interface ContentTab {
   sql?: string;
   viewMode?: "data" | "structure";
   sort?: SortState | null;
+  filters?: FilterRow[];
+  appliedWhere?: string;
+  filtersOpen?: boolean;
 }
 
 interface DbWorkspace {
@@ -1105,6 +1109,33 @@ function App() {
                               const ws = tab.workspaces[ct.db];
                               if (!ws) return tab;
                               return { ...tab, workspaces: { ...tab.workspaces, [ct.db]: { ...ws, contentTabs: ws.contentTabs.map((content) => content.id === ct.id ? { ...content, sort } : content) } } };
+                            }));
+                          }}
+                          filters={ct.filters}
+                          onFiltersChange={(filters) => {
+                            setTabs((prev) => prev.map((tab) => {
+                              if (tab.id !== activeTab.id) return tab;
+                              const ws = tab.workspaces[ct.db];
+                              if (!ws) return tab;
+                              return { ...tab, workspaces: { ...tab.workspaces, [ct.db]: { ...ws, contentTabs: ws.contentTabs.map((content) => content.id === ct.id ? { ...content, filters } : content) } } };
+                            }));
+                          }}
+                          appliedWhere={ct.appliedWhere}
+                          onAppliedWhereChange={(appliedWhere) => {
+                            setTabs((prev) => prev.map((tab) => {
+                              if (tab.id !== activeTab.id) return tab;
+                              const ws = tab.workspaces[ct.db];
+                              if (!ws) return tab;
+                              return { ...tab, workspaces: { ...tab.workspaces, [ct.db]: { ...ws, contentTabs: ws.contentTabs.map((content) => content.id === ct.id ? { ...content, appliedWhere } : content) } } };
+                            }));
+                          }}
+                          filtersOpen={ct.filtersOpen}
+                          onFiltersOpenChange={(filtersOpen) => {
+                            setTabs((prev) => prev.map((tab) => {
+                              if (tab.id !== activeTab.id) return tab;
+                              const ws = tab.workspaces[ct.db];
+                              if (!ws) return tab;
+                              return { ...tab, workspaces: { ...tab.workspaces, [ct.db]: { ...ws, contentTabs: ws.contentTabs.map((content) => content.id === ct.id ? { ...content, filtersOpen } : content) } } };
                             }));
                           }}
                         />
