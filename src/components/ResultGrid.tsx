@@ -213,8 +213,8 @@ function useResizableColumns(
           if (colgroup) {
             const cols = colgroup.querySelectorAll("col");
             const colIndex = columnKeys.indexOf(dragRef.current.col);
-            if (colIndex !== -1 && cols[colIndex + 1]) {
-              (cols[colIndex + 1] as HTMLElement).style.width = `${newW}px`;
+            if (colIndex !== -1 && cols[colIndex]) {
+              (cols[colIndex] as HTMLElement).style.width = `${newW}px`;
             }
           }
           let total = 0;
