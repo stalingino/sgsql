@@ -544,6 +544,19 @@ export function ResultGrid({
 
   const activeSort = clientSort ? internalSort : (externalSort ?? null);
 
+  const autoSizeData = useMemo(
+    () =>
+      columns.length > 0
+        ? { columns, rows: rows.length > 0 ? rows : undefined }
+        : undefined,
+    [columns, rows],
+  );
+
+  const { getWidth, onResizeMouseDown, totalWidth, tableRef, isResizing } = useResizableColumns(
+    columns,
+    autoSizeData,
+  );
+
   const handleHeaderClick = useCallback(
     (col: string) => {
       if (isResizing()) return;
@@ -765,19 +778,6 @@ export function ResultGrid({
       setCtxMenu({ x: e.clientX, y: e.clientY, rowIdx, colIdx });
     },
     [selectedRows, selectSingle],
-  );
-
-  const autoSizeData = useMemo(
-    () =>
-      columns.length > 0
-        ? { columns, rows: rows.length > 0 ? rows : undefined }
-        : undefined,
-    [columns, rows],
-  );
-
-  const { getWidth, onResizeMouseDown, totalWidth, tableRef, isResizing } = useResizableColumns(
-    columns,
-    autoSizeData,
   );
 
   useEffect(() => {
