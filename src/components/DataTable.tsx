@@ -48,6 +48,8 @@ interface DataTableProps {
   viewMode?: ViewMode;
   onViewModeChange?: (mode: ViewMode) => void;
   onTableRenamed?: (newName: string) => void;
+  sort?: SortState | null;
+  onSortChange?: (sort: SortState | null) => void;
 }
 
 const PAGE_SIZE = 50;
@@ -279,11 +281,21 @@ function sameSort(left: SortState | null, right: SortState | null): boolean {
 
 /* ── Main component ────────────────────────────────────── */
 
-export function DataTable({ connectionId, connectionType, db, schema, table, onCellSelect, revealCell, viewMode, onViewModeChange, onTableRenamed }: DataTableProps) {
-  const initialSort = parseDefaultOrderBy(getConfig().settings?.defaultOrderBy);
+export function DataTable({ connectionId, connectionType, db, schema, table, onCellSelect, revealCell, viewMode, onViewModeChange, onTableRenamed, sort: sortProp, onSortChange }: DataTableProps) {
+  const initialSort = sortProp !== undefined ? sortProp : parseDefaultOrderBy(getConfig().settings?.defaultOrderBy);
   const refreshKey = tableRefreshKey({ connectionId, db, schema, table });
   const tableRevision = useEditStore((s) => s.tableRevisions.get(refreshKey) ?? 0);
-  const [sort, setSort] = useState<SortState | null>(initialSort);
+  const [internalSort, setInternalSort] = useState<SortState | null>(initialSort);
+  // Controlled when the parent persists sort per-tab (sortProp defined); otherwise
+  // falls back to local state so the component still works without a persisting parent.
+  const sort = sortProp !== undefined ? sortProp : internalSort;
+  const setSort = useCallback((updater: SortState | null | ((current: SortState | null) => SortState | null)) => {
+    const resolved = typeof updater === "function"
+      ? (updater as (current: SortState | null) => SortState | null)(sort)
+      : updater;
+    if (onSortChange) onSortChange(resolved);
+    else setInternalSort(resolved);
+  }, [sort, onSortChange]);
   const [initialData] = useState(() => getCachedTableRows({
     connectionId,
     db,
@@ -425,9 +437,13 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     setAppliedWhere("");
     setSqlPreview(false);
     setSchemaDdlOpen(false);
-    // Re-apply the configured sort (or the built-in default) for the new table.
-    const nextSort = parseDefaultOrderBy(getConfig().settings?.defaultOrderBy);
-    setSort((current) => sameSort(current, nextSort) ? current : nextSort);
+    // Re-apply the configured sort (or the built-in default) for the new table,
+    // unless the parent already persists a sort for this tab (sortProp defined).
+    if (sortProp === undefined) {
+      const nextSort = parseDefaultOrderBy(getConfig().settings?.defaultOrderBy);
+      setSort((current) => sameSort(current, nextSort) ? current : nextSort);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionId, db, schema, table]);
 
   // Fetch structure (columns) on mount / table change

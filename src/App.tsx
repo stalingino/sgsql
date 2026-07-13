@@ -39,7 +39,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { CommandPalette } from "./components/CommandPalette";
 import { ChangeHistoryPanel } from "./components/ChangeHistoryPopup";
-import type { CellSelection, CellRevealRequest } from "./components/ResultGrid";
+import type { CellSelection, CellRevealRequest, SortState } from "./components/ResultGrid";
 import type { ConnectionProfile } from "./lib/types";
 import { envBadgeStyle } from "./lib/types";
 import { modKey } from "./lib/platform";
@@ -54,6 +54,7 @@ interface ContentTab {
   type: "table" | "view" | "query";
   sql?: string;
   viewMode?: "data" | "structure";
+  sort?: SortState | null;
 }
 
 interface DbWorkspace {
@@ -1096,6 +1097,15 @@ function App() {
                               return { ...tab, workspaces: { ...tab.workspaces, [ct.db]: { ...ws, contentTabs: ws.contentTabs.map((content) => content.id === ct.id ? { ...content, table: newName } : content) } } };
                             }));
                             if (activeTab.connectionId) notifySchemaChanged(activeTab.connectionId);
+                          }}
+                          sort={ct.sort}
+                          onSortChange={(sort) => {
+                            setTabs((prev) => prev.map((tab) => {
+                              if (tab.id !== activeTab.id) return tab;
+                              const ws = tab.workspaces[ct.db];
+                              if (!ws) return tab;
+                              return { ...tab, workspaces: { ...tab.workspaces, [ct.db]: { ...ws, contentTabs: ws.contentTabs.map((content) => content.id === ct.id ? { ...content, sort } : content) } } };
+                            }));
                           }}
                         />
                       )}
