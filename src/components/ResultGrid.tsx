@@ -161,6 +161,7 @@ function useResizableColumns(
   const tableRef = useRef<HTMLTableElement | null>(null);
   const dragRef = useRef<{ col: string; startX: number; startW: number } | null>(null);
   const manualRef = useRef<Set<string>>(new Set());
+  const resizingRef = useRef(false);
 
   widthsRef.current = widths;
 
@@ -202,6 +203,7 @@ function useResizableColumns(
       const startX = e.clientX;
       const startW = widthsRef.current[col] ?? DEFAULT_COL_WIDTH;
       dragRef.current = { col, startX, startW };
+      resizingRef.current = true;
 
       const onMouseMove = (ev: MouseEvent) => {
         if (!dragRef.current) return;
@@ -235,6 +237,7 @@ function useResizableColumns(
         document.removeEventListener("mouseup", onMouseUp);
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
+        resizingRef.current = false;
         setWidths({ ...widthsRef.current });
       };
 
@@ -257,7 +260,7 @@ function useResizableColumns(
     [widths],
   );
 
-  return { getWidth, onResizeMouseDown, totalWidth, tableRef };
+  return { getWidth, onResizeMouseDown, totalWidth, tableRef, isResizing: () => resizingRef.current };
 }
 
 /* ── Resizable header cell ─────────────────────────────── */
@@ -543,6 +546,7 @@ export function ResultGrid({
 
   const handleHeaderClick = useCallback(
     (col: string) => {
+      if (isResizing()) return;
       const current = clientSort ? internalSort : (externalSort ?? null);
       let next: SortState | null;
       if (current?.column !== col) {
@@ -555,7 +559,7 @@ export function ResultGrid({
       if (clientSort) setInternalSort(next);
       else onSortChange?.(next);
     },
-    [clientSort, internalSort, externalSort, onSortChange],
+    [clientSort, internalSort, externalSort, onSortChange, isResizing],
   );
 
   // Client-side sorted rows
@@ -771,7 +775,7 @@ export function ResultGrid({
     [columns, rows],
   );
 
-  const { getWidth, onResizeMouseDown, totalWidth, tableRef } = useResizableColumns(
+  const { getWidth, onResizeMouseDown, totalWidth, tableRef, isResizing } = useResizableColumns(
     columns,
     autoSizeData,
   );
