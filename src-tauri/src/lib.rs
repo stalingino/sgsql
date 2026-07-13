@@ -27,6 +27,8 @@ fn stop_managed_sidecar(app: &tauri::AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         // tauri-plugin-store removed — using encrypted_store via keychain + AES-256-GCM
         .invoke_handler(tauri::generate_handler![
             keychain::keychain_set,

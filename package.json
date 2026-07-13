@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "icons:mac": "node scripts/build-macos-icons.mjs",
-    "sidecar:build": "bun build --compile sidecar/index.ts --outfile src-tauri/binaries/dbsidecar-aarch64-apple-darwin && codesign --remove-signature src-tauri/binaries/dbsidecar-aarch64-apple-darwin && codesign --force --sign - --entitlements src-tauri/sidecar-entitlements.plist src-tauri/binaries/dbsidecar-aarch64-apple-darwin"
+    "sidecar:build": "bun build --compile sidecar/index.ts --outfile src-tauri/binaries/dbsidecar-aarch64-apple-darwin && codesign --remove-signature src-tauri/binaries/dbsidecar-aarch64-apple-darwin && codesign --force --sign \"SGSql Developer\" --entitlements src-tauri/sidecar-entitlements.plist src-tauri/binaries/dbsidecar-aarch64-apple-darwin"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
@@ -25,8 +25,10 @@
     "@dnd-kit/react": "^0.5.0",
     "@tailwindcss/vite": "^4.2.2",
     "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-process": "^2",
     "@tauri-apps/plugin-shell": "^2.3.5",
     "@tauri-apps/plugin-store": "^2.4.2",
+    "@tauri-apps/plugin-updater": "^2",
     "lucide-react": "^0.577.0",
     "monaco-editor": "^0.55.1",
     "mysql2": "^3.20.0",
