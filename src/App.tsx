@@ -21,6 +21,8 @@ import {
   FilePenLine,
   RefreshCw,
 } from "lucide-react";
+import { DragDropProvider, type DragEndEvent } from "@dnd-kit/react";
+import { useSortable } from "@dnd-kit/react/sortable";
 import { waitForSidecar, CONNECTION_RESTORED_EVENT } from "./lib/sidecar";
 import { openConnectionManager } from "./lib/openConnectionManager";
 import { closeConnection, reloadConnection } from "./lib/schema";
@@ -169,8 +171,6 @@ function App() {
   const closeTabRef = useRef<(id: string) => void>(() => {});
   const reloadActiveConnectionRef = useRef<(() => void) | null>(null);
   const toggleViewModeRef = useRef<(() => void) | null>(null);
-  const draggedConnectionTabIdRef = useRef<string | null>(null);
-  const draggedContentTabIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let clearTimer: ReturnType<typeof setTimeout> | undefined;
@@ -802,34 +802,34 @@ function App() {
         </div>
 
         {/* Tabs */}
-        <div className="flex items-center min-w-0 flex-1 overflow-x-auto no-scrollbar">
-          {tabs.map((tab) => (
-            <TabItem
-              key={tab.id}
-              tab={tab}
-              active={tab.id === activeTabId}
-              onActivate={() => setActiveTabId(tab.id)}
-              onClose={() => closeTab(tab.id)}
-              onDragStart={(event) => {
-                draggedConnectionTabIdRef.current = tab.id;
-                event.dataTransfer.effectAllowed = "move";
-              }}
-              onDragOver={(event) => {
-                if (draggedConnectionTabIdRef.current && draggedConnectionTabIdRef.current !== tab.id) {
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = "move";
-                }
-              }}
-              onDrop={(event) => {
-                event.preventDefault();
-                const sourceId = draggedConnectionTabIdRef.current;
-                if (sourceId) reorderConnectionTabs(sourceId, tab.id);
-                draggedConnectionTabIdRef.current = null;
-              }}
-              onDragEnd={() => { draggedConnectionTabIdRef.current = null; }}
-            />
-          ))}
-        </div>
+        <DragDropProvider
+          onDragEnd={(event: DragEndEvent) => {
+            const { source, target, canceled } = event.operation;
+            if (canceled || !target || !source || !("index" in source) || !("index" in target)) return;
+            const sourceIdx = source.index as number;
+            const targetIdx = target.index as number;
+            if (sourceIdx !== targetIdx) {
+              const sourceId = tabs[sourceIdx]?.id;
+              const targetId = tabs[targetIdx]?.id;
+              if (sourceId && targetId) {
+                reorderConnectionTabs(sourceId, targetId);
+              }
+            }
+          }}
+        >
+          <div className="flex items-center min-w-0 flex-1 overflow-x-auto no-scrollbar">
+            {tabs.map((tab, index) => (
+              <TabItem
+                key={tab.id}
+                tab={tab}
+                index={index}
+                active={tab.id === activeTabId}
+                onActivate={() => setActiveTabId(tab.id)}
+                onClose={() => closeTab(tab.id)}
+              />
+            ))}
+          </div>
+        </DragDropProvider>
 
         {/* Right toolbar */}
         <div className="flex items-center gap-0.5 mx-1 shrink-0 relative">
@@ -999,34 +999,34 @@ function App() {
             <main className="flex-1 flex flex-col min-h-0 min-w-0 bg-bg-primary">
               {/* Content tab bar — always visible */}
               <div className="flex items-center h-8 border-b border-border bg-bg-secondary shrink-0">
-                <div className="flex-1 flex items-center h-full overflow-x-auto no-scrollbar">
-                  {activeWorkspace?.contentTabs.map((ct) => (
-                    <ContentTabItem
-                      key={ct.id}
-                      ct={ct}
-                      active={ct.id === activeWorkspace.activeContentTabId}
-                      onActivate={() => setActiveContentTab(ct.id)}
-                      onClose={() => closeContentTab(ct.id)}
-                      onDragStart={(event) => {
-                        draggedContentTabIdRef.current = ct.id;
-                        event.dataTransfer.effectAllowed = "move";
-                      }}
-                      onDragOver={(event) => {
-                        if (draggedContentTabIdRef.current && draggedContentTabIdRef.current !== ct.id) {
-                          event.preventDefault();
-                          event.dataTransfer.dropEffect = "move";
-                        }
-                      }}
-                      onDrop={(event) => {
-                        event.preventDefault();
-                        const sourceId = draggedContentTabIdRef.current;
-                        if (sourceId) reorderContentTabs(sourceId, ct.id);
-                        draggedContentTabIdRef.current = null;
-                      }}
-                      onDragEnd={() => { draggedContentTabIdRef.current = null; }}
-                    />
-                  ))}
-                </div>
+                <DragDropProvider
+                  onDragEnd={(event: DragEndEvent) => {
+                    const { source, target, canceled } = event.operation;
+                    if (canceled || !target || !source || !("index" in source) || !("index" in target) || !activeWorkspace) return;
+                    const sourceIdx = source.index as number;
+                    const targetIdx = target.index as number;
+                    if (sourceIdx !== targetIdx) {
+                      const sourceId = activeWorkspace.contentTabs[sourceIdx]?.id;
+                      const targetId = activeWorkspace.contentTabs[targetIdx]?.id;
+                      if (sourceId && targetId) {
+                        reorderContentTabs(sourceId, targetId);
+                      }
+                    }
+                  }}
+                >
+                  <div className="flex-1 flex items-center h-full overflow-x-auto no-scrollbar">
+                    {activeWorkspace?.contentTabs.map((ct, index) => (
+                      <ContentTabItem
+                        key={ct.id}
+                        ct={ct}
+                        index={index}
+                        active={ct.id === activeWorkspace.activeContentTabId}
+                        onActivate={() => setActiveContentTab(ct.id)}
+                        onClose={() => closeContentTab(ct.id)}
+                      />
+                    ))}
+                  </div>
+                </DragDropProvider>
                 <div className="flex items-center px-1.5 shrink-0 border-l border-border">
                   <button
                     onClick={requestAddQueryTab}
@@ -1182,41 +1182,32 @@ function App() {
 
 function TabItem({
   tab,
+  index,
   active,
   onActivate,
   onClose,
-  onDragStart,
-  onDragOver,
-  onDrop,
-  onDragEnd,
 }: {
   tab: Tab;
+  index: number;
   active: boolean;
   onActivate: () => void;
   onClose: () => void;
-  onDragStart: React.DragEventHandler<HTMLDivElement>;
-  onDragOver: React.DragEventHandler<HTMLDivElement>;
-  onDrop: React.DragEventHandler<HTMLDivElement>;
-  onDragEnd: React.DragEventHandler<HTMLDivElement>;
 }) {
   const envStyle = envBadgeStyle(tab.profile.env);
   const connecting = !tab.connectionId && !tab.connectingError;
   const hasError = !!tab.connectingError;
+  const { ref, isDragSource, isDropTarget } = useSortable({ id: tab.id, index });
 
   return (
     <div
+      ref={ref}
       onClick={onActivate}
-      onDragStart={onDragStart}
-      onDragOver={onDragOver}
-      onDrop={onDrop}
-      onDragEnd={onDragEnd}
-      draggable
       title={tab.profile.name || "Untitled"}
       className={`group relative flex items-center gap-1.5 h-full px-3 text-xs cursor-pointer select-none border-r border-border min-w-0 max-w-[180px] transition-colors ${
         active
           ? "bg-bg-primary text-text-primary"
           : "bg-bg-secondary text-text-muted hover:text-text-secondary hover:bg-bg-hover"
-      }`}
+      } ${isDragSource ? "opacity-50" : ""} ${isDropTarget ? "bg-accent/10" : ""}`}
       style={{ paddingTop: 6, paddingBottom: 6 }}
     >
       {envStyle && (
@@ -1230,8 +1221,6 @@ function TabItem({
       <span className="truncate font-medium">{tab.profile.name || "Untitled"}</span>
       <button
         onClick={(e) => { e.stopPropagation(); onClose(); }}
-        onDragStart={(e) => e.stopPropagation()}
-        draggable={false}
         title="Close tab"
         className="close-dot relative w-3.5 h-3.5 shrink-0 ml-auto flex items-center justify-center rounded-full cursor-pointer transition-all"
       >
@@ -1262,37 +1251,29 @@ function TabItem({
 
 function ContentTabItem({
   ct,
+  index,
   active,
   onActivate,
   onClose,
-  onDragStart,
-  onDragOver,
-  onDrop,
-  onDragEnd,
 }: {
   ct: ContentTab;
+  index: number;
   active: boolean;
   onActivate: () => void;
   onClose: () => void;
-  onDragStart: React.DragEventHandler<HTMLDivElement>;
-  onDragOver: React.DragEventHandler<HTMLDivElement>;
-  onDrop: React.DragEventHandler<HTMLDivElement>;
-  onDragEnd: React.DragEventHandler<HTMLDivElement>;
 }) {
+  const { ref, isDragSource, isDropTarget } = useSortable({ id: ct.id, index });
+
   return (
     <div
+      ref={ref}
       onClick={onActivate}
-      onDragStart={onDragStart}
-      onDragOver={onDragOver}
-      onDrop={onDrop}
-      onDragEnd={onDragEnd}
-      draggable
       title={contentTabTitle(ct)}
       className={`group relative flex items-center gap-1.5 h-full px-3 text-[11px] cursor-pointer select-none border-r border-border min-w-0 max-w-52 transition-colors ${
         active
           ? "bg-bg-primary text-text-primary"
           : "bg-bg-secondary text-text-muted hover:text-text-secondary hover:bg-bg-hover"
-      }`}
+      } ${isDragSource ? "opacity-50" : ""} ${isDropTarget ? "bg-accent/10" : ""}`}
     >
       {ct.type === "query"
         ? <span className="shrink-0 text-[9px] font-bold text-accent leading-none">SQL</span>
@@ -1303,8 +1284,6 @@ function ContentTabItem({
       <span className="truncate font-medium">{ct.table}</span>
       <button
         onClick={(e) => { e.stopPropagation(); onClose(); }}
-        onDragStart={(e) => e.stopPropagation()}
-        draggable={false}
         title="Close"
         className={`shrink-0 ml-auto rounded-sm transition-colors cursor-pointer ${
           active
