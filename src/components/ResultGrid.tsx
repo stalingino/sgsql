@@ -109,7 +109,8 @@ function rowsToInsert(cols: string[], rows: unknown[][], tableName = "table_name
     const vals = (r as unknown[]).map((v) => {
       if (v === null || v === undefined) return "NULL";
       if (typeof v === "number" || typeof v === "boolean") return String(v);
-      return `'${String(v).replace(/'/g, "''")}'`;
+      const text = typeof v === "object" ? JSON.stringify(v) : String(v);
+      return `'${text.replace(/'/g, "''")}'`;
     });
     return `(${vals.join(", ")})`;
   });
