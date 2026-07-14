@@ -25,41 +25,6 @@ jobs:
           dirname "$(xcrun -f actool)" >> "$GITHUB_PATH"
           echo "DEVELOPER_DIR=$(xcode-select -p)" >> "$GITHUB_ENV"
 
-      - name: Diagnose actool against a real mktemp -d (default TMPDIR)
-        # tauri-bundler uses tempfile::tempdir(), which resolves to the OS
-        # default TMPDIR (macOS: /var/folders/.../T/), not $RUNNER_TEMP.
-        # That's the one variable my earlier diagnostics didn't control for.
-        run: |
-          echo "TMPDIR=$TMPDIR"
-          WORK=$(mktemp -d)
-          echo "WORK=$WORK"
-          SRC="$PWD/src-tauri/icons/AppIcon.icon"
-          DST="$WORK/Icon.icon"
-          while IFS= read -r -d '' entry; do
-            rel="${entry#"$SRC"/}"
-            if [ -d "$entry" ]; then
-              mkdir -p "$DST/$rel"
-            else
-              mkdir -p "$(dirname "$DST/$rel")"
-              cp "$entry" "$DST/$rel"
-            fi
-          done < <(find "$SRC" -mindepth 1 -print0)
-          mkdir -p "$WORK/out"
-          actool "$DST" \
-            --compile "$WORK/out" \
-            --output-format human-readable-text \
-            --notices \
-            --warnings \
-            --output-partial-info-plist "$WORK/out/assetcatalog_generated_info.plist" \
-            --app-icon Icon \
-            --include-all-app-icons \
-            --accent-color AccentColor \
-            --enable-on-demand-resources NO \
-            --development-region en \
-            --target-device mac \
-            --minimum-deployment-target 26.0 \
-            --platform macosx
-
       - uses: oven-sh/setup-bun@v2
 
       - uses: dtolnay/rust-toolchain@stable
@@ -104,4 +69,4 @@ jobs:
           releaseName: "SGSql ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false
-          args: --target aarch64-apple-darwin
+          args: --target aarch64-apple-darwin -vv
