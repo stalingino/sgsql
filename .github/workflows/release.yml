@@ -25,16 +25,16 @@ jobs:
           dirname "$(xcrun -f actool)" >> "$GITHUB_PATH"
           echo "DEVELOPER_DIR=$(xcode-select -p)" >> "$GITHUB_ENV"
 
-      - name: Diagnose actool against a per-file tempdir copy
-        # Mimics tauri-bundler's fs_utils::copy_dir (walkdir + mkdir_all per
-        # dir, fs::copy per file) instead of a directory-level `cp -R`, to
-        # check whether that copy silently drops something the .icon
-        # package needs (e.g. extended attributes) that the pristine
-        # checked-out directory has.
+      - name: Diagnose actool against a real mktemp -d (default TMPDIR)
+        # tauri-bundler uses tempfile::tempdir(), which resolves to the OS
+        # default TMPDIR (macOS: /var/folders/.../T/), not $RUNNER_TEMP.
+        # That's the one variable my earlier diagnostics didn't control for.
         run: |
+          echo "TMPDIR=$TMPDIR"
+          WORK=$(mktemp -d)
+          echo "WORK=$WORK"
           SRC="$PWD/src-tauri/icons/AppIcon.icon"
-          DST="$RUNNER_TEMP/Icon.icon"
-          rm -rf "$DST" "$RUNNER_TEMP/copy-out"
+          DST="$WORK/Icon.icon"
           while IFS= read -r -d '' entry; do
             rel="${entry#"$SRC"/}"
             if [ -d "$entry" ]; then
@@ -44,15 +44,13 @@ jobs:
               cp "$entry" "$DST/$rel"
             fi
           done < <(find "$SRC" -mindepth 1 -print0)
-          echo "-- copied tree --"
-          find "$DST"
-          mkdir -p "$RUNNER_TEMP/copy-out"
+          mkdir -p "$WORK/out"
           actool "$DST" \
-            --compile "$RUNNER_TEMP/copy-out" \
+            --compile "$WORK/out" \
             --output-format human-readable-text \
             --notices \
             --warnings \
-            --output-partial-info-plist "$RUNNER_TEMP/copy-out/assetcatalog_generated_info.plist" \
+            --output-partial-info-plist "$WORK/out/assetcatalog_generated_info.plist" \
             --app-icon Icon \
             --include-all-app-icons \
             --accent-color AccentColor \
