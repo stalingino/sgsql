@@ -34,4 +34,4 @@ rand = "0.8"
 block2 = "0.6"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage"] }
-objc2-foundation = { version = "0.3", features = ["NSData", "NSNotification", "NSString", "NSUserDefaults", "block2"] }
+objc2-foundation = { version = "0.3", features = ["NSData", "NSNotification", "NSProcessInfo", "NSString", "NSUserDefaults", "block2"] }

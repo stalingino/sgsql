@@ -8,8 +8,8 @@ use objc2::runtime::ProtocolObject;
 use objc2::{class, msg_send, AnyThread};
 use objc2_app_kit::{NSApplication, NSImage};
 use objc2_foundation::{
-    MainThreadMarker, NSData, NSNotification, NSNotificationCenter, NSObjectProtocol, NSString,
-    NSUserDefaults,
+    MainThreadMarker, NSData, NSNotification, NSNotificationCenter, NSObjectProtocol,
+    NSOperatingSystemVersion, NSProcessInfo, NSString, NSUserDefaults,
 };
 use tauri::AppHandle;
 
@@ -17,13 +17,32 @@ static INSTALL_OBSERVER: Once = Once::new();
 static LIGHT_ICON: &[u8] = include_bytes!("../icons/icon.png");
 static DARK_ICON: &[u8] = include_bytes!("../icons/icon-dark.png");
 
+// macOS 26 (Tahoe) renders the app icon natively from the Assets.car / CFBundleIconName
+// baked into the bundle by tauri-bundler's Liquid Glass icon support, switching light/dark/
+// tinted variants itself. Forcing a static NSImage onto the Dock icon there would just
+// override that native rendering, so this whole module becomes a no-op on 26+.
+fn has_native_liquid_glass_icon() -> bool {
+    let min_version = NSOperatingSystemVersion {
+        majorVersion: 26,
+        minorVersion: 0,
+        patchVersion: 0,
+    };
+    NSProcessInfo::processInfo().isOperatingSystemAtLeastVersion(min_version)
+}
+
 pub fn init(app: &AppHandle) {
+    if has_native_liquid_glass_icon() {
+        return;
+    }
     refresh(app);
     install_appearance_observer(app);
     refresh_after_delay(app, Duration::from_millis(500));
 }
 
 pub fn refresh(app: &AppHandle) {
+    if has_native_liquid_glass_icon() {
+        return;
+    }
     let _ = app.run_on_main_thread(|| {
         if let Some(mtm) = MainThreadMarker::new() {
             set_dock_icon(mtm);

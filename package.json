@@ -13,7 +13,7 @@
     "sidecar:build": "bun build --compile sidecar/index.ts --outfile src-tauri/binaries/dbsidecar-aarch64-apple-darwin && codesign --remove-signature src-tauri/binaries/dbsidecar-aarch64-apple-darwin && codesign --force --sign \"SGSql Developer\" --entitlements src-tauri/sidecar-entitlements.plist src-tauri/binaries/dbsidecar-aarch64-apple-darwin"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2",
+    "@tauri-apps/cli": "^2.11.4",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
