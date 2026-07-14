@@ -15,26 +15,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Diagnose macOS icon compile
-        run: |
-          xcodebuild -version
-          xcrun actool --version --output-format=human-readable-text
-          rm -rf "$RUNNER_TEMP/icon-diag"
-          mkdir -p "$RUNNER_TEMP/icon-diag/out"
-          xcrun actool src-tauri/icons/AppIcon.icon \
-            --compile "$RUNNER_TEMP/icon-diag/out" \
-            --output-format human-readable-text \
-            --notices \
-            --warnings \
-            --output-partial-info-plist "$RUNNER_TEMP/icon-diag/out/assetcatalog_generated_info.plist" \
-            --app-icon Icon \
-            --include-all-app-icons \
-            --accent-color AccentColor \
-            --enable-on-demand-resources NO \
-            --development-region en \
-            --target-device mac \
-            --minimum-deployment-target 26.0 \
-            --platform macosx
+      - name: Put actool on PATH
+        # tauri-bundler shells out to a bare `actool` (not `xcrun actool`) to
+        # compile icons/AppIcon.icon into Assets.car. The runner's default
+        # PATH doesn't include Xcode's toolchain bin dir, so that spawn fails
+        # even though `xcrun actool` resolves it fine.
+        run: dirname "$(xcrun -f actool)" >> "$GITHUB_PATH"
 
       - uses: oven-sh/setup-bun@v2
 
