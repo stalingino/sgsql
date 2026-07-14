@@ -15,15 +15,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Put actool on PATH
-        # tauri-bundler shells out to a bare `actool` (not `xcrun actool`) to
-        # compile icons/AppIcon.icon into Assets.car. `xcrun` normally
-        # resolves the binary AND injects DEVELOPER_DIR, which actool needs
-        # to find its own support resources for the newer Icon Composer
-        # format; a bare spawn gets neither unless we set both explicitly.
+      - name: List installed Xcode versions
         run: |
-          dirname "$(xcrun -f actool)" >> "$GITHUB_PATH"
-          echo "DEVELOPER_DIR=$(xcode-select -p)" >> "$GITHUB_ENV"
+          ls -1 /Applications | grep -i xcode || true
+          for app in /Applications/Xcode*.app; do
+            v="$app/Contents/Developer/usr/bin/actool"
+            [ -x "$v" ] && "$v" --version --output-format=human-readable-text
+          done
 
       - uses: oven-sh/setup-bun@v2
 
