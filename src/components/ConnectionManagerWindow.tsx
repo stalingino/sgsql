@@ -53,6 +53,9 @@ import {
   decodeCollapsedConnectionFolders,
   encodeCollapsedConnectionFolders,
 } from "../lib/connectionFolderState";
+import { decryptExport, encryptExport, isEncryptedExport } from "../lib/exportCrypto";
+
+const EXPORT_EXTENSION = ".sgsqlx";
 
 export function ConnectionManagerWindow() {
   useWindowPersist();
@@ -82,6 +85,15 @@ export function ConnectionManagerWindow() {
   const [folderName, setFolderName] = useState("");
   const [folderError, setFolderError] = useState<string | null>(null);
   const [dragPreviewProfiles, setDragPreviewProfiles] = useState<ConnectionProfile[] | null>(null);
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exportPassword, setExportPassword] = useState("");
+  const [exportPasswordConfirm, setExportPasswordConfirm] = useState("");
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [importPending, setImportPending] = useState<{ bytes: Uint8Array<ArrayBuffer> } | null>(null);
+  const [importPassword, setImportPassword] = useState("");
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
 
   const filterRef = useRef<HTMLInputElement>(null);
   const privateKeyRef = useRef<HTMLInputElement>(null);
@@ -89,6 +101,8 @@ export function ConnectionManagerWindow() {
   const listRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const folderNameRef = useRef<HTMLInputElement>(null);
+  const exportPasswordRef = useRef<HTMLInputElement>(null);
+  const importPasswordRef = useRef<HTMLInputElement>(null);
   const dragPreviewProfilesRef = useRef<ConnectionProfile[] | null>(null);
 
   function handleSshToggle(enabled: boolean) {
@@ -134,6 +148,14 @@ export function ConnectionManagerWindow() {
   useEffect(() => {
     if (folderDialogOpen) requestAnimationFrame(() => folderNameRef.current?.focus());
   }, [folderDialogOpen]);
+
+  useEffect(() => {
+    if (exportDialogOpen) requestAnimationFrame(() => exportPasswordRef.current?.focus());
+  }, [exportDialogOpen]);
+
+  useEffect(() => {
+    if (importPending) requestAnimationFrame(() => importPasswordRef.current?.focus());
+  }, [importPending]);
 
   useEffect(() => {
     try {
@@ -241,6 +263,16 @@ export function ConnectionManagerWindow() {
         setFolderDialogOpen(false);
         return;
       }
+      if (e.key === "Escape" && exportDialogOpen) {
+        e.preventDefault();
+        setExportDialogOpen(false);
+        return;
+      }
+      if (e.key === "Escape" && importPending) {
+        e.preventDefault();
+        setImportPending(null);
+        return;
+      }
       if (e.key === "Escape" && editorOpen) {
         e.preventDefault();
         setEditorOpen(false);
@@ -253,7 +285,7 @@ export function ConnectionManagerWindow() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [editorOpen, folderDialogOpen]);
+  }, [editorOpen, folderDialogOpen, exportDialogOpen, importPending]);
 
   function toggleGroup(name: string) {
     setCollapsed((prev) => {
@@ -333,59 +365,112 @@ export function ConnectionManagerWindow() {
     }
   }
 
-  function handleExportConnections() {
-    const connections = profiles.map((profile) => ({
-      ...profile,
-      password: "",
-      sshPassword: "",
-      sshPrivateKey: "",
-    }));
-    const payload = JSON.stringify({
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      folders,
-      connections,
-      secretsIncluded: false,
-    }, null, 2);
-    const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `SGSql-connections-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  function openExportDialog() {
     setMenuOpen(false);
-    setStatusMsg({ type: "ok", text: "Connections exported without passwords or private keys" });
+    setExportPassword("");
+    setExportPasswordConfirm("");
+    setExportError(null);
+    setExportDialogOpen(true);
+  }
+
+  async function handleConfirmExport() {
+    if (exportPassword.length < 8) {
+      setExportError("Password must be at least 8 characters");
+      return;
+    }
+    if (exportPassword !== exportPasswordConfirm) {
+      setExportError("Passwords do not match");
+      return;
+    }
+    setExporting(true);
+    setExportError(null);
+    try {
+      const connections = await Promise.all(profiles.map(async (profile) => {
+        const hydrated = await getProfileWithPassword(profile.id);
+        return hydrated ?? profile;
+      }));
+      const payload = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        folders,
+        connections,
+        secretsIncluded: true,
+      };
+      const encrypted = await encryptExport(payload, exportPassword);
+      const url = URL.createObjectURL(new Blob([encrypted], { type: "application/octet-stream" }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `SGSql-connections-${new Date().toISOString().slice(0, 10)}${EXPORT_EXTENSION}`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      setExportDialogOpen(false);
+      setExportPassword("");
+      setExportPasswordConfirm("");
+      setStatusMsg({ type: "ok", text: "Connections exported — encrypted with your password" });
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  function applyImportedPayload(parsed: unknown): Promise<number> {
+    const container = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
+    const rawConnections = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(container?.connections)
+      ? container.connections
+      : Array.isArray(container?.profiles)
+      ? container.profiles
+      : null;
+    if (!rawConnections) throw new Error("This file does not contain a connections list");
+    const imported = rawConnections.map((value) => {
+      if (!value || typeof value !== "object") throw new Error("The connections file contains an invalid entry");
+      const candidate = value as Partial<ConnectionProfile>;
+      if (!candidate.name || !["postgres", "mysql", "sqlite"].includes(candidate.type ?? "")) {
+        throw new Error("Each imported connection needs a name and supported database type");
+      }
+      return { ...createDefaultProfile(), ...candidate, id: "" } as ConnectionProfile;
+    });
+    const importedFolders = Array.isArray(container?.folders)
+      ? container.folders.filter((value): value is string => typeof value === "string")
+      : [];
+    return importProfiles(imported, importedFolders);
   }
 
   async function handleImportFile(file: File) {
     try {
-      const parsed = JSON.parse(await file.text()) as unknown;
-      const container = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
-      const rawConnections = Array.isArray(parsed)
-        ? parsed
-        : Array.isArray(container?.connections)
-        ? container.connections
-        : Array.isArray(container?.profiles)
-        ? container.profiles
-        : null;
-      if (!rawConnections) throw new Error("This file does not contain a connections list");
-      const imported = rawConnections.map((value) => {
-        if (!value || typeof value !== "object") throw new Error("The connections file contains an invalid entry");
-        const candidate = value as Partial<ConnectionProfile>;
-        if (!candidate.name || !["postgres", "mysql", "sqlite"].includes(candidate.type ?? "")) {
-          throw new Error("Each imported connection needs a name and supported database type");
-        }
-        return { ...createDefaultProfile(), ...candidate, id: "" } as ConnectionProfile;
-      });
-      const importedFolders = Array.isArray(container?.folders)
-        ? container.folders.filter((value): value is string => typeof value === "string")
-        : [];
-      const count = await importProfiles(imported, importedFolders);
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (isEncryptedExport(bytes)) {
+        setImportPending({ bytes });
+        setImportPassword("");
+        setImportError(null);
+        return;
+      }
+      const parsed = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+      const count = await applyImportedPayload(parsed);
       setStatusMsg({ type: "ok", text: `Imported ${count} connection${count === 1 ? "" : "s"}` });
     } catch (error) {
       setStatusMsg({ type: "error", text: error instanceof Error ? error.message : "Import failed" });
+    }
+  }
+
+  async function handleConfirmImportPassword() {
+    if (!importPending) return;
+    setImporting(true);
+    setImportError(null);
+    try {
+      const parsed = await decryptExport(importPending.bytes, importPassword);
+      const count = await applyImportedPayload(parsed);
+      setImportPending(null);
+      setImportPassword("");
+      setStatusMsg({ type: "ok", text: `Imported ${count} connection${count === 1 ? "" : "s"}` });
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : "Import failed");
+    } finally {
+      setImporting(false);
     }
   }
 
@@ -694,7 +779,7 @@ export function ConnectionManagerWindow() {
                 </button>
                 <button
                   type="button"
-                  onClick={handleExportConnections}
+                  onClick={openExportDialog}
                   disabled={profiles.length === 0}
                   className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-xs text-text-primary hover:bg-bg-hover disabled:opacity-40 cursor-pointer"
                 >
@@ -707,7 +792,7 @@ export function ConnectionManagerWindow() {
           <input
             ref={importInputRef}
             type="file"
-            accept="application/json,.json"
+            accept={`${EXPORT_EXTENSION},application/json,.json`}
             className="hidden"
             onChange={(event) => {
               const file = event.target.files?.[0];
@@ -851,6 +936,97 @@ export function ConnectionManagerWindow() {
             <div className="mt-4 flex justify-end gap-2">
               <button type="button" onClick={() => setFolderDialogOpen(false)} className="rounded-md border border-border-light px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-hover cursor-pointer">Cancel</button>
               <button type="submit" disabled={!folderName.trim()} className="rounded-md bg-accent px-3 py-1.5 text-sm text-white hover:bg-accent-hover disabled:opacity-50 cursor-pointer">Create</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {exportDialogOpen && (
+        <div
+          role="presentation"
+          onMouseDown={(event) => { if (event.target === event.currentTarget && !exporting) setExportDialogOpen(false); }}
+          className="fixed inset-0 z-[220] flex items-center justify-center bg-black/55 p-5"
+        >
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-label="Export connections"
+            onSubmit={(event) => { event.preventDefault(); void handleConfirmExport(); }}
+            className="w-full max-w-sm rounded-xl border border-border bg-bg-secondary p-4 shadow-2xl"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-text-primary">Export connections</h2>
+              <button type="button" aria-label="Close" onClick={() => setExportDialogOpen(false)} className="rounded p-1 text-text-muted hover:bg-bg-hover hover:text-text-primary cursor-pointer">
+                <X size={15} />
+              </button>
+            </div>
+            <p className="mb-3 text-xs text-text-muted">
+              Passwords and private keys are included in the export. Choose a password to encrypt the file — you'll need it to import elsewhere.
+            </p>
+            <input
+              ref={exportPasswordRef}
+              type="password"
+              value={exportPassword}
+              onChange={(event) => { setExportPassword(event.target.value); setExportError(null); }}
+              placeholder="Export password"
+              className="input-field"
+              autoComplete="new-password"
+            />
+            <input
+              type="password"
+              value={exportPasswordConfirm}
+              onChange={(event) => { setExportPasswordConfirm(event.target.value); setExportError(null); }}
+              placeholder="Confirm password"
+              className="input-field mt-2"
+              autoComplete="new-password"
+            />
+            {exportError && <div className="mt-2 text-xs text-error">{exportError}</div>}
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setExportDialogOpen(false)} disabled={exporting} className="rounded-md border border-border-light px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-hover disabled:opacity-50 cursor-pointer">Cancel</button>
+              <button type="submit" disabled={exporting || !exportPassword || !exportPasswordConfirm} className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm text-white hover:bg-accent-hover disabled:opacity-50 cursor-pointer">
+                {exporting && <Loader2 size={13} className="animate-spin" />}
+                Export
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {importPending && (
+        <div
+          role="presentation"
+          onMouseDown={(event) => { if (event.target === event.currentTarget && !importing) setImportPending(null); }}
+          className="fixed inset-0 z-[220] flex items-center justify-center bg-black/55 p-5"
+        >
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-label="Encrypted connections file"
+            onSubmit={(event) => { event.preventDefault(); void handleConfirmImportPassword(); }}
+            className="w-full max-w-sm rounded-xl border border-border bg-bg-secondary p-4 shadow-2xl"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-text-primary">Encrypted connections file</h2>
+              <button type="button" aria-label="Close" onClick={() => setImportPending(null)} className="rounded p-1 text-text-muted hover:bg-bg-hover hover:text-text-primary cursor-pointer">
+                <X size={15} />
+              </button>
+            </div>
+            <input
+              ref={importPasswordRef}
+              type="password"
+              value={importPassword}
+              onChange={(event) => { setImportPassword(event.target.value); setImportError(null); }}
+              placeholder="Export password"
+              className="input-field"
+              autoComplete="current-password"
+            />
+            {importError && <div className="mt-2 text-xs text-error">{importError}</div>}
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setImportPending(null)} disabled={importing} className="rounded-md border border-border-light px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-hover disabled:opacity-50 cursor-pointer">Cancel</button>
+              <button type="submit" disabled={importing || !importPassword} className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm text-white hover:bg-accent-hover disabled:opacity-50 cursor-pointer">
+                {importing && <Loader2 size={13} className="animate-spin" />}
+                Import
+              </button>
             </div>
           </form>
         </div>
