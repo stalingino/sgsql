@@ -38,6 +38,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "externalBin": ["binaries/dbsidecar"],
     "macOS": {
       "signingIdentity": "SGSql Developer",
