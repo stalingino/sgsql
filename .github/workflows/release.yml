@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,6 +14,27 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
+
+      - name: Diagnose macOS icon compile
+        run: |
+          xcodebuild -version
+          xcrun actool --version --output-format=human-readable-text
+          rm -rf "$RUNNER_TEMP/icon-diag"
+          mkdir -p "$RUNNER_TEMP/icon-diag/out"
+          xcrun actool src-tauri/icons/AppIcon.icon \
+            --compile "$RUNNER_TEMP/icon-diag/out" \
+            --output-format human-readable-text \
+            --notices \
+            --warnings \
+            --output-partial-info-plist "$RUNNER_TEMP/icon-diag/out/assetcatalog_generated_info.plist" \
+            --app-icon Icon \
+            --include-all-app-icons \
+            --accent-color AccentColor \
+            --enable-on-demand-resources NO \
+            --development-region en \
+            --target-device mac \
+            --minimum-deployment-target 26.0 \
+            --platform macosx
 
       - uses: oven-sh/setup-bun@v2
 
