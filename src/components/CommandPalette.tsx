@@ -39,6 +39,10 @@ function defaultSchema(type: "postgres" | "mysql" | "sqlite"): string {
   return "";
 }
 
+// MySQL system schemas clutter search results with internal tables (grants,
+// variables, etc). Hide them unless the user is currently browsing that db.
+const MYSQL_SYSTEM_SCHEMAS = new Set(["information_schema", "mysql", "performance_schema", "sys"]);
+
 function highlightName(name: string, indices: readonly number[]): React.ReactNode {
   if (indices.length === 0) return name;
   return matchSegments(name, indices).map((segment, i) =>
@@ -55,11 +59,18 @@ function paletteItems(
   connectionType: "postgres" | "mysql" | "sqlite",
   preferredDb: string,
 ): PaletteItem[] {
-  const items: PaletteItem[] = catalog.databases.map((db) => ({ kind: "db", db, schema: "", name: db, score: 0 }));
-  const orderedTables = [...catalog.tables].sort((a, b) => {
-    if ((a.db === preferredDb) !== (b.db === preferredDb)) return a.db === preferredDb ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
+  const isHiddenMysqlSystemSchema = (db: string) =>
+    connectionType === "mysql" && MYSQL_SYSTEM_SCHEMAS.has(db) && db !== preferredDb;
+
+  const items: PaletteItem[] = catalog.databases
+    .filter((db) => !isHiddenMysqlSystemSchema(db))
+    .map((db) => ({ kind: "db", db, schema: "", name: db, score: 0 }));
+  const orderedTables = [...catalog.tables]
+    .filter((table) => !isHiddenMysqlSystemSchema(table.db))
+    .sort((a, b) => {
+      if ((a.db === preferredDb) !== (b.db === preferredDb)) return a.db === preferredDb ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
   for (const table of orderedTables) {
     items.push({
       kind: table.type === "view" ? "view" : "table",
