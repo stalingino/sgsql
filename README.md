@@ -2,7 +2,7 @@
 
 ## Build the macOS app
 
-SGSql is bundled as a macOS application using Tauri. The database sidecar is compiled with Bun and included in the application bundle.
+SGSql is bundled as a macOS application using Tauri. The database sidecar is a Rust binary (`src-tauri/sidecar`, built on axum + sqlx) compiled with Cargo and included in the application bundle.
 
 ### Prerequisites
 
@@ -46,11 +46,11 @@ bun run tauri dev
 
 Tauri starts the Vite development server automatically and launches the desktop application. Frontend changes are applied through Vite hot reload; Rust changes cause the Tauri application to rebuild.
 
-To run the TypeScript sidecar directly while developing it, use two terminals:
+To run the sidecar directly while developing it, use two terminals:
 
 ```bash
 # Terminal 1
-bun run sidecar/index.ts
+bun run sidecar:dev
 ```
 
 ```bash
