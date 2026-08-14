@@ -184,8 +184,13 @@ fn mysql_decode(row: &MySqlRow, i: usize, type_name: &str) -> Value {
         "BINARY" | "VARBINARY" | "TINYBLOB" | "BLOB" | "MEDIUMBLOB" | "LONGBLOB" | "BIT" | "GEOMETRY" => {
             row.try_get::<Vec<u8>, _>(i).map(buffer_json).unwrap_or(Value::Null)
         }
-        "TIMESTAMP" => row.try_get::<DateTime<Utc>, _>(i).map(iso_utc).unwrap_or_else(|_| mysql_fallback(row, i)),
-        "DATETIME" => row.try_get::<NaiveDateTime, _>(i).map(iso_naive).unwrap_or_else(|_| mysql_fallback(row, i)),
+        // MySQL returns both TIMESTAMP and DATETIME in the connection's
+        // session timezone. Keep those wall-clock digits intact; decoding a
+        // TIMESTAMP as UTC makes the frontend apply a second timezone shift.
+        "TIMESTAMP" | "DATETIME" => row
+            .try_get::<NaiveDateTime, _>(i)
+            .map(iso_naive)
+            .unwrap_or_else(|_| mysql_fallback(row, i)),
         "DATE" => row
             .try_get::<NaiveDate, _>(i)
             .map(|v| Value::from(v.format("%Y-%m-%d").to_string()))
