@@ -10,7 +10,12 @@ use crate::pool;
 use crate::trace;
 
 fn s_of(v: &Value, key: &str) -> String {
-    v.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+    let value = v.get(key).or_else(|| {
+        v.as_object()?
+            .iter()
+            .find_map(|(candidate, value)| candidate.eq_ignore_ascii_case(key).then_some(value))
+    });
+    value.and_then(Value::as_str).unwrap_or("").to_string()
 }
 
 /// Quote an identifier per dialect.
@@ -1058,6 +1063,26 @@ async fn get_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn string_lookup_accepts_driver_normalized_column_case() {
+        let row = json!({
+            "table_schema": "financialForms",
+            "table_name": "applications",
+            "table_type": "BASE TABLE",
+        });
+
+        assert_eq!(s_of(&row, "TABLE_SCHEMA"), "financialForms");
+        assert_eq!(s_of(&row, "TABLE_NAME"), "applications");
+        assert_eq!(s_of(&row, "TABLE_TYPE"), "BASE TABLE");
+    }
+
+    #[test]
+    fn string_lookup_still_prefers_an_exact_key() {
+        let row = json!({ "Database": "preferred", "database": "fallback" });
+
+        assert_eq!(s_of(&row, "Database"), "preferred");
+    }
 
     #[test]
     fn order_clause_requires_known_column() {
