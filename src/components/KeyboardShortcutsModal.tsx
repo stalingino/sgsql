@@ -31,7 +31,7 @@ const GROUPS = [
     label: "View",
     shortcuts: [
       { action: "Toggle sidebar", keys: modKey("L") },
-      { action: "Toggle detail panel", keys: modKey("O") },
+      { action: "Toggle detail panel", keys: modKey(";") },
       { action: "Toggle bottom panel", keys: modKey(".") },
       { action: "Reload connection", keys: modKey("R") },
     ],

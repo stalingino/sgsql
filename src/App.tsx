@@ -249,7 +249,7 @@ function App() {
           return next;
         });
       }
-      if ((e.metaKey || e.ctrlKey) && e.key === "o") {
+      if ((e.metaKey || e.ctrlKey) && e.key === ";") {
         e.preventDefault();
         e.stopPropagation();
         setDetailPanelVisible((v) => {
@@ -886,7 +886,7 @@ function App() {
               saveConfig({ detailPanel: { ...getConfig().detailPanel, visible: next, width: getConfig().detailPanel?.width ?? 300 } });
               return next;
             })}
-            title={`${detailPanelVisible ? "Hide" : "Show"} detail panel (${modKey("O")})`}
+            title={`${detailPanelVisible ? "Hide" : "Show"} detail panel (${modKey(";")})`}
             className={`flex items-center p-1.5 rounded-md transition-colors cursor-pointer ${
               detailPanelVisible
                 ? "text-text-primary bg-bg-active"
