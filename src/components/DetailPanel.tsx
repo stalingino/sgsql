@@ -560,11 +560,17 @@ function FieldRow({
           name={name}
           dataType={dataType}
           text={isSqlExpr ? "" : isCurrentlyNull && !nullEditing ? "" : String(displayValue)}
-          isJson={isJsonField}
+          isNull={isCurrentlyNull && !nullEditing}
+          valueKind={isJsonField ? "json" : "text"}
           dateTimeKind={dateTimeKind}
           readOnly={!canEdit}
           onApply={(text) => {
-            handlePopOutApply(text);
+            if (text === null) {
+              setNullEditing(false);
+              commitValue(null);
+            } else {
+              handlePopOutApply(text);
+            }
             setPopOutOpen(false);
           }}
           onClose={() => setPopOutOpen(false)}

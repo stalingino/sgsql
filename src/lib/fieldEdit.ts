@@ -26,3 +26,23 @@ export function commitCellValue(target: EditTarget, column: string, originalValu
     useEditStore.getState().setChange(target.rowKey, column, originalValue, value);
   }
 }
+
+/** Column type names that hold numbers (Postgres / MySQL / SQLite spellings). */
+export function isNumericType(dataType: string): boolean {
+  return /^(small|big|tiny|medium)?int(eger)?\d*\b|^(numeric|decimal|dec|float\d*|double|real|money|serial|bigserial|smallserial|number)\b/i.test(dataType.trim());
+}
+
+/** Column type names that hold booleans (`bool`, `boolean`, MySQL's `tinyint(1)`). */
+export function isBooleanType(dataType: string): boolean {
+  return /^bool(ean)?\b|^tinyint\(1\)/i.test(dataType.trim());
+}
+
+export type ValueEditorSize = "sm" | "md" | "lg";
+
+/** Pick a pop-out editor size that fits the value: short strings get a compact box, long text / JSON the full editor. */
+export function sizeForValue(text: string, language: "json" | "plaintext"): ValueEditorSize {
+  const lines = text.split("\n").length;
+  if (text.length > 2000 || lines > 20) return "lg";
+  if (language === "json" || text.length > 160 || lines > 2) return "md";
+  return "sm";
+}

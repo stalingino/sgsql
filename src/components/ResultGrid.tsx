@@ -511,7 +511,7 @@ interface ResultGridProps {
   tableName?: string;
   /** Visually activate and horizontally reveal a cell without taking DOM focus. */
   revealCell?: CellRevealRequest | null;
-  /** Double-click on a cell (e.g. open a pop-out editor). */
+  /** Double-click or Enter on a cell (e.g. open a pop-out editor). */
   onCellActivate?: (selection: CellSelection) => void;
   /**
    * Value to render for a cell in place of the row data (e.g. a pending
@@ -749,6 +749,14 @@ export function ResultGrid({
         return;
       }
 
+      // Enter: open the pop-out editor for the focused cell (same as double-click)
+      if (e.key === "Enter" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && activeRow !== null && activeRow < displayRows.length) {
+        e.preventDefault();
+        const col = activeCol ?? 0;
+        onCellActivate?.({ rowIndex: activeRow, colIndex: col, row: displayRows[activeRow] as unknown[], columns });
+        return;
+      }
+
       // Arrow navigation
       if ((e.key === "ArrowDown" || e.key === "ArrowUp") && activeRow !== null) {
         e.preventDefault();
@@ -777,7 +785,7 @@ export function ResultGrid({
       el.addEventListener("keydown", handler);
       return () => el.removeEventListener("keydown", handler);
     }
-  }, [selectedRows, activeRow, activeCol, anchorRow, displayRows, columns, onCellSelect, selectSingle]);
+  }, [selectedRows, activeRow, activeCol, anchorRow, displayRows, columns, onCellSelect, onCellActivate, selectSingle]);
 
   // Context menu handler
   const handleContextMenu = useCallback(

@@ -5,8 +5,15 @@ import { Braces, X } from "lucide-react";
 import { registerSqlLanguageSupport } from "../lib/monacoSetup";
 import { useThemeStore } from "../lib/theme";
 import { modKey } from "../lib/platform";
+import { sizeForValue, type ValueEditorSize } from "../lib/fieldEdit";
 
 /* ── Pop-out value editor ──────────────────────────────── */
+
+const SIZE_CLASSES: Record<ValueEditorSize, string> = {
+  sm: "w-full max-w-[520px] h-[240px]",
+  md: "w-full max-w-[720px] h-[55vh]",
+  lg: "w-full max-w-[900px] h-[80vh]",
+};
 
 interface ValueEditorModalProps {
   title: string;
@@ -14,6 +21,8 @@ interface ValueEditorModalProps {
   dataType?: string;
   value: string;
   language: "json" | "plaintext";
+  /** Dialog size; defaults to a fit based on the value. */
+  size?: ValueEditorSize;
   readOnly?: boolean;
   onApply: (value: string) => void;
   onClose: () => void;
@@ -23,7 +32,8 @@ interface ValueEditorModalProps {
  * Full-size Monaco editor for a single cell value. Edits are local until
  * Apply (or Cmd/Ctrl+Enter); Esc discards them.
  */
-export function ValueEditorModal({ title, dataType, value, language, readOnly, onApply, onClose }: ValueEditorModalProps) {
+export function ValueEditorModal({ title, dataType, value, language, size, readOnly, onApply, onClose }: ValueEditorModalProps) {
+  const dialogSize = size ?? sizeForValue(value, language);
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const resolvedTheme = useThemeStore((s) => s.resolved);
@@ -118,7 +128,7 @@ export function ValueEditorModal({ title, dataType, value, language, readOnly, o
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="flex flex-col w-full max-w-[900px] h-[80vh] bg-bg-primary border border-border rounded-xl shadow-2xl overflow-hidden">
+      <div className={`flex flex-col ${SIZE_CLASSES[dialogSize]} bg-bg-primary border border-border rounded-xl shadow-2xl overflow-hidden`}>
         {/* Header */}
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border bg-bg-secondary no-select">
           <span className="text-sm font-semibold text-text-primary truncate">{title}</span>
