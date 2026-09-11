@@ -1,7 +1,7 @@
 use axum::extract::{Path, Query};
 use axum::response::Response;
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::{error_response, json_response, with_connection_status};
 use crate::db::{self, DbClient};
@@ -15,7 +15,24 @@ fn s_of(v: &Value, key: &str) -> String {
             .iter()
             .find_map(|(candidate, value)| candidate.eq_ignore_ascii_case(key).then_some(value))
     });
-    value.and_then(Value::as_str).unwrap_or("").to_string()
+    value.map(text_of).unwrap_or_default()
+}
+
+/// MySQL DATA_TYPE values whose wire values are text regardless of collation.
+fn is_mysql_text_type(data_type: &str) -> bool {
+    matches!(
+        data_type.to_ascii_lowercase().as_str(),
+        "char" | "varchar" | "tinytext" | "text" | "mediumtext" | "longtext" | "enum" | "set" | "json"
+    )
+}
+
+/// Identifiers and DDL fragments are always text, even when the driver handed
+/// us a Buffer (see `value::buffer_to_text`).
+fn text_of(v: &Value) -> String {
+    match crate::value::buffer_to_text(v.clone()) {
+        Value::String(s) => s,
+        _ => String::new(),
+    }
 }
 
 /// Quote an identifier per dialect.
@@ -1000,11 +1017,16 @@ async fn get_rows(
                 client,
                 conn_id,
                 trace_db,
-                "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+                "SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
                 &[d, table],
             )
             .await?;
             let all_cols: Vec<String> = col_rows.iter().map(|r| s_of(r, "COLUMN_NAME")).collect();
+            let text_cols: HashSet<String> = col_rows
+                .iter()
+                .filter(|r| is_mysql_text_type(&s_of(r, "DATA_TYPE")))
+                .map(|r| s_of(r, "COLUMN_NAME"))
+                .collect();
             let order_clause = build_order_clause("mysql", &all_cols, order_by);
             let query = format!(
                 "SELECT * FROM `{d}`.`{table}`{where_sql}{order_clause} LIMIT {safe_limit} OFFSET {offset}"
@@ -1024,8 +1046,23 @@ async fn get_rows(
                 .and_then(Value::as_i64)
                 .unwrap_or(0);
 
-            let output = db::fetch_raw(client, conn_id, trace_db, &query).await?;
+            let mut output = db::fetch_raw(client, conn_id, trace_db, &query).await?;
             let columns = if output.columns.is_empty() { all_cols } else { output.columns };
+            // Text columns with a `_bin` collation arrive as Buffers; the
+            // declared type tells us they are really strings.
+            let text_idx: Vec<usize> = columns
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| text_cols.contains(*c))
+                .map(|(i, _)| i)
+                .collect();
+            for row in &mut output.rows {
+                for &i in &text_idx {
+                    if let Some(cell) = row.get_mut(i) {
+                        *cell = crate::value::buffer_to_text(std::mem::take(cell));
+                    }
+                }
+            }
             Ok(json!({
                 "columns": columns,
                 "rows": output.rows,
@@ -1063,6 +1100,20 @@ async fn get_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn string_lookup_decodes_binary_flagged_identifiers() {
+        // MySQL 8 information_schema columns arrive with the BINARY flag and
+        // get serialised as Node Buffers.
+        let row = json!({
+            "TABLE_NAME": { "type": "Buffer", "data": b"applications".to_vec() },
+            "TABLE_TYPE": { "type": "Buffer", "data": b"BASE TABLE".to_vec() },
+        });
+
+        assert_eq!(s_of(&row, "TABLE_NAME"), "applications");
+        assert_eq!(s_of(&row, "TABLE_TYPE"), "BASE TABLE");
+        assert_eq!(s_of(&row, "MISSING"), "");
+    }
 
     #[test]
     fn string_lookup_accepts_driver_normalized_column_case() {

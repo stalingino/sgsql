@@ -35,9 +35,9 @@ import {
   type ConnectionEnv,
   createDefaultProfile,
   DB_TYPE_PORTS,
-  CONNECTION_COLORS,
   ENV_LABELS,
   DEFAULT_CONNECTION_FOLDER,
+  profileColor,
 } from "../lib/types";
 import { formatConnectionUrl, isConnectionUrl, parseConnectionUrl } from "../lib/parseConnectionUrl";
 import { openConnection } from "../lib/schema";
@@ -894,15 +894,10 @@ export function ConnectionManagerWindow() {
             </button>
           </div>
         )}
-        {!editorOpen && statusMsg && (
-          <StatusBar status={statusMsg} onClose={() => setStatusMsg(null)} />
-        )}
-        {!statusMsg && (
-          <div className="flex items-center justify-center gap-1.5 border-t border-border px-3 py-2 text-center text-[11px] text-text-muted">
-            {connecting && <Loader2 size={11} className="animate-spin" />}
-            {connecting ? "Connecting…" : "Double-click a connection to connect"}
-          </div>
-        )}
+        <StatusBar status={!editorOpen ? statusMsg : null} onClose={() => setStatusMsg(null)}>
+          {connecting && <Loader2 size={11} className="animate-spin" />}
+          {connecting ? "Connecting…" : "Double-click a connection to connect"}
+        </StatusBar>
       </div>
 
       {folderDialogOpen && (
@@ -1059,7 +1054,8 @@ export function ConnectionManagerWindow() {
         </div>
 
         {/* Form body */}
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+        {/* pb-13 = py-4 + the 36px status bar that overlays the bottom of this scroll area, so a message never shifts the form */}
+        <div className="flex-1 overflow-y-auto px-5 pt-4 pb-13 space-y-3">
           {/* Row: Name + Type */}
           <div className="flex gap-3">
             <Field label="Name" className="flex-1">
@@ -1261,7 +1257,7 @@ export function ConnectionManagerWindow() {
             </>
           )}
 
-          {/* Group + color */}
+          {/* Folder */}
           <div className="flex gap-3">
             <Field label="Folder" className="flex-1">
               <select
@@ -1274,41 +1270,15 @@ export function ConnectionManagerWindow() {
             </Field>
           </div>
 
-          {/* Color picker */}
-          <Field label="Color Tag">
-            <div className="flex gap-2">
-              {CONNECTION_COLORS.map((c) => {
-                const selected = draft.color === c;
-                return (
-                  <button
-                    key={c}
-                    onClick={() => updateDraft({ color: c })}
-                    className="relative w-6 h-6 rounded-full cursor-pointer transition-transform hover:scale-110"
-                    style={{ backgroundColor: c }}
-                  >
-                    {selected && (
-                      <span
-                        className="absolute inset-[-4px] rounded-full border-[2px] pointer-events-none"
-                        style={{
-                          borderColor: isDark ? "#ffffff" : "#18181b",
-                          boxShadow: isDark
-                            ? "0 0 0 1px rgba(0,0,0,0.3)"
-                            : "0 0 0 1px rgba(255,255,255,0.5)",
-                        }}
-                      />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </Field>
         </div>
 
         {/* Footer */}
-        <div className="border-t border-border shrink-0">
-          {/* Status bar */}
-          {statusMsg && <StatusBar status={statusMsg} onClose={() => setStatusMsg(null)} />}
-
+        <div className="relative border-t border-border shrink-0">
+          {statusMsg && (
+            <div className="absolute inset-x-0 bottom-full bg-bg-secondary">
+              <StatusBar status={statusMsg} onClose={() => setStatusMsg(null)} />
+            </div>
+          )}
           {/* Action row */}
           <div className="flex items-center justify-between px-5 py-3">
             <div>
@@ -1501,7 +1471,7 @@ function SortableConnection({
           : "text-text-secondary hover:bg-bg-hover/50"
       }`}
     >
-      <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: profile.color }} />
+      <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: profileColor(profile.env) }} />
       <span className="max-w-[42%] shrink-0 truncate font-medium">
         {profile.name ? highlightName(profile.name, filter) : "Untitled"}
       </span>
@@ -1545,21 +1515,43 @@ function cssEscape(value: string): string {
 function StatusBar({
   status,
   onClose,
+  children,
 }: {
-  status: { type: "url" | "ok" | "error"; text: string };
+  status: { type: "url" | "ok" | "error"; text: string } | null;
   onClose: () => void;
+  /** Placeholder shown while there is no status message. */
+  children?: React.ReactNode;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  // Collapse again whenever the message changes so a new error starts single-line.
+  useEffect(() => { setExpanded(false); }, [status?.text]);
+
+  const tone = !status
+    ? "text-text-muted"
+    : status.type === "ok"
+    ? "text-success bg-success/5"
+    : status.type === "error"
+    ? "text-error bg-error/5"
+    : "text-text-secondary";
+
   return (
-    <div className={`flex items-center gap-2 border-t border-border px-4 py-2 text-xs ${
-      status.type === "ok"
-        ? "text-success bg-success/5"
-        : status.type === "error"
-        ? "text-error bg-error/5"
-        : "text-text-secondary"
-    }`}>
-      <span className="shrink-0">{status.type === "url" ? "✓" : "●"}</span>
-      <span className="flex-1 truncate">{status.text}</span>
-      <button onClick={onClose} className="shrink-0 text-text-muted hover:text-text-primary cursor-pointer">×</button>
+    <div className={`flex items-center gap-2 border-t border-border px-4 text-xs ${expanded ? "min-h-9 py-2" : "h-9"} ${tone}`}>
+      {status ? (
+        <>
+          <span className="shrink-0">{status.type === "url" ? "✓" : "●"}</span>
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            title={expanded ? "Collapse" : status.text}
+            className={`min-w-0 flex-1 text-left cursor-pointer ${expanded ? "whitespace-pre-wrap break-words" : "truncate"}`}
+          >
+            {status.text}
+          </button>
+          <button onClick={onClose} className="shrink-0 self-start leading-5 text-text-muted hover:text-text-primary cursor-pointer">×</button>
+        </>
+      ) : (
+        <span className="flex flex-1 items-center justify-center gap-1.5 text-[11px]">{children}</span>
+      )}
     </div>
   );
 }

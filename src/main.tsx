@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { loadConfig } from "./lib/config";
 import { startQueryLog } from "./lib/queryLog";
 import "./index.css";
@@ -9,7 +10,9 @@ import "./index.css";
 loadConfig().then(() => {
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
-      <App />
+      <ErrorBoundary label="SGSql">
+        <App />
+      </ErrorBoundary>
     </StrictMode>,
   );
   startQueryLog();

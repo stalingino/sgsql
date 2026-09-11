@@ -26,6 +26,7 @@ import { useSortable } from "@dnd-kit/react/sortable";
 import { waitForSidecar, CONNECTION_RESTORED_EVENT } from "./lib/sidecar";
 import { openConnectionManager } from "./lib/openConnectionManager";
 import { closeConnection, reloadConnection } from "./lib/schema";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useThemeStore, type ThemeMode, initTheme } from "./lib/theme";
 import { useWindowPersist } from "./lib/useWindowPersist";
 import { loadConfig, getConfig, saveConfig, queryStackPop, queryStackPush } from "./lib/config";
@@ -44,7 +45,7 @@ import { ChangeHistoryPanel } from "./components/ChangeHistoryPopup";
 import type { CellSelection, CellRevealRequest, SortState } from "./components/ResultGrid";
 import type { FilterRow } from "./components/FilterPanel";
 import type { ConnectionProfile } from "./lib/types";
-import { envBadgeStyle } from "./lib/types";
+import { envBadgeStyle, profileColor } from "./lib/types";
 import { modKey } from "./lib/platform";
 
 /* ── Tab types ──────────────────────────────────────────── */
@@ -1182,11 +1183,13 @@ function App() {
             {detailPanelVisible && activeContentTab?.viewMode !== "structure" && (
               <ResizableDetailPanel>
                 <aside className="h-full border-l border-border bg-bg-primary">
-                  <DetailPanel
-                    selection={cellSelection}
-                    wasAlreadyOpen={detailPanelWasOpenRef.current}
-                    onFieldActivate={handleDetailFieldActivate}
-                  />
+                  <ErrorBoundary label="Detail panel">
+                    <DetailPanel
+                      selection={cellSelection}
+                      wasAlreadyOpen={detailPanelWasOpenRef.current}
+                      onFieldActivate={handleDetailFieldActivate}
+                    />
+                  </ErrorBoundary>
                 </aside>
               </ResizableDetailPanel>
             )}
@@ -1258,7 +1261,7 @@ function TabItem({
         <span className="close-dot-color absolute inset-0 flex items-center justify-center">
           <span
             className="w-2 h-2 rounded-full"
-            style={{ backgroundColor: tab.profile.color || "#888" }}
+            style={{ backgroundColor: profileColor(tab.profile.env) }}
           />
           {connecting && (
             <span className="absolute inset-[-1px] rounded-full border-[1.5px] border-warning animate-pulse" />

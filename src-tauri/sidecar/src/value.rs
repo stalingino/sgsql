@@ -36,6 +36,28 @@ fn buffer_json(bytes: Vec<u8>) -> Value {
     json!({ "type": "Buffer", "data": bytes })
 }
 
+/// Inverse of `buffer_json`: the bytes of a Buffer-shaped value, if it is one.
+pub fn buffer_bytes(v: &Value) -> Option<Vec<u8>> {
+    if v.get("type")?.as_str()? != "Buffer" {
+        return None;
+    }
+    let data = v.get("data")?.as_array()?;
+    Some(data.iter().filter_map(|b| b.as_u64().map(|b| b as u8)).collect())
+}
+
+/// Turn a Buffer-shaped value back into text; anything else passes through.
+///
+/// MySQL sets the BINARY column flag for `_bin` collations (and for every
+/// MySQL 8 information_schema view column), and sqlx 0.8 exposes no charset,
+/// so such text columns decode as VARBINARY → Buffer. Callers that know a
+/// column is really text use this to undo that.
+pub fn buffer_to_text(v: Value) -> Value {
+    match buffer_bytes(&v) {
+        Some(bytes) => Value::from(String::from_utf8_lossy(&bytes).into_owned()),
+        None => v,
+    }
+}
+
 fn iso_utc(dt: DateTime<Utc>) -> Value {
     Value::from(dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
 }
@@ -275,6 +297,14 @@ mod tests {
         assert_eq!(num_i64(42), json!(42));
         assert_eq!(num_i64(9_007_199_254_740_992), json!("9007199254740992"));
         assert_eq!(num_u64(u64::MAX), json!(u64::MAX.to_string()));
+    }
+
+    #[test]
+    fn buffer_to_text_only_touches_buffers() {
+        assert_eq!(buffer_to_text(buffer_json(b"varchar".to_vec())), json!("varchar"));
+        assert_eq!(buffer_to_text(json!("plain")), json!("plain"));
+        assert_eq!(buffer_to_text(json!({"type": "Other", "data": [1]})), json!({"type": "Other", "data": [1]}));
+        assert_eq!(buffer_to_text(Value::Null), Value::Null);
     }
 
     #[test]

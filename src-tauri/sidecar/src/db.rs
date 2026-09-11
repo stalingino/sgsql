@@ -184,7 +184,14 @@ pub async fn mysql_fetch(
         query = query.bind(bind.to_string());
     }
     let rows = traced(conn_id, db, sql, |r: &Vec<MySqlRow>| Some(r.len() as u64), query.fetch_all(pool)).await?;
-    let output = mysql_output(&rows);
+    let mut output = mysql_output(&rows);
+    // Only introspection (information_schema) queries come through here, and
+    // MySQL 8 flags those view columns BINARY even though they are text.
+    for row in &mut output.rows {
+        for cell in row.iter_mut() {
+            *cell = value::buffer_to_text(std::mem::take(cell));
+        }
+    }
     Ok(output.into_objects())
 }
 

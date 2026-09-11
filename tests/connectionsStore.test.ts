@@ -33,7 +33,6 @@ function profile(id: string): ConnectionProfile {
     username: "postgres",
     password: "",
     ssl: false,
-    color: "#000000",
     env: "",
     group: "Connections",
     useSsh: false,

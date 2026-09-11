@@ -4,7 +4,7 @@ import { formatConnectionUrl, parseConnectionUrl } from "../src/lib/parseConnect
 
 describe("connection URL", () => {
   test("parses the dual-authority SSH URL format", () => {
-    const url = "mysql+ssh://ssh_user:pass@ip:22/db_user:db_pass@db_host/db_name?statusColor=6D0000&env=staging&name=uat-arohan&tLSMode=0&usePrivateKey=false";
+    const url = "mysql+ssh://ssh_user:pass@ip:22/db_user:db_pass@db_host/db_name?env=staging&name=uat-arohan&tLSMode=0&usePrivateKey=false";
     const parsed = parseConnectionUrl(url, createDefaultProfile());
 
     expect(parsed).toMatchObject({
@@ -19,7 +19,6 @@ describe("connection URL", () => {
       host: "db_host",
       port: 3306,
       database: "db_name",
-      color: "#6D0000",
       env: "staging",
       name: "uat-arohan",
     });

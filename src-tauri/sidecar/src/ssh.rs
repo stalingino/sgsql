@@ -33,6 +33,45 @@ impl Drop for SshTunnel {
     }
 }
 
+/// Describe which credentials the tunnel attempted, so an auth failure says
+/// what was actually offered to the server.
+fn ssh_auth_summary(profile: &ConnectionProfile) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if profile.ssh_use_private_key {
+        let key = profile.ssh_private_key.as_deref().unwrap_or("");
+        parts.push(if key.contains("PRIVATE KEY") {
+            "inline private key".to_string()
+        } else {
+            format!("private key {key}")
+        });
+    }
+    let has_password = profile.ssh_auth_mode.as_deref() != Some("none")
+        && profile.ssh_password.as_deref().map_or(false, |p| !p.is_empty());
+    if has_password {
+        parts.push(if profile.ssh_use_private_key { "key passphrase".to_string() } else { "password".to_string() });
+    } else {
+        parts.push("no password (BatchMode; only agent/default keys)".to_string());
+    }
+    parts.join(" + ")
+}
+
+/// Collapse ssh's stderr into the lines that explain the failure, dropping
+/// noise (debug output, repeated lines, the `user@host:` prefix).
+fn ssh_detail_lines(detail: &str) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for raw in detail.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with("debug") {
+            continue;
+        }
+        let line = line.split_once(": Permission denied").map_or(line.to_string(), |(_, rest)| format!("Permission denied{rest}"));
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+    lines
+}
+
 fn ssh_failure(profile: &ConnectionProfile, detail: &str) -> SidecarError {
     let detail = detail.trim();
     let normalized = detail.to_lowercase();
@@ -41,24 +80,28 @@ fn ssh_failure(profile: &ConnectionProfile, detail: &str) -> SidecarError {
         profile.ssh_host.as_deref().unwrap_or(""),
         profile.ssh_port.filter(|p| *p != 0).unwrap_or(22)
     );
-    let message = if normalized.contains("permission denied") || normalized.contains("authentication failed") {
+    let headline = if normalized.contains("permission denied") || normalized.contains("authentication failed") {
         let user = profile
             .ssh_username
             .as_deref()
             .filter(|u| !u.is_empty())
             .map(|u| format!("{u}@"))
             .unwrap_or_default();
-        format!("SSH authentication failed for {user}{endpoint}.")
+        format!("SSH authentication failed for {user}{endpoint} (tried: {}).", ssh_auth_summary(profile))
     } else if normalized.contains("could not resolve hostname") || normalized.contains("name or service not known") {
         format!("SSH host not found: {endpoint}.")
     } else if normalized.contains("connection refused") {
         format!("SSH connection refused by {endpoint}.")
     } else if normalized.contains("timed out") || normalized.contains("operation timeout") {
         format!("SSH connection to {endpoint} timed out.")
-    } else if detail.is_empty() {
-        format!("SSH tunnel to {endpoint} failed.")
     } else {
-        format!("SSH tunnel to {endpoint} failed: {detail}")
+        format!("SSH tunnel to {endpoint} failed.")
+    };
+    let lines = ssh_detail_lines(detail);
+    let message = if lines.is_empty() {
+        headline
+    } else {
+        format!("{headline}\n{}", lines.join("\n"))
     };
     SidecarError::Ssh(message)
 }
@@ -296,18 +339,37 @@ mod tests {
     #[test]
     fn ssh_failure_normalizes_auth_errors() {
         let e = ssh_failure(&profile(), "deploy@bastion: Permission denied (publickey,password).");
-        assert_eq!(e.to_string(), "SSH authentication failed for deploy@bastion:22.");
+        assert_eq!(
+            e.to_string(),
+            "SSH authentication failed for deploy@bastion:22 (tried: no password (BatchMode; only agent/default keys)).\nPermission denied (publickey,password)."
+        );
+    }
+
+    #[test]
+    fn ssh_failure_keeps_warning_lines_and_names_credentials() {
+        let mut p = profile();
+        p.ssh_use_private_key = true;
+        p.ssh_private_key = Some("~/.ssh/id_bastion".into());
+        p.ssh_password = Some("secret".into());
+        let e = ssh_failure(
+            &p,
+            "Warning: Identity file /Users/x/.ssh/id_bastion not accessible: No such file or directory.\ndeploy@bastion: Permission denied (publickey).\ndeploy@bastion: Permission denied (publickey).",
+        );
+        assert_eq!(
+            e.to_string(),
+            "SSH authentication failed for deploy@bastion:22 (tried: private key ~/.ssh/id_bastion + key passphrase).\nWarning: Identity file /Users/x/.ssh/id_bastion not accessible: No such file or directory.\nPermission denied (publickey)."
+        );
     }
 
     #[test]
     fn ssh_failure_normalizes_dns_errors() {
         let e = ssh_failure(&profile(), "ssh: Could not resolve hostname bastion");
-        assert_eq!(e.to_string(), "SSH host not found: bastion:22.");
+        assert_eq!(e.to_string(), "SSH host not found: bastion:22.\nssh: Could not resolve hostname bastion");
     }
 
     #[test]
     fn ssh_failure_keeps_detail_for_unknown_errors() {
         let e = ssh_failure(&profile(), "kex_exchange_identification: read: reset");
-        assert_eq!(e.to_string(), "SSH tunnel to bastion:22 failed: kex_exchange_identification: read: reset");
+        assert_eq!(e.to_string(), "SSH tunnel to bastion:22 failed.\nkex_exchange_identification: read: reset");
     }
 }

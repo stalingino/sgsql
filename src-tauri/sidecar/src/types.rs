@@ -4,7 +4,7 @@ fn default_port() -> u16 {
     0
 }
 
-// name/color/env are part of the wire profile but unused by the sidecar itself.
+// name/env are part of the wire profile but unused by the sidecar itself.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,8 +27,6 @@ pub struct ConnectionProfile {
     pub password: String,
     #[serde(default)]
     pub ssl: bool,
-    #[serde(default)]
-    pub color: String,
     #[serde(default)]
     pub env: Option<String>,
     #[serde(default)]

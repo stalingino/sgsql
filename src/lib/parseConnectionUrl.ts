@@ -27,7 +27,7 @@ export function isConnectionUrl(value: string): boolean {
 /**
  * Parses a connection URL into a partial ConnectionProfile.
  * Example:
- *   mysql://user:pwd@hostname/dbname?statusColor=252525&env=testing&name=My+DB&tLSMode=1
+ *   mysql://user:pwd@hostname/dbname?env=testing&name=My+DB&tLSMode=1
  */
 export function parseConnectionUrl(
   url: string,
@@ -49,13 +49,6 @@ export function parseConnectionUrl(
   if (!type) return {};
 
   const params = parsed.searchParams;
-
-  // statusColor → prepend # if missing
-  let color = existing.color;
-  const rawColor = params.get("statusColor");
-  if (rawColor) {
-    color = rawColor.startsWith("#") ? rawColor : `#${rawColor}`;
-  }
 
   // tLSMode → ssl
   const tlsMode = params.get("tLSMode");
@@ -90,7 +83,7 @@ export function parseConnectionUrl(
       username: decode(match[1]),
       password: decode(match[2]),
       database: decode(match[4]),
-      ssl, color, name, env,
+      ssl, name, env,
       useSsh: true,
       sshHost: parsed.hostname || existing.sshHost,
       sshPort: parsed.port ? parseInt(parsed.port, 10) : 22,
@@ -108,12 +101,11 @@ export function parseConnectionUrl(
   const password = parsed.password ? decode(parsed.password) : existing.password;
   const database = decode(parsed.pathname.replace(/^\//, "")) || existing.database;
 
-  return { type, host, port, username, password, database, ssl, color, name, env, useSsh: false };
+  return { type, host, port, username, password, database, ssl, name, env, useSsh: false };
 }
 
 export function formatConnectionUrl(profile: ConnectionProfile): string {
   const params = new URLSearchParams();
-  params.set("statusColor", profile.color.replace(/^#/, ""));
   if (profile.env) params.set("env", profile.env);
   if (profile.name) params.set("name", profile.name);
   params.set("tLSMode", profile.ssl ? "1" : "0");
