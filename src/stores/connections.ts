@@ -67,6 +67,8 @@ interface ConnectionsState {
   addProfile: (profile: Omit<ConnectionProfile, "id">) => Promise<ConnectionProfile>;
   updateProfile: (id: string, updates: Partial<ConnectionProfile>) => Promise<void>;
   deleteProfile: (id: string) => Promise<void>;
+  deleteProfiles: (ids: string[]) => Promise<number>;
+  moveProfilesToFolder: (ids: string[], folder: string) => Promise<number>;
   reorderProfiles: (profiles: ConnectionProfile[]) => Promise<void>;
   createFolder: (name: string) => Promise<void>;
   reorderFolders: (folders: string[]) => Promise<void>;
@@ -154,6 +156,35 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
     const profiles = get().profiles.filter((p) => p.id !== id);
     set({ profiles });
     await saveEncrypted(profiles, get().folders);
+  },
+
+  deleteProfiles: async (ids) => {
+    const targets = new Set(ids);
+    const removed = get().profiles.filter((p) => targets.has(p.id));
+    if (removed.length === 0) return 0;
+    await Promise.all(removed.map((p) => keychainDelete(p.id).catch(() => {})));
+
+    const profiles = get().profiles.filter((p) => !targets.has(p.id));
+    set({ profiles });
+    await saveEncrypted(profiles, get().folders);
+    return removed.length;
+  },
+
+  moveProfilesToFolder: async (ids, folder) => {
+    const name = folder.trim();
+    if (!name) throw new Error("Folder name is required");
+    const targets = new Set(ids);
+    let moved = 0;
+    const profiles = get().profiles.map((p) => {
+      if (!targets.has(p.id) || p.group === name) return p;
+      moved++;
+      return { ...p, group: name };
+    });
+    if (moved === 0) return 0;
+    const folders = normalizeFolders([...get().folders, name], profiles);
+    set({ profiles, folders });
+    await saveEncrypted(profiles, folders);
+    return moved;
   },
 
   reorderProfiles: async (profiles) => {

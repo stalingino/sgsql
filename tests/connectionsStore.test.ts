@@ -78,3 +78,39 @@ describe("connection order persistence", () => {
     expect(savedOrders).toEqual([["b", "a"], ["a", "b"]]);
   });
 });
+
+describe("bulk operations", () => {
+  beforeEach(() => {
+    pendingSaves.length = 0;
+    useConnectionsStore.setState({
+      profiles: [profile("a"), profile("b"), profile("c")],
+      folders: ["Connections"],
+      loaded: true,
+    });
+  });
+
+  test("deletes several profiles with a single save", async () => {
+    const done = useConnectionsStore.getState().deleteProfiles(["a", "c", "missing"]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pendingSaves).toHaveLength(1);
+    pendingSaves[0].resolve();
+    expect(await done).toBe(2);
+    expect(useConnectionsStore.getState().profiles.map((p) => p.id)).toEqual(["b"]);
+  });
+
+  test("moves profiles into a folder, creating it when needed", async () => {
+    const done = useConnectionsStore.getState().moveProfilesToFolder(["a", "b"], "Clients");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pendingSaves).toHaveLength(1);
+    pendingSaves[0].resolve();
+    expect(await done).toBe(2);
+    const state = useConnectionsStore.getState();
+    expect(state.folders).toEqual(["Connections", "Clients"]);
+    expect(state.profiles.map((p) => [p.id, p.group])).toEqual([["a", "Clients"], ["b", "Clients"], ["c", "Connections"]]);
+  });
+
+  test("moving into the current folder is a no-op without a save", async () => {
+    expect(await useConnectionsStore.getState().moveProfilesToFolder(["a"], "Connections")).toBe(0);
+    expect(pendingSaves).toHaveLength(0);
+  });
+});

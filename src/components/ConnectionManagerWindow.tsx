@@ -28,6 +28,11 @@ import {
   Menu,
   Upload,
   Download,
+  CheckSquare,
+  Square,
+  FolderInput,
+  ListChecks,
+  AlertTriangle,
 } from "lucide-react";
 import { useConnectionsStore } from "../stores/connections";
 import {
@@ -54,12 +59,19 @@ import {
   encodeCollapsedConnectionFolders,
 } from "../lib/connectionFolderState";
 import { decryptExport, encryptExport, isEncryptedExport } from "../lib/exportCrypto";
+import { decryptRNCryptor, isRNCryptorPasswordFile } from "../lib/rncryptor";
+import {
+  decodeTablePlusDocument,
+  isTablePlusDocument,
+  parseTablePlusDocument,
+  TABLEPLUS_EXTENSION,
+} from "../lib/tablePlusImport";
 
 const EXPORT_EXTENSION = ".sgsqlx";
 
 export function ConnectionManagerWindow() {
   useWindowPersist();
-  const { profiles, folders, loaded, loadProfiles, addProfile, updateProfile, deleteProfile, reorderProfiles, createFolder, reorderFolders, importProfiles, testConnection, getProfileWithPassword } =
+  const { profiles, folders, loaded, loadProfiles, addProfile, updateProfile, deleteProfile, deleteProfiles, moveProfilesToFolder, reorderProfiles, createFolder, reorderFolders, importProfiles, testConnection, getProfileWithPassword } =
     useConnectionsStore();
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -90,10 +102,18 @@ export function ConnectionManagerWindow() {
   const [exportPasswordConfirm, setExportPasswordConfirm] = useState("");
   const [exportError, setExportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
-  const [importPending, setImportPending] = useState<{ bytes: Uint8Array<ArrayBuffer> } | null>(null);
+  const [importPending, setImportPending] = useState<{ bytes: Uint8Array<ArrayBuffer>; format: "sgsql" | "tableplus" } | null>(null);
   const [importPassword, setImportPassword] = useState("");
   const [importError, setImportError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  // Multi-select is independent of the keyboard cursor: rows are ticked via
+  // checkbox, modifier-click, or Space, and bulk actions act on the ticked set.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null);
+  const [moveMenuOpen, setMoveMenuOpen] = useState(false);
+  const [bulkDeletePending, setBulkDeletePending] = useState<string[] | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [folderDialogMode, setFolderDialogMode] = useState<"create" | "move">("create");
 
   const filterRef = useRef<HTMLInputElement>(null);
   const privateKeyRef = useRef<HTMLInputElement>(null);
@@ -144,6 +164,27 @@ export function ConnectionManagerWindow() {
       window.removeEventListener("blur", close);
     };
   }, [menuOpen]);
+
+  useEffect(() => {
+    if (!moveMenuOpen) return;
+    const close = () => setMoveMenuOpen(false);
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("blur", close);
+    };
+  }, [moveMenuOpen]);
+
+  // Drop selections that no longer exist (deleted elsewhere, reloaded, …).
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (prev.size === 0) return prev;
+      const live = new Set(profiles.map((p) => p.id));
+      const next = new Set([...prev].filter((id) => live.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [profiles]);
 
   useEffect(() => {
     if (folderDialogOpen) requestAnimationFrame(() => folderNameRef.current?.focus());
@@ -273,9 +314,24 @@ export function ConnectionManagerWindow() {
         setImportPending(null);
         return;
       }
+      if (e.key === "Escape" && bulkDeletePending) {
+        e.preventDefault();
+        if (!bulkBusy) setBulkDeletePending(null);
+        return;
+      }
       if (e.key === "Escape" && editorOpen) {
         e.preventDefault();
         setEditorOpen(false);
+        return;
+      }
+      if (e.key === "Escape" && moveMenuOpen) {
+        e.preventDefault();
+        setMoveMenuOpen(false);
+        return;
+      }
+      if (e.key === "Escape" && selectedIds.size > 0) {
+        e.preventDefault();
+        clearSelection();
         return;
       }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") {
@@ -285,7 +341,7 @@ export function ConnectionManagerWindow() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [editorOpen, folderDialogOpen, exportDialogOpen, importPending]);
+  }, [editorOpen, folderDialogOpen, exportDialogOpen, importPending, bulkDeletePending, bulkBusy, moveMenuOpen, selectedIds]);
 
   function toggleGroup(name: string) {
     setCollapsed((prev) => {
@@ -293,6 +349,122 @@ export function ConnectionManagerWindow() {
       if (next.has(name)) next.delete(name); else next.add(name);
       return next;
     });
+  }
+
+  const selectionCount = selectedIds.size;
+  const selectionMode = selectionCount > 0;
+
+  function clearSelection() {
+    setSelectedIds(new Set());
+    setSelectionAnchor(null);
+    setMoveMenuOpen(false);
+  }
+
+  /** Select every connection matching the current filter, collapsed folders included. */
+  function selectAllVisible() {
+    setMenuOpen(false);
+    setSelectedIds(new Set(filteredProfiles.map((p) => p.id)));
+  }
+
+  function setIdsSelected(ids: string[], selected: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) { if (selected) next.add(id); else next.delete(id); }
+      return next;
+    });
+  }
+
+  function toggleSelected(id: string) {
+    setIdsSelected([id], !selectedIds.has(id));
+    setSelectionAnchor(id);
+  }
+
+  /** Shift-click / Shift-arrow: select the span of visible rows between the anchor and `id`. */
+  function selectRangeTo(id: string) {
+    const visible = rows.filter((r): r is Extract<ListRow, { type: "conn" }> => r.type === "conn").map((r) => r.profile.id);
+    const anchor = selectionAnchor ?? (focusKey?.startsWith("conn:") ? focusKey.slice(5) : null);
+    const from = anchor ? visible.indexOf(anchor) : -1;
+    const to = visible.indexOf(id);
+    if (from < 0 || to < 0) { toggleSelected(id); return; }
+    const [start, end] = from < to ? [from, to] : [to, from];
+    setIdsSelected(visible.slice(start, end + 1), true);
+    if (!selectionAnchor) setSelectionAnchor(anchor);
+  }
+
+  /** Toggle a whole folder: tick every visible member, or untick them all if already ticked. */
+  function toggleFolderSelected(folder: string) {
+    const ids = filteredProfiles.filter((p) => p.group === folder).map((p) => p.id);
+    if (ids.length === 0) return;
+    const allSelected = ids.every((id) => selectedIds.has(id));
+    setIdsSelected(ids, !allSelected);
+  }
+
+  function handleRowClick(profile: ConnectionProfile, event: React.MouseEvent) {
+    if (event.shiftKey) {
+      event.preventDefault();
+      selectRangeTo(profile.id);
+    } else if (event.metaKey || event.ctrlKey) {
+      toggleSelected(profile.id);
+    }
+    setFocusKey(`conn:${profile.id}`);
+    listRef.current?.focus();
+  }
+
+  function requestDelete(ids: string[]) {
+    if (ids.length > 0) setBulkDeletePending(ids);
+  }
+
+  async function handleConfirmBulkDelete() {
+    if (!bulkDeletePending) return;
+    setBulkBusy(true);
+    try {
+      const ids = bulkDeletePending;
+      const count = await deleteProfiles(ids);
+      if (selectedId && ids.includes(selectedId)) {
+        setEditorOpen(false);
+        setSelectedId(null);
+        setDraft(createDefaultProfile());
+        setIsNew(false);
+      }
+      if (focusKey && ids.includes(focusKey.replace(/^conn:/, ""))) setFocusKey(null);
+      setBulkDeletePending(null);
+      clearSelection();
+      setStatusMsg({ type: "ok", text: `Deleted ${count} connection${count === 1 ? "" : "s"}` });
+    } catch (error) {
+      setStatusMsg({ type: "error", text: error instanceof Error ? error.message : "Delete failed" });
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function handleBulkMove(folder: string) {
+    const ids = [...selectedIds];
+    setMoveMenuOpen(false);
+    if (ids.length === 0) return;
+    setBulkBusy(true);
+    try {
+      const count = await moveProfilesToFolder(ids, folder);
+      setCollapsed((prev) => {
+        if (!prev.has(folder)) return prev;
+        const next = new Set(prev);
+        next.delete(folder);
+        return next;
+      });
+      clearSelection();
+      setStatusMsg({ type: "ok", text: `Moved ${count} connection${count === 1 ? "" : "s"} to ${folder}` });
+    } catch (error) {
+      setStatusMsg({ type: "error", text: error instanceof Error ? error.message : "Move failed" });
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  function openFolderDialog(mode: "create" | "move") {
+    setMoveMenuOpen(false);
+    setFolderDialogMode(mode);
+    setFolderName("");
+    setFolderError(null);
+    setFolderDialogOpen(true);
   }
 
   /** Move keyboard focus to a row without opening the editor. */
@@ -311,14 +483,39 @@ export function ConnectionManagerWindow() {
     const idx = rows.findIndex((r) => rowKey(r) === focusKey);
     const row = idx >= 0 ? rows[idx] : null;
 
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
+      e.preventDefault();
+      selectAllVisible();
+      return;
+    }
+    if (e.key === " ") {
+      e.preventDefault();
+      if (!row) return;
+      if (row.type === "group") toggleFolderSelected(row.name);
+      else toggleSelected(row.profile.id);
+      return;
+    }
+    if (e.key === "Delete" || e.key === "Backspace") {
+      e.preventDefault();
+      if (selectionMode) requestDelete([...selectedIds]);
+      else if (row?.type === "conn") requestDelete([row.profile.id]);
+      return;
+    }
+
     if (e.key === "ArrowDown") {
       e.preventDefault();
       if (idx < 0) { if (rows[0]) focusRow(rows[0]); return; }
-      if (idx < rows.length - 1) focusRow(rows[idx + 1]);
+      if (idx < rows.length - 1) {
+        const next = rows[idx + 1];
+        if (e.shiftKey && row?.type === "conn" && next.type === "conn") setIdsSelected([row.profile.id, next.profile.id], true);
+        focusRow(next);
+      }
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       if (idx <= 0) { filterRef.current?.focus(); return; }
-      focusRow(rows[idx - 1]);
+      const prev = rows[idx - 1];
+      if (e.shiftKey && row?.type === "conn" && prev.type === "conn") setIdsSelected([row.profile.id, prev.profile.id], true);
+      focusRow(prev);
     } else if (e.key === "ArrowRight") {
       e.preventDefault();
       if (!row) return;
@@ -355,11 +552,16 @@ export function ConnectionManagerWindow() {
 
   async function handleCreateFolder() {
     try {
-      await createFolder(folderName);
+      const name = folderName.trim();
+      await createFolder(name);
       setFolderName("");
       setFolderError(null);
       setFolderDialogOpen(false);
-      setStatusMsg({ type: "ok", text: "Folder created" });
+      if (folderDialogMode === "move" && selectedIds.size > 0) {
+        await handleBulkMove(name);
+      } else {
+        setStatusMsg({ type: "ok", text: "Folder created" });
+      }
     } catch (error) {
       setFolderError(error instanceof Error ? error.message : "Could not create folder");
     }
@@ -416,6 +618,22 @@ export function ConnectionManagerWindow() {
     }
   }
 
+  function importSummary(count: number, skipped: string[] = []): string {
+    const base = `Imported ${count} connection${count === 1 ? "" : "s"}`;
+    if (skipped.length === 0) return base;
+    return `${base} — skipped ${skipped.length} unsupported (${skipped.slice(0, 3).join(", ")}${skipped.length > 3 ? ", …" : ""})`;
+  }
+
+  async function applyImportedDocument(parsed: unknown): Promise<string> {
+    if (isTablePlusDocument(parsed)) {
+      const { profiles: imported, folders: importedFolders, skipped } = parseTablePlusDocument(parsed);
+      if (imported.length === 0) throw new Error("None of the TablePlus connections use a database SGSql supports");
+      const count = await importProfiles(imported, importedFolders);
+      return importSummary(count, skipped);
+    }
+    return importSummary(await applyImportedPayload(parsed));
+  }
+
   function applyImportedPayload(parsed: unknown): Promise<number> {
     const container = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
     const rawConnections = Array.isArray(parsed)
@@ -443,15 +661,16 @@ export function ConnectionManagerWindow() {
   async function handleImportFile(file: File) {
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
-      if (isEncryptedExport(bytes)) {
-        setImportPending({ bytes });
+      const format = isEncryptedExport(bytes) ? "sgsql" : isRNCryptorPasswordFile(bytes) ? "tableplus" : null;
+      if (format) {
+        setImportPending({ bytes, format });
         setImportPassword("");
         setImportError(null);
         return;
       }
-      const parsed = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
-      const count = await applyImportedPayload(parsed);
-      setStatusMsg({ type: "ok", text: `Imported ${count} connection${count === 1 ? "" : "s"}` });
+      // Plain files: SGSql JSON, or an unprotected TablePlus export (plist or JSON).
+      const text = await applyImportedDocument(decodeTablePlusDocument(bytes));
+      setStatusMsg({ type: "ok", text });
     } catch (error) {
       setStatusMsg({ type: "error", text: error instanceof Error ? error.message : "Import failed" });
     }
@@ -462,11 +681,13 @@ export function ConnectionManagerWindow() {
     setImporting(true);
     setImportError(null);
     try {
-      const parsed = await decryptExport(importPending.bytes, importPassword);
-      const count = await applyImportedPayload(parsed);
+      const parsed = importPending.format === "tableplus"
+        ? decodeTablePlusDocument(await decryptRNCryptor(importPending.bytes, importPassword))
+        : await decryptExport(importPending.bytes, importPassword);
+      const text = await applyImportedDocument(parsed);
       setImportPending(null);
       setImportPassword("");
-      setStatusMsg({ type: "ok", text: `Imported ${count} connection${count === 1 ? "" : "s"}` });
+      setStatusMsg({ type: "ok", text });
     } catch (error) {
       setImportError(error instanceof Error ? error.message : "Import failed");
     } finally {
@@ -751,7 +972,7 @@ export function ConnectionManagerWindow() {
             type="button"
             title="New folder"
             aria-label="New folder"
-            onClick={() => { setFolderName(""); setFolderError(null); setFolderDialogOpen(true); }}
+            onClick={() => openFolderDialog("create")}
             className="rounded-md border border-border-light p-2 text-text-secondary transition hover:bg-bg-hover hover:text-text-primary cursor-pointer"
           >
             <FolderPlus size={15} />
@@ -769,6 +990,16 @@ export function ConnectionManagerWindow() {
             </button>
             {menuOpen && (
               <div className="absolute right-0 top-full z-[300] mt-1 w-48 rounded-md border border-border bg-bg-primary p-1 shadow-2xl">
+                <button
+                  type="button"
+                  onClick={selectAllVisible}
+                  disabled={filteredProfiles.length === 0}
+                  className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-xs text-text-primary hover:bg-bg-hover disabled:opacity-40 cursor-pointer"
+                >
+                  <ListChecks size={13} />
+                  {isFiltering ? "Select all matches" : "Select all"}
+                  <span className="ml-auto text-[10px] text-text-muted">{modKey("A")}</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => { setMenuOpen(false); importInputRef.current?.click(); }}
@@ -792,7 +1023,7 @@ export function ConnectionManagerWindow() {
           <input
             ref={importInputRef}
             type="file"
-            accept={`${EXPORT_EXTENSION},application/json,.json`}
+            accept={`${EXPORT_EXTENSION},${TABLEPLUS_EXTENSION},application/json,.json`}
             className="hidden"
             onChange={(event) => {
               const file = event.target.files?.[0];
@@ -801,6 +1032,76 @@ export function ConnectionManagerWindow() {
             }}
           />
         </div>
+        {selectionMode && (
+          <div className="flex items-center gap-1.5 border-b border-border bg-bg-secondary px-3 py-1.5 text-xs">
+            <span className="mr-1 font-medium text-text-primary">{selectionCount} selected</span>
+            <button
+              type="button"
+              onClick={selectAllVisible}
+              disabled={selectionCount >= filteredProfiles.length}
+              className="rounded px-2 py-1 text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-40 cursor-pointer"
+            >
+              {isFiltering ? "Select all matches" : "Select all"}
+            </button>
+            <div className="relative" onPointerDown={(event) => event.stopPropagation()}>
+              <button
+                type="button"
+                onClick={() => setMoveMenuOpen((open) => !open)}
+                disabled={bulkBusy}
+                aria-expanded={moveMenuOpen}
+                className="flex items-center gap-1 rounded px-2 py-1 text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-40 cursor-pointer"
+              >
+                <FolderInput size={13} />
+                Move to…
+                <ChevronDown size={11} />
+              </button>
+              {moveMenuOpen && (
+                <div className="absolute left-0 top-full z-[300] mt-1 max-h-72 w-52 overflow-y-auto rounded-md border border-border bg-bg-primary p-1 shadow-2xl">
+                  {folders.map((folder) => (
+                    <button
+                      key={folder}
+                      type="button"
+                      onClick={() => void handleBulkMove(folder)}
+                      className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-xs text-text-primary hover:bg-bg-hover cursor-pointer"
+                    >
+                      <Folder size={12} className="shrink-0 text-text-muted" />
+                      <span className="truncate">{folder}</span>
+                    </button>
+                  ))}
+                  <div className="my-1 border-t border-border" />
+                  <button
+                    type="button"
+                    onClick={() => openFolderDialog("move")}
+                    className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-xs text-text-primary hover:bg-bg-hover cursor-pointer"
+                  >
+                    <FolderPlus size={12} className="shrink-0 text-text-muted" />
+                    New folder…
+                  </button>
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => requestDelete([...selectedIds])}
+              disabled={bulkBusy}
+              className="flex items-center gap-1 rounded px-2 py-1 text-error hover:bg-error/10 disabled:opacity-40 cursor-pointer"
+            >
+              <Trash2 size={13} />
+              Delete
+            </button>
+            <span className="flex-1" />
+            {bulkBusy && <Loader2 size={12} className="animate-spin text-text-muted" />}
+            <button
+              type="button"
+              onClick={clearSelection}
+              title="Clear selection (Esc)"
+              aria-label="Clear selection"
+              className="rounded p-1 text-text-muted hover:bg-bg-hover hover:text-text-primary cursor-pointer"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        )}
         {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
         <div
           ref={listRef}
@@ -826,11 +1127,17 @@ export function ConnectionManagerWindow() {
                   open={isOpen}
                   focused={focusKey === `group:${folder}`}
                   dragDisabled={isFiltering}
-                  onToggle={() => {
-                    if (!isFiltering) toggleGroup(folder);
+                  selectedCount={members.filter((profile) => selectedIds.has(profile.id)).length}
+                  onToggle={(event) => {
+                    if (event.metaKey || event.ctrlKey || event.shiftKey) {
+                      toggleFolderSelected(folder);
+                    } else if (!isFiltering) {
+                      toggleGroup(folder);
+                    }
                     setFocusKey(`group:${folder}`);
                     listRef.current?.focus();
                   }}
+                  onToggleSelect={() => toggleFolderSelected(folder)}
                 >
                   {isOpen && members.map((profile, index) => (
                     <SortableConnection
@@ -839,9 +1146,12 @@ export function ConnectionManagerWindow() {
                       index={index}
                       folder={folder}
                       focused={focusKey === `conn:${profile.id}`}
+                      selected={selectedIds.has(profile.id)}
+                      selectionMode={selectionMode}
                       isDark={isDark}
                       filter={filter}
-                      onFocus={() => { setFocusKey(`conn:${profile.id}`); listRef.current?.focus(); }}
+                      onFocus={(event) => handleRowClick(profile, event)}
+                      onToggleSelect={() => toggleSelected(profile.id)}
                       onConnect={() => void connectSavedProfile(profile)}
                       onEdit={() => void openEditor(profile)}
                       onContextMenu={(event) => {
@@ -886,11 +1196,22 @@ export function ConnectionManagerWindow() {
               Copy as URL
             </button>
             <button
-              onClick={() => { void handleDeleteProfile(contextMenu.profile.id); setContextMenu(null); }}
+              onClick={() => { toggleSelected(contextMenu.profile.id); setContextMenu(null); }}
+              className="w-full flex items-center gap-2 rounded px-2.5 py-1.5 text-xs text-text-primary hover:bg-bg-hover cursor-pointer"
+            >
+              {selectedIds.has(contextMenu.profile.id) ? <Square size={12} /> : <CheckSquare size={12} />}
+              {selectedIds.has(contextMenu.profile.id) ? "Deselect" : "Select"}
+            </button>
+            <button
+              onClick={() => {
+                const ids = selectedIds.has(contextMenu.profile.id) ? [...selectedIds] : [contextMenu.profile.id];
+                requestDelete(ids);
+                setContextMenu(null);
+              }}
               className="w-full flex items-center gap-2 rounded px-2.5 py-1.5 text-xs text-error hover:bg-error/10 cursor-pointer"
             >
               <Trash2 size={12} />
-              Delete
+              {selectedIds.has(contextMenu.profile.id) && selectedIds.size > 1 ? `Delete ${selectedIds.size} selected` : "Delete"}
             </button>
           </div>
         )}
@@ -914,7 +1235,9 @@ export function ConnectionManagerWindow() {
             className="w-full max-w-sm rounded-xl border border-border bg-bg-secondary p-4 shadow-2xl"
           >
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-text-primary">New folder</h2>
+              <h2 className="text-sm font-semibold text-text-primary">
+                {folderDialogMode === "move" ? `Move ${selectionCount} to new folder` : "New folder"}
+              </h2>
               <button type="button" aria-label="Close" onClick={() => setFolderDialogOpen(false)} className="rounded p-1 text-text-muted hover:bg-bg-hover hover:text-text-primary cursor-pointer">
                 <X size={15} />
               </button>
@@ -930,7 +1253,45 @@ export function ConnectionManagerWindow() {
             {folderError && <div className="mt-2 text-xs text-error">{folderError}</div>}
             <div className="mt-4 flex justify-end gap-2">
               <button type="button" onClick={() => setFolderDialogOpen(false)} className="rounded-md border border-border-light px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-hover cursor-pointer">Cancel</button>
-              <button type="submit" disabled={!folderName.trim()} className="rounded-md bg-accent px-3 py-1.5 text-sm text-white hover:bg-accent-hover disabled:opacity-50 cursor-pointer">Create</button>
+              <button type="submit" disabled={!folderName.trim()} className="rounded-md bg-accent px-3 py-1.5 text-sm text-white hover:bg-accent-hover disabled:opacity-50 cursor-pointer">
+                {folderDialogMode === "move" ? "Create & move" : "Create"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {bulkDeletePending && (
+        <div
+          role="presentation"
+          onMouseDown={(event) => { if (event.target === event.currentTarget && !bulkBusy) setBulkDeletePending(null); }}
+          className="fixed inset-0 z-[220] flex items-center justify-center bg-black/55 p-5"
+        >
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-label="Delete connections"
+            onSubmit={(event) => { event.preventDefault(); void handleConfirmBulkDelete(); }}
+            className="w-full max-w-sm rounded-xl border border-border bg-bg-secondary p-4 shadow-2xl"
+          >
+            <div className="mb-3 flex items-center gap-2">
+              <AlertTriangle size={16} className="shrink-0 text-error" />
+              <h2 className="text-sm font-semibold text-text-primary">
+                Delete {bulkDeletePending.length === 1 ? "connection" : `${bulkDeletePending.length} connections`}?
+              </h2>
+            </div>
+            <p className="mb-1 text-xs text-text-muted">
+              {bulkDeletePending.length === 1
+                ? `"${profiles.find((p) => p.id === bulkDeletePending[0])?.name || "Untitled"}" and its saved password will be removed.`
+                : "The selected connections and their saved passwords will be removed."}
+              {" "}This cannot be undone.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setBulkDeletePending(null)} disabled={bulkBusy} className="rounded-md border border-border-light px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-hover disabled:opacity-50 cursor-pointer">Cancel</button>
+              <button type="submit" autoFocus disabled={bulkBusy} className="flex items-center gap-1.5 rounded-md bg-error px-3 py-1.5 text-sm text-white hover:opacity-90 disabled:opacity-50 cursor-pointer">
+                {bulkBusy && <Loader2 size={13} className="animate-spin" />}
+                Delete
+              </button>
             </div>
           </form>
         </div>
@@ -996,12 +1357,14 @@ export function ConnectionManagerWindow() {
           <form
             role="dialog"
             aria-modal="true"
-            aria-label="Encrypted connections file"
+            aria-label={importPending.format === "tableplus" ? "Password-protected TablePlus export" : "Encrypted connections file"}
             onSubmit={(event) => { event.preventDefault(); void handleConfirmImportPassword(); }}
             className="w-full max-w-sm rounded-xl border border-border bg-bg-secondary p-4 shadow-2xl"
           >
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-text-primary">Encrypted connections file</h2>
+              <h2 className="text-sm font-semibold text-text-primary">
+                {importPending.format === "tableplus" ? "Password-protected TablePlus export" : "Encrypted connections file"}
+              </h2>
               <button type="button" aria-label="Close" onClick={() => setImportPending(null)} className="rounded p-1 text-text-muted hover:bg-bg-hover hover:text-text-primary cursor-pointer">
                 <X size={15} />
               </button>
@@ -1354,7 +1717,9 @@ function SortableFolder({
   open,
   focused,
   dragDisabled,
+  selectedCount,
   onToggle,
+  onToggleSelect,
   children,
 }: {
   folder: string;
@@ -1363,7 +1728,9 @@ function SortableFolder({
   open: boolean;
   focused: boolean;
   dragDisabled: boolean;
-  onToggle: () => void;
+  selectedCount: number;
+  onToggle: (event: React.MouseEvent) => void;
+  onToggleSelect: () => void;
   children: React.ReactNode;
 }) {
   const { ref, handleRef, isDragSource, isDropTarget } = useSortable({
@@ -1386,16 +1753,29 @@ function SortableFolder({
         data-rowkey={`group:${folder}`}
         role="treeitem"
         aria-expanded={open}
-        className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide transition-colors ${isDragSource ? "cursor-grabbing" : "cursor-default"} ${
+        className={`group/folder flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide transition-colors ${isDragSource ? "cursor-grabbing" : "cursor-default"} ${
           isDropTarget ? "bg-accent/15 ring-1 ring-accent/60" : focused ? "bg-bg-hover ring-1 ring-accent/50" : "text-text-muted hover:bg-bg-hover/50"
         }`}
       >
+        {count > 0 && (
+          <button
+            type="button"
+            onClick={(event) => { event.stopPropagation(); onToggleSelect(); }}
+            title={selectedCount === count ? `Deselect all in ${folder}` : `Select all in ${folder}`}
+            aria-label={selectedCount === count ? `Deselect all in ${folder}` : `Select all in ${folder}`}
+            aria-pressed={selectedCount === count}
+            className={`shrink-0 rounded p-0.5 transition hover:text-text-primary cursor-pointer ${
+              selectedCount > 0 ? "text-accent opacity-100" : "text-text-muted opacity-0 group-hover/folder:opacity-100 focus:opacity-100"
+            }`}
+          >
+            {selectedCount === count ? <CheckSquare size={12} /> : <Square size={12} className={selectedCount > 0 ? "opacity-60" : ""} />}
+          </button>
+        )}
         <button
           type="button"
           onClick={onToggle}
-          disabled={dragDisabled}
           aria-label={`${open ? "Collapse" : "Expand"} ${folder}`}
-          className="flex min-w-0 flex-1 items-center gap-1.5 text-left disabled:cursor-default"
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
         >
           {open ? <ChevronDown size={12} className="shrink-0" /> : <ChevronRight size={12} className="shrink-0" />}
           {open ? <FolderOpen size={12} className="shrink-0 text-accent" /> : <Folder size={12} className="shrink-0" />}
@@ -1424,9 +1804,12 @@ function SortableConnection({
   index,
   folder,
   focused,
+  selected,
+  selectionMode,
   isDark,
   filter,
   onFocus,
+  onToggleSelect,
   onConnect,
   onEdit,
   onContextMenu,
@@ -1435,9 +1818,12 @@ function SortableConnection({
   index: number;
   folder: string;
   focused: boolean;
+  selected: boolean;
+  selectionMode: boolean;
   isDark: boolean;
   filter: string;
-  onFocus: () => void;
+  onFocus: (event: React.MouseEvent) => void;
+  onToggleSelect: () => void;
   onConnect: () => void;
   onEdit: () => void;
   onContextMenu: (event: React.MouseEvent) => void;
@@ -1458,6 +1844,7 @@ function SortableConnection({
       ref={ref}
       data-rowkey={`conn:${profile.id}`}
       role="treeitem"
+      aria-selected={selected}
       onClick={onFocus}
       onDoubleClick={onConnect}
       onContextMenu={onContextMenu}
@@ -1466,11 +1853,28 @@ function SortableConnection({
           ? "opacity-40"
           : isDropTarget
           ? "bg-accent/10 ring-1 ring-accent/50"
+          : selected && focused
+          ? "bg-accent/20 ring-1 ring-accent/60 text-text-primary"
+          : selected
+          ? "bg-accent/15 text-text-primary hover:bg-accent/20"
           : focused
           ? "bg-bg-hover/70 ring-1 ring-accent/50 text-text-primary"
           : "text-text-secondary hover:bg-bg-hover/50"
       }`}
     >
+      <button
+        type="button"
+        role="checkbox"
+        aria-checked={selected}
+        aria-label={`${selected ? "Deselect" : "Select"} ${profile.name || "connection"}`}
+        onClick={(event) => { event.stopPropagation(); onToggleSelect(); }}
+        onDoubleClick={(event) => event.stopPropagation()}
+        className={`-ml-1 shrink-0 rounded p-0.5 transition hover:text-text-primary cursor-pointer ${
+          selected ? "text-accent" : selectionMode ? "text-text-muted" : "text-text-muted opacity-0 group-hover:opacity-100 focus:opacity-100"
+        }`}
+      >
+        {selected ? <CheckSquare size={13} /> : <Square size={13} />}
+      </button>
       <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: profileColor(profile.env) }} />
       <span className="max-w-[42%] shrink-0 truncate font-medium">
         {profile.name ? highlightName(profile.name, filter) : "Untitled"}
