@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api.js";
 import { Braces, X } from "lucide-react";
 import { registerSqlLanguageSupport } from "../lib/monacoSetup";
@@ -106,7 +107,8 @@ export function ValueEditorModal({ title, dataType, value, language, readOnly, o
     }
   };
 
-  return (
+  // Portal to body: the detail panel / grid create their own stacking contexts, which would paint over a nested modal.
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -179,7 +181,8 @@ export function ValueEditorModal({ title, dataType, value, language, readOnly, o
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

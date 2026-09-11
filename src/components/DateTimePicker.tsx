@@ -410,7 +410,7 @@ export function DateTimeModal({ title, dataType, kind, value, readOnly, onApply,
     return () => document.removeEventListener("keydown", onKey);
   }, [draft, dirty, readOnly, onApply, onClose]);
 
-  return (
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -457,6 +457,7 @@ export function DateTimeModal({ title, dataType, kind, value, readOnly, onApply,
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
