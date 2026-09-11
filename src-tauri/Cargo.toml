@@ -3,7 +3,7 @@ members = ["sidecar"]
 
 [package]
 name = "SGSql"
-version = "1.3.3"
+version = "1.3.4"
 description = "Stupidly Good SQL"
 authors = ["you"]
 license = ""
