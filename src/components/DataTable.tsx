@@ -964,6 +964,16 @@ function DataView({
     return useEditStore.getState().isCellDirty(rk, headerColumns[colIndex]);
   }, [connectionId, connectionType, db, schema, table, headerColumns, pkColumns, data?.rows, realRowCount, editChanges]);
 
+  // Show the pending edit value in the grid (row data stays original for keys/originals)
+  const displayCellValue = useCallback((rowIndex: number, colIndex: number, value: unknown) => {
+    if (rowIndex >= realRowCount) return value;
+    if (pkColumns.length === 0 || !data?.rows[rowIndex]) return value;
+    const row = data.rows[rowIndex] as unknown[];
+    const rk = buildRowKey(connectionId, connectionType, db, schema, table, headerColumns, row, pkColumns);
+    const change = useEditStore.getState().getChange(rk, headerColumns[colIndex]);
+    return change ? change.newValue : value;
+  }, [connectionId, connectionType, db, schema, table, headerColumns, pkColumns, data?.rows, realRowCount, editChanges]);
+
   const isRowDirty = useCallback((rowIndex: number) => {
     if (rowIndex >= realRowCount) return false;
     if (pkColumns.length === 0 || !data?.rows[rowIndex]) return false;
@@ -1093,6 +1103,7 @@ function DataView({
         revealCell={revealCell}
         tableName={table}
         isCellDirty={pkColumns.length > 0 ? isCellDirty : undefined}
+        displayValue={pkColumns.length > 0 ? displayCellValue : undefined}
         isRowDirty={pkColumns.length > 0 ? isRowDirty : undefined}
         isRowDeleted={pkColumns.length > 0 ? isRowDeleted : undefined}
         isRowInserted={isRowInserted}

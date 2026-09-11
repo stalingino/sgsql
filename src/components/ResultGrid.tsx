@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, ArrowDown, Copy, ClipboardCopy, ChevronRight, CopyPlus } from "lucide-react";
 import { horizontalVisibilityDelta } from "../lib/scrollVisibility";
 import { formatDateTimeValue } from "../lib/formatDateTime";
+import { SqlExpression } from "../lib/editStore";
 
 /* ── Constants ─────────────────────────────────────────── */
 
@@ -311,6 +312,9 @@ export function CellValue({ value }: { value: unknown }) {
   if (value === null || value === undefined) {
     return <span className="text-text-muted italic">NULL</span>;
   }
+  if (value instanceof SqlExpression) {
+    return <span className="text-accent font-semibold">{value.label}</span>;
+  }
   if (typeof value === "boolean") {
     return <span className="text-accent font-medium">{value ? "true" : "false"}</span>;
   }
@@ -509,6 +513,11 @@ interface ResultGridProps {
   revealCell?: CellRevealRequest | null;
   /** Double-click on a cell (e.g. open a pop-out editor). */
   onCellActivate?: (selection: CellSelection) => void;
+  /**
+   * Value to render for a cell in place of the row data (e.g. a pending
+   * edit). Row data itself is left untouched so keys and originals stay stable.
+   */
+  displayValue?: (rowIndex: number, colIndex: number, value: unknown) => unknown;
 }
 
 export function ResultGrid({
@@ -529,6 +538,7 @@ export function ResultGrid({
   tableName: _tableName,
   revealCell,
   onCellActivate,
+  displayValue,
 }: ResultGridProps) {
   const [internalSort, setInternalSort] = useState<SortState | null>(null);
   // Multi-selection state
@@ -929,7 +939,7 @@ export function ResultGrid({
                         onDoubleClick={() => onCellActivate?.({ rowIndex: i, colIndex: j, row: row as unknown[], columns })}
                         onContextMenu={(e) => handleContextMenu(e, i, j)}
                       >
-                        <CellValue value={cell} />
+                        <CellValue value={displayValue ? displayValue(i, j, cell) : cell} />
                       </td>
                     );
                   })}
