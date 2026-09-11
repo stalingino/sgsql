@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Save, Search, Undo2, X } from "lucide-react";
+import { Calendar, Maximize2, Save, Search, Undo2, X } from "lucide-react";
 import type { CellSelection } from "./ResultGrid";
 import { useEditStore, buildRowKey, SqlExpression, type RowKey } from "../lib/editStore";
 import { useExecutionQueue } from "../lib/executionQueue";
 import { fuzzySearch } from "../lib/fuzzySearch";
 import { formatDateTimeValue } from "../lib/formatDateTime";
+import { JsonEditor } from "./JsonEditor";
+import { FieldEditorModal } from "./CellEditorModal";
+import { DateTimePopover } from "./DateTimePicker";
+import { getDateTimeKind } from "../lib/dateTimeEdit";
+import { coerceTypedValue, commitCellValue } from "../lib/fieldEdit";
 
 /* ── Detail Panel ──────────────────────────────────────── */
 
@@ -356,25 +361,12 @@ function FieldRow({
 
   const commitValue = useCallback((parsed: unknown) => {
     if (!canEdit) return;
-    if (insertId) {
-      useEditStore.getState().updateInsertValue(insertId, name, parsed);
-    } else if (rowKey) {
-      useEditStore.getState().setChange(rowKey, name, value, parsed);
-    }
+    commitCellValue({ rowKey, insertId }, name, value, parsed);
   }, [rowKey, name, value, canEdit, insertId]);
 
   const handleChange = useCallback((newVal: string) => {
-    // Convert typed value back
-    let parsed: unknown = newVal;
-    if (newVal === "" && (isNull || isCurrentlyNull)) {
-      parsed = null;
-    } else if (isBoolean) {
-      parsed = newVal === "true";
-    } else if (typeof value === "number" && !isNaN(Number(newVal)) && newVal !== "") {
-      parsed = Number(newVal);
-    }
-    commitValue(parsed);
-  }, [commitValue, isBoolean, isNull, isCurrentlyNull, value]);
+    commitValue(coerceTypedValue(newVal, value, isNull || isCurrentlyNull));
+  }, [commitValue, isNull, isCurrentlyNull, value]);
 
   const handleEnumChange = useCallback((newVal: string) => {
     commitValue(newVal === ENUM_NULL_VALUE ? null : newVal);
@@ -398,6 +390,24 @@ function FieldRow({
     handleChange(newVal);
   }, [handleChange]);
 
+  const isJsonType = /\bjsonb?\b/i.test(dataType ?? "");
+  const isJsonField = (typeof value === "object" && value !== null) || isJsonType;
+  // Pop-out editor: only for free-text-ish fields (json / strings), not enums, booleans, numbers or SQL expressions.
+  const canPopOut = !isSqlExpr && !enumValues?.length && !isBoolean && (isJsonField || typeof value === "string" || isCurrentlyNull);
+  const [popOutOpen, setPopOutOpen] = useState(false);
+  const dateTimeKind = getDateTimeKind(dataType);
+  const [pickerAnchor, setPickerAnchor] = useState<HTMLElement | null>(null);
+  const closePicker = useCallback(() => setPickerAnchor(null), []);
+
+  const handlePopOutApply = useCallback((newVal: string) => {
+    // A NULL field renders the nullEditText input once editing starts, so keep it in sync
+    if (isCurrentlyNull || nullEditing) {
+      setNullEditing(true);
+      setNullEditText(newVal);
+    }
+    handleChange(newVal);
+  }, [handleChange, isCurrentlyNull, nullEditing]);
+
   const fieldClasses = `px-3 py-2 border-b border-border/70 ${isDirty ? (insertId ? "bg-row-insert/8 border-l-2 border-l-row-insert" : "bg-warning/8 border-l-2 border-l-warning") : ""}`;
   const inputBorder = isDirty ? (insertId ? "border-row-insert/60" : "border-warning/60") : "border-border-light";
 
@@ -416,6 +426,26 @@ function FieldRow({
           </span>
           <span className="text-[10px] font-medium text-text-secondary font-mono truncate">{dataType}</span>
         </div>
+        {dateTimeKind && !isSqlExpr && (
+          <button
+            type="button"
+            onClick={(e) => setPickerAnchor((cur) => (cur ? null : e.currentTarget))}
+            title={dateTimeKind === "time" ? "Pick time" : dateTimeKind === "date" ? "Pick date" : "Pick date & time"}
+            className={`p-0.5 rounded hover:bg-bg-hover transition-colors cursor-pointer shrink-0 ${pickerAnchor ? "text-accent" : "text-text-muted hover:text-text-primary"}`}
+          >
+            <Calendar size={12} />
+          </button>
+        )}
+        {canPopOut && (
+          <button
+            type="button"
+            onClick={() => setPopOutOpen(true)}
+            title="Open in editor"
+            className="p-0.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer shrink-0"
+          >
+            <Maximize2 size={12} />
+          </button>
+        )}
         {canEdit && (rowKey || insertId) && (
           <QuickSetSelect
             rowKey={rowKey}
@@ -477,13 +507,12 @@ function FieldRow({
             <option value="true">true</option>
             <option value="false">false</option>
           </select>
-        ) : typeof value === "object" && value !== null ? (
-          <textarea
+        ) : isJsonField ? (
+          <JsonEditor
             value={displayValue}
-            onChange={(e) => handleChange(e.target.value)}
+            onChange={handleChange}
             readOnly={!canEdit}
-            style={{ fieldSizing: "content" as any, minHeight: "2lh", maxHeight: "12lh" }}
-            className={`w-full px-2.5 py-1.5 text-[12px] font-mono text-text-primary bg-bg-primary border rounded-md outline-none resize-y focus:border-accent focus:ring-1 focus:ring-accent/30 transition-colors ${inputBorder}`}
+            borderClassName={inputBorder}
           />
         ) : typeof value === "number" || (!insertId && typeof pendingChange?.originalValue === "number") ? (
           <input
@@ -514,6 +543,33 @@ function FieldRow({
           )
         )}
       </div>
+
+      {pickerAnchor && (
+        <DateTimePopover
+          anchor={pickerAnchor}
+          kind={dateTimeKind!}
+          value={isSqlExpr || (isCurrentlyNull && !nullEditing) ? "" : String(displayValue)}
+          readOnly={!canEdit}
+          onChange={handlePopOutApply}
+          onClose={closePicker}
+        />
+      )}
+
+      {popOutOpen && (
+        <FieldEditorModal
+          name={name}
+          dataType={dataType}
+          text={isSqlExpr ? "" : isCurrentlyNull && !nullEditing ? "" : String(displayValue)}
+          isJson={isJsonField}
+          dateTimeKind={dateTimeKind}
+          readOnly={!canEdit}
+          onApply={(text) => {
+            handlePopOutApply(text);
+            setPopOutOpen(false);
+          }}
+          onClose={() => setPopOutOpen(false)}
+        />
+      )}
     </div>
   );
 }

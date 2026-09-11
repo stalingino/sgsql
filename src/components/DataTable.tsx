@@ -25,6 +25,7 @@ import {
 } from "../lib/schema";
 import { useEditStore, buildRowKey, tableRefreshKey } from "../lib/editStore";
 import { ResultGrid, type SortState, type CellSelection, type CellRevealRequest } from "./ResultGrid";
+import { CellEditorModal } from "./CellEditorModal";
 import { getConfig } from "../lib/config";
 import { parseDefaultOrderBy } from "../lib/defaultOrder";
 import {
@@ -1000,22 +1001,31 @@ function DataView({
     }
   }, [connectionId, connectionType, db, schema, table, headerColumns, pkColumns, combinedRows]);
 
-  // Wrap onCellSelect to inject table context (also handle insert rows)
+  // Attach table context to a grid selection (also handle insert rows)
+  const enrichSelection = useCallback((sel: CellSelection): CellSelection => ({
+    ...sel,
+    // For insert rows, still pass table context but with empty pkColumns (no PKs yet)
+    tableContext: { connectionId, connectionType, db, schema, table, pkColumns, columnMeta },
+    ...(sel.rowIndex >= realRowCount ? { insertId: tableInserts[sel.rowIndex - realRowCount]?.id } : {}),
+  }), [connectionId, connectionType, db, schema, table, pkColumns, columnMeta, realRowCount, tableInserts]);
+
+  // Wrap onCellSelect to inject table context
   const handleCellSelect = useCallback((sel: CellSelection | null) => {
     if (sel) {
-      // For insert rows, still pass table context but with empty pkColumns (no PKs yet)
-      const enrichedSelection: CellSelection = {
-        ...sel,
-        tableContext: { connectionId, connectionType, db, schema, table, pkColumns, columnMeta },
-        ...(sel.rowIndex >= realRowCount ? { insertId: tableInserts[sel.rowIndex - realRowCount]?.id } : {}),
-      };
+      const enrichedSelection = enrichSelection(sel);
       selectedCellRef.current = enrichedSelection;
       onCellSelect?.(enrichedSelection);
     } else {
       selectedCellRef.current = null;
       onCellSelect?.(sel);
     }
-  }, [connectionId, connectionType, db, schema, table, pkColumns, columnMeta, onCellSelect, realRowCount, tableInserts]);
+  }, [enrichSelection, onCellSelect]);
+
+  // Double-click on a cell opens the pop-out editor for it
+  const [editorSelection, setEditorSelection] = useState<CellSelection | null>(null);
+  const handleCellActivate = useCallback((sel: CellSelection) => {
+    setEditorSelection(enrichSelection(sel));
+  }, [enrichSelection]);
 
   // A selection contains a row snapshot. After a table refetch, resolve that
   // record again by primary key so the detail panel receives current values.
@@ -1070,23 +1080,29 @@ function DataView({
   }
 
   return (
-    <ResultGrid
-      columns={headerColumns}
-      rows={combinedRows}
-      offset={offset}
-      emptyMessage="No rows in this table."
-      sort={sort}
-      onSortChange={onSortChange}
-      onCellSelect={handleCellSelect}
-      revealCell={revealCell}
-      tableName={table}
-      isCellDirty={pkColumns.length > 0 ? isCellDirty : undefined}
-      isRowDirty={pkColumns.length > 0 ? isRowDirty : undefined}
-      isRowDeleted={pkColumns.length > 0 ? isRowDeleted : undefined}
-      isRowInserted={isRowInserted}
-      onSelectionChange={onSelectionChange}
-      onDuplicateRows={handleDuplicateRows}
-    />
+    <>
+      <ResultGrid
+        columns={headerColumns}
+        rows={combinedRows}
+        offset={offset}
+        emptyMessage="No rows in this table."
+        sort={sort}
+        onSortChange={onSortChange}
+        onCellSelect={handleCellSelect}
+        onCellActivate={handleCellActivate}
+        revealCell={revealCell}
+        tableName={table}
+        isCellDirty={pkColumns.length > 0 ? isCellDirty : undefined}
+        isRowDirty={pkColumns.length > 0 ? isRowDirty : undefined}
+        isRowDeleted={pkColumns.length > 0 ? isRowDeleted : undefined}
+        isRowInserted={isRowInserted}
+        onSelectionChange={onSelectionChange}
+        onDuplicateRows={handleDuplicateRows}
+      />
+      {editorSelection && (
+        <CellEditorModal selection={editorSelection} onClose={() => setEditorSelection(null)} />
+      )}
+    </>
   );
 }
 

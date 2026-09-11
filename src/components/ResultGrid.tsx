@@ -507,6 +507,8 @@ interface ResultGridProps {
   tableName?: string;
   /** Visually activate and horizontally reveal a cell without taking DOM focus. */
   revealCell?: CellRevealRequest | null;
+  /** Double-click on a cell (e.g. open a pop-out editor). */
+  onCellActivate?: (selection: CellSelection) => void;
 }
 
 export function ResultGrid({
@@ -526,6 +528,7 @@ export function ResultGrid({
   onDuplicateRows,
   tableName: _tableName,
   revealCell,
+  onCellActivate,
 }: ResultGridProps) {
   const [internalSort, setInternalSort] = useState<SortState | null>(null);
   // Multi-selection state
@@ -917,8 +920,13 @@ export function ResultGrid({
                               : "outline outline-1 outline-border outline-offset-[-1px]"
                             : ""
                         } ${cellDirty ? "!bg-warning/15 !border-l-2 !border-l-warning" : ""}`}
-                        onMouseDown={(e) => handleRowMouseDown(i, j, e)}
+                        onMouseDown={(e) => {
+                          // Second click of a double-click: don't let the browser select the cell text
+                          if (e.detail > 1) e.preventDefault();
+                          handleRowMouseDown(i, j, e);
+                        }}
                         onClick={(e) => handleRowClick(i, j, e)}
+                        onDoubleClick={() => onCellActivate?.({ rowIndex: i, colIndex: j, row: row as unknown[], columns })}
                         onContextMenu={(e) => handleContextMenu(e, i, j)}
                       >
                         <CellValue value={cell} />

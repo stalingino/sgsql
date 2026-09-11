@@ -9,6 +9,7 @@ import type { MonacoSqlEditorHandle } from "./MonacoSqlEditor";
 import type { EditorCompletionContext } from "../lib/monacoSetup";
 import { dialectToFormatterLanguage, formatSql } from "../lib/sqlFormat";
 import { ResultGrid, type CellSelection, type CellRevealRequest } from "./ResultGrid";
+import { CellEditorModal } from "./CellEditorModal";
 import { useSchemaRevision } from "../lib/schemaRevision";
 
 // Monaco's core bundle is a few MB — code-split it into its own chunk so
@@ -366,6 +367,12 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
     onCellSelect?.(enriched);
   }, [editableContext, onCellSelect]);
 
+  // Double-click on a result cell opens the pop-out editor (read-only unless the query is editable)
+  const [editorSelection, setEditorSelection] = useState<CellSelection | null>(null);
+  const handleResultCellActivate = useCallback((selection: CellSelection) => {
+    setEditorSelection(editableContext ? { ...selection, tableContext: editableContext } : selection);
+  }, [editableContext]);
+
   const runQuery = useCallback(async () => {
     if (loading) return;
 
@@ -602,9 +609,13 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
                 emptyMessage="Query returned no rows."
                 clientSort
                 onCellSelect={handleResultCellSelect}
+                onCellActivate={handleResultCellActivate}
                 revealCell={revealCell}
               />
             </div>
+            {editorSelection && (
+              <CellEditorModal selection={editorSelection} onClose={() => setEditorSelection(null)} />
+            )}
 
             {/* Pagination */}
             <div className="flex items-center justify-center px-3 py-1 border-t border-border bg-bg-secondary text-[11px] text-text-secondary gap-1 shrink-0">

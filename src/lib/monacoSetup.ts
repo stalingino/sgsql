@@ -1,6 +1,8 @@
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api.js";
 import "monaco-editor/esm/vs/basic-languages/sql/sql.contribution.js";
+import "monaco-editor/esm/vs/language/json/monaco.contribution.js";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
+import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
 import type { ColumnInfo } from "./schema";
 import {
   buildSqlCompletions,
@@ -12,7 +14,8 @@ import {
 import { dialectToFormatterLanguage, formatSql, type SqlDialect } from "./sqlFormat";
 
 (self as unknown as { MonacoEnvironment: monaco.Environment }).MonacoEnvironment = {
-  getWorker() {
+  getWorker(_workerId: string, label: string) {
+    if (label === "json") return new JsonWorker();
     return new EditorWorker();
   },
 };
@@ -96,6 +99,16 @@ function buildTheme(base: "vs-dark" | "vs", c: typeof DARK_COLORS): monaco.edito
       { token: "comment.sql", foreground: c.textMuted.slice(1), fontStyle: "italic" },
       { token: "comment.quote.sql", foreground: c.textMuted.slice(1), fontStyle: "italic" },
       { token: "delimiter.sql", foreground: c.textSecondary.slice(1) },
+      // JSON (value editor pop-out) — mirrors the JsonEditor token colors.
+      { token: "string.key.json", foreground: c.identifier.slice(1) },
+      { token: "string.value.json", foreground: c.string.slice(1) },
+      { token: "number.json", foreground: c.number.slice(1) },
+      { token: "keyword.json", foreground: c.keyword.slice(1), fontStyle: "bold" },
+      { token: "delimiter.json", foreground: c.textMuted.slice(1) },
+      { token: "delimiter.bracket.json", foreground: c.textMuted.slice(1) },
+      { token: "delimiter.array.json", foreground: c.textMuted.slice(1) },
+      { token: "delimiter.colon.json", foreground: c.textMuted.slice(1) },
+      { token: "delimiter.comma.json", foreground: c.textMuted.slice(1) },
     ],
     colors: {
       "editor.background": c.bgPrimary,
