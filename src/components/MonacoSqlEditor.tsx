@@ -88,7 +88,15 @@ export const MonacoSqlEditor = forwardRef<MonacoSqlEditorHandle, MonacoSqlEditor
     const model = editor.getModel();
     if (model) setEditorContext(model, () => getCompletionContextRef.current());
 
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => onRunQueryRef.current());
+    // addAction, not addCommand: addCommand keybindings are global to the page
+    // and outlive the editor, so any other Monaco instance (another query tab,
+    // the pop-out value editor) would shadow this binding after it is created.
+    const runAction = editor.addAction({
+      id: "sgsql.runQuery",
+      label: "Run Query",
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
+      run: () => onRunQueryRef.current(),
+    });
 
     const changeSub = editor.onDidChangeModelContent(() => onChangeRef.current(editor.getValue()));
     const cursorSub = editor.onDidChangeCursorPosition((e) => {
@@ -106,6 +114,7 @@ export const MonacoSqlEditor = forwardRef<MonacoSqlEditorHandle, MonacoSqlEditor
 
     return () => {
       resizeObserver.disconnect();
+      runAction.dispose();
       changeSub.dispose();
       cursorSub.dispose();
       if (model) clearEditorContext(model);

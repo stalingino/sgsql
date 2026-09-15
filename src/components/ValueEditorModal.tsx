@@ -76,13 +76,28 @@ export function ValueEditorModal({ title, dataType, value, language, size, readO
     });
     editorRef.current = editor;
 
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
-      const current = editorRef.current;
-      if (!current || readOnly) return;
-      onApplyRef.current(current.getValue());
-      onCloseRef.current();
+    // Scoped to this editor via addAction. addCommand would register page-wide
+    // keybindings that survive dispose and hijack Cmd+Enter / Esc in the SQL
+    // editor once this modal has been opened.
+    const applyAction = editor.addAction({
+      id: "sgsql.valueEditor.apply",
+      label: "Apply",
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
+      run: () => {
+        const current = editorRef.current;
+        if (!current || readOnly) return;
+        onApplyRef.current(current.getValue());
+        onCloseRef.current();
+      },
     });
-    editor.addCommand(monaco.KeyCode.Escape, () => onCloseRef.current());
+    const closeAction = editor.addAction({
+      id: "sgsql.valueEditor.close",
+      label: "Close",
+      keybindings: [monaco.KeyCode.Escape],
+      // Let Esc dismiss an open suggest list first, then close the modal.
+      keybindingContext: "!suggestWidgetVisible",
+      run: () => onCloseRef.current(),
+    });
 
     const changeSub = editor.onDidChangeModelContent(() => {
       setDirty(editor.getValue() !== value);
@@ -93,6 +108,8 @@ export function ValueEditorModal({ title, dataType, value, language, size, readO
     editor.focus();
 
     return () => {
+      applyAction.dispose();
+      closeAction.dispose();
       changeSub.dispose();
       editor.dispose();
       editorRef.current = null;
