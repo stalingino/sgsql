@@ -231,6 +231,8 @@ export function ConnectionManagerWindow() {
     const out: ListRow[] = [];
     for (const g of folders) {
       const members = filteredProfiles.filter((p) => (p.group || DEFAULT_CONNECTION_FOLDER) === g);
+      // While filtering, hide folders that have no matches.
+      if (isFiltering && members.length === 0) continue;
       out.push({ type: "group", name: g, count: members.length });
       // While filtering, force-expand so matches are always visible.
       if (isFiltering || !collapsed.has(g)) {
@@ -1117,6 +1119,7 @@ export function ConnectionManagerWindow() {
           >
             {folders.map((folder, folderIndex) => {
               const members = filteredProfiles.filter((profile) => profile.group === folder);
+              if (isFiltering && members.length === 0) return null;
               const isOpen = isFiltering || !collapsed.has(folder);
               return (
                 <SortableFolder
