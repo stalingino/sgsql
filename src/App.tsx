@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type WheelEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -822,7 +822,7 @@ function App() {
             }
           }}
         >
-          <div className="flex items-center min-w-0 flex-1 overflow-x-auto no-scrollbar">
+          <div className="flex items-center min-w-0 flex-1 overflow-x-auto no-scrollbar" onWheel={scrollHorizontallyOnWheel}>
             {tabs.map((tab, index) => (
               <TabItem
                 key={tab.id}
@@ -1019,7 +1019,10 @@ function App() {
                     }
                   }}
                 >
-                  <div className="flex-1 flex items-center h-full overflow-x-auto no-scrollbar">
+                  <div
+                    className="flex-1 flex items-center h-full overflow-x-auto no-scrollbar"
+                    onWheel={scrollHorizontallyOnWheel}
+                  >
                     {activeWorkspace?.contentTabs.map((ct, index) => (
                       <ContentTabItem
                         key={ct.id}
@@ -1030,18 +1033,19 @@ function App() {
                         onClose={() => closeContentTab(ct.id)}
                       />
                     ))}
+                    {/* "+ SQL" follows the last tab so it reads as a continuation of the strip */}
+                    <div className="flex items-center px-1.5 shrink-0">
+                      <button
+                        onClick={requestAddQueryTab}
+                        title={activeTab.activeDbName ? `New SQL query tab (${modKey("E")})` : `Select a database, then start a new SQL query tab (${modKey("E")})`}
+                        className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold tracking-wide text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer border border-border"
+                      >
+                        <Plus size={10} />
+                        SQL
+                      </button>
+                    </div>
                   </div>
                 </DragDropProvider>
-                <div className="flex items-center px-1.5 shrink-0 border-l border-border">
-                  <button
-                    onClick={requestAddQueryTab}
-                    title={activeTab.activeDbName ? `New SQL query tab (${modKey("E")})` : `Select a database, then start a new SQL query tab (${modKey("E")})`}
-                    className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold tracking-wide text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer border border-border"
-                  >
-                    <Plus size={10} />
-                    SQL
-                  </button>
-                </div>
               </div>
 
               {/* Content area */}
@@ -1283,6 +1287,12 @@ function TabItem({
 
 /* ── Content tab item ──────────────────────────────────── */
 
+/** Let a plain vertical wheel gesture scroll a horizontal strip (no shift needed). */
+function scrollHorizontallyOnWheel(e: WheelEvent<HTMLDivElement>) {
+  if (e.deltaX !== 0 || e.deltaY === 0) return; // trackpad/shift already scrolls horizontally
+  e.currentTarget.scrollLeft += e.deltaY;
+}
+
 function ContentTabItem({
   ct,
   index,
@@ -1303,7 +1313,7 @@ function ContentTabItem({
       ref={ref}
       onClick={onActivate}
       title={contentTabTitle(ct)}
-      className={`group relative flex items-center gap-1.5 h-full px-3 text-[11px] cursor-pointer select-none border-r border-border min-w-0 max-w-52 transition-colors ${
+      className={`group relative flex items-center gap-1.5 h-full px-3 text-[11px] cursor-pointer select-none border-r border-border shrink-0 min-w-[120px] max-w-52 transition-colors ${
         active
           ? "bg-bg-primary text-text-primary"
           : "bg-bg-secondary text-text-muted hover:text-text-secondary hover:bg-bg-hover"
