@@ -70,6 +70,8 @@ struct SchemaParams {
     where_clause: Option<String>,
     user: Option<String>,
     host: Option<String>,
+    kind: Option<String>,
+    identity: Option<String>,
 }
 
 pub async fn handle_schema_request(
@@ -93,6 +95,8 @@ pub async fn handle_schema_request(
         where_clause: raw.get("where").cloned(),
         user: raw.get("user").cloned(),
         host: raw.get("host").cloned(),
+        kind: raw.get("kind").cloned(),
+        identity: raw.get("identity").cloned(),
     };
 
     let attempt = async {
@@ -149,10 +153,21 @@ async fn dispatch(
         "catalog" => get_catalog(client, conn_id, trace_db, p.db.as_deref()).await,
         "schemas" => get_schemas(client, conn_id, trace_db).await,
         "tables" => get_tables(client, conn_id, trace_db, p.db.as_deref(), p.schema.as_deref()).await,
+        "objects" => get_schema_objects(client, conn_id, trace_db, p.db.as_deref(), p.schema.as_deref()).await,
         "columns" => get_columns(client, conn_id, trace_db, p.db.as_deref(), p.schema.as_deref(), &need_table()?).await,
         "indexes" => get_indexes(client, conn_id, trace_db, p.db.as_deref(), p.schema.as_deref(), &need_table()?).await,
         "fks" => get_foreign_keys(client, conn_id, trace_db, p.db.as_deref(), p.schema.as_deref(), &need_table()?).await,
         "ddl" => get_table_ddl(client, conn_id, trace_db, p.db.as_deref(), p.schema.as_deref(), &need_table()?).await,
+        "object-ddl" => get_schema_object_ddl(
+            client,
+            conn_id,
+            trace_db,
+            p.db.as_deref(),
+            p.schema.as_deref(),
+            &need_table()?,
+            p.kind.as_deref().unwrap_or("view"),
+            p.identity.as_deref(),
+        ).await,
         "artifacts" => get_table_artifacts(client, conn_id, trace_db, &need_table()?).await,
         "users" => super::users::get_users(client, conn_id, trace_db).await,
         "user-grants" => {
@@ -386,6 +401,107 @@ async fn get_tables(
             Ok(json!({ "tables": tables }))
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Introspection: grouped schema objects
+// ---------------------------------------------------------------------------
+
+async fn get_schema_objects(
+    client: &DbClient,
+    conn_id: &str,
+    trace_db: &str,
+    db_name: Option<&str>,
+    schema: Option<&str>,
+) -> Result<Value, SidecarError> {
+    let objects: Vec<Value> = match client {
+        DbClient::Postgres { .. } => {
+            let s = schema.filter(|value| !value.is_empty()).unwrap_or("public");
+            let rows = db::pg_fetch(
+                client,
+                conn_id,
+                trace_db,
+                "SELECT c.relname AS name, \
+                    CASE WHEN c.relkind IN ('v', 'm') THEN 'VIEW' ELSE 'TABLE' END AS object_type, \
+                    c.oid::text AS identity, '' AS signature \
+                 FROM pg_class c \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'v', 'm', 'f') \
+                 UNION ALL \
+                 SELECT p.proname AS name, 'FUNCTION' AS object_type, p.oid::text AS identity, \
+                    pg_get_function_identity_arguments(p.oid) AS signature \
+                 FROM pg_proc p \
+                 JOIN pg_namespace n ON n.oid = p.pronamespace \
+                 WHERE n.nspname = $1 AND p.prokind IN ('f', 'w') \
+                 ORDER BY object_type, name, signature",
+                &[s],
+            )
+            .await?;
+            rows.iter()
+                .map(|row| json!({
+                    "name": s_of(row, "name"),
+                    "type": s_of(row, "object_type"),
+                    "identity": s_of(row, "identity"),
+                    "signature": s_of(row, "signature"),
+                }))
+                .collect()
+        }
+        DbClient::MySql { .. } => {
+            let d = db_name.filter(|value| !value.is_empty()).unwrap_or("information_schema");
+            let rows = db::mysql_fetch(
+                client,
+                conn_id,
+                trace_db,
+                "SELECT TABLE_NAME AS name, \
+                    CASE WHEN TABLE_TYPE = 'VIEW' THEN 'VIEW' ELSE 'TABLE' END AS object_type, \
+                    TABLE_NAME AS identity, '' AS signature \
+                 FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? \
+                 UNION ALL \
+                 SELECT r.ROUTINE_NAME AS name, 'FUNCTION' AS object_type, r.ROUTINE_NAME AS identity, \
+                    COALESCE((SELECT GROUP_CONCAT(\
+                        CONCAT(COALESCE(p.PARAMETER_NAME, ''), \
+                            CASE WHEN p.PARAMETER_NAME IS NULL OR p.PARAMETER_NAME = '' THEN '' ELSE ' ' END, \
+                            p.DTD_IDENTIFIER) \
+                        ORDER BY p.ORDINAL_POSITION SEPARATOR ', ') \
+                      FROM information_schema.PARAMETERS p \
+                      WHERE p.SPECIFIC_SCHEMA = r.ROUTINE_SCHEMA \
+                        AND p.SPECIFIC_NAME = r.SPECIFIC_NAME \
+                        AND p.ORDINAL_POSITION > 0), '') AS signature \
+                 FROM information_schema.ROUTINES r WHERE r.ROUTINE_SCHEMA = ? AND r.ROUTINE_TYPE = 'FUNCTION' \
+                 ORDER BY object_type, name, signature",
+                &[d, d],
+            )
+            .await?;
+            rows.iter()
+                .map(|row| json!({
+                    "name": s_of(row, "name"),
+                    "type": s_of(row, "object_type"),
+                    "identity": s_of(row, "identity"),
+                    "signature": s_of(row, "signature"),
+                }))
+                .collect()
+        }
+        DbClient::Sqlite { .. } => {
+            let rows = db::sqlite_fetch(
+                client,
+                conn_id,
+                trace_db,
+                "SELECT name, type FROM sqlite_master \
+                 WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY type, name",
+                &[],
+            )
+            .await?;
+            rows.iter()
+                .map(|row| json!({
+                    "name": s_of(row, "name"),
+                    "type": if s_of(row, "type") == "view" { "VIEW" } else { "TABLE" },
+                    "identity": s_of(row, "name"),
+                    "signature": "",
+                }))
+                .collect()
+        }
+    };
+    Ok(json!({ "objects": objects }))
 }
 
 // ---------------------------------------------------------------------------
@@ -730,6 +846,59 @@ async fn get_table_ddl(
                 .unwrap_or_default();
             Ok(json!({ "ddl": ddl }))
         }
+    }
+}
+
+async fn get_schema_object_ddl(
+    client: &DbClient,
+    conn_id: &str,
+    trace_db: &str,
+    db_name: Option<&str>,
+    schema: Option<&str>,
+    name: &str,
+    kind: &str,
+    identity: Option<&str>,
+) -> Result<Value, SidecarError> {
+    if kind.eq_ignore_ascii_case("view") {
+        return get_table_ddl(client, conn_id, trace_db, db_name, schema, name).await;
+    }
+    if !kind.eq_ignore_ascii_case("function") {
+        return Err(SidecarError::msg(format!("Unsupported schema object type: {kind}")));
+    }
+
+    match client {
+        DbClient::Postgres { .. } => {
+            let s = schema.filter(|value| !value.is_empty()).unwrap_or("public");
+            let object_id = identity
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| SidecarError::msg("Missing function identity"))?;
+            let rows = db::pg_fetch(
+                client,
+                conn_id,
+                trace_db,
+                "SELECT pg_get_functiondef(p.oid) AS ddl \
+                 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
+                 WHERE p.oid = $1::oid AND n.nspname = $2 AND p.proname = $3",
+                &[object_id, s, name],
+            )
+            .await?;
+            let ddl = rows.first().map(|row| s_of(row, "ddl")).unwrap_or_default();
+            if ddl.is_empty() {
+                return Err(SidecarError::msg("Function definition was not found"));
+            }
+            Ok(json!({ "ddl": ddl }))
+        }
+        DbClient::MySql { .. } => {
+            let d = db_name.filter(|value| !value.is_empty()).unwrap_or("information_schema");
+            let sql = format!("SHOW CREATE FUNCTION {}.{}", backtick(d), backtick(name));
+            let rows = db::fetch_raw_objects(client, conn_id, trace_db, &sql).await?;
+            let ddl = rows.first().map(|row| s_of(row, "Create Function")).unwrap_or_default();
+            if ddl.is_empty() {
+                return Err(SidecarError::msg("Function definition was not found"));
+            }
+            Ok(json!({ "ddl": format!("{ddl};") }))
+        }
+        DbClient::Sqlite { .. } => Err(SidecarError::msg("SQLite does not store user-defined functions")),
     }
 }
 

@@ -20,6 +20,7 @@ import {
   StopCircle,
   FilePenLine,
   RefreshCw,
+  Code2,
 } from "lucide-react";
 import { DragDropProvider, type DragEndEvent } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
@@ -43,6 +44,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { CommandPalette } from "./components/CommandPalette";
 import { ChangeHistoryPanel } from "./components/ChangeHistoryPopup";
+import { SchemaObjectEditor } from "./components/SchemaObjectEditor";
 import type { CellSelection, CellRevealRequest, SortState } from "./components/ResultGrid";
 import type { FilterRow } from "./components/FilterPanel";
 import type { ConnectionProfile } from "./lib/types";
@@ -56,7 +58,9 @@ interface ContentTab {
   db: string;
   schema: string;
   table: string;
-  type: "table" | "view" | "query";
+  type: "table" | "view" | "function" | "query";
+  identity?: string;
+  signature?: string;
   sql?: string;
   viewMode?: "data" | "structure";
   sort?: SortState | null;
@@ -107,7 +111,7 @@ function moveTab<T extends { id: string }>(items: T[], sourceId: string, targetI
 function contentTabTitle(tab: ContentTab): string {
   return tab.type === "query"
     ? tab.table
-    : [tab.db, tab.schema, tab.table].filter(Boolean).join(".");
+    : [tab.db, tab.schema, tab.type === "function" && tab.signature ? `${tab.table}(${tab.signature})` : tab.table].filter(Boolean).join(".");
 }
 
 function defaultSchema(type: "postgres" | "mysql" | "sqlite"): string {
@@ -174,6 +178,7 @@ function App() {
   const requestAddQueryTabRef = useRef<(() => void) | null>(null);
   const pendingAddQueryTabRef = useRef(false);
   const saveAllChangesRef = useRef<(() => void) | null>(null);
+  const activeContentTypeRef = useRef<ContentTab["type"] | null>(null);
   const closeContentTabRef = useRef<(id: string) => void>(() => {});
   const closeDbRef = useRef<(db: string) => void>(() => {});
   const closeTabRef = useRef<(id: string) => void>(() => {});
@@ -275,7 +280,11 @@ function App() {
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
         e.stopPropagation();
-        saveAllChangesRef.current?.();
+        if (activeContentTypeRef.current === "view" || activeContentTypeRef.current === "function") {
+          window.dispatchEvent(new Event("sgsql-save-definition"));
+        } else {
+          saveAllChangesRef.current?.();
+        }
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "w") {
         e.preventDefault();
@@ -520,21 +529,29 @@ function App() {
 
   /* ── Content tab helpers (now workspace-scoped) ────────── */
 
-  const handleTableSelect = useCallback((db: string, schema: string, table: string, type: "table" | "view" = "table") => {
+  const handleTableSelect = useCallback((
+    db: string,
+    schema: string,
+    table: string,
+    type: "table" | "view" | "function" = "table",
+    identity?: string,
+    signature?: string,
+  ) => {
     setTabs((prev) => prev.map((tab) => {
       if (tab.id !== activeTabId) return tab;
       const ws = tab.workspaces[db];
       if (!ws) return tab;
 
       const existing = ws.contentTabs.find(
-        (ct) => ct.db === db && ct.schema === schema && ct.table === table,
+        (ct) => ct.db === db && ct.schema === schema && ct.table === table && ct.type === type
+          && (type !== "function" || ct.identity === identity),
       );
       if (existing) {
         const updatedWs = { ...ws, activeContentTabId: existing.id };
         return { ...tab, activeDbName: db, workspaces: { ...tab.workspaces, [db]: updatedWs }, mainView: "workspace" };
       }
 
-      const ct: ContentTab = { id: nextContentTabId(), db, schema, table, type };
+      const ct: ContentTab = { id: nextContentTabId(), db, schema, table, type, identity, signature };
       const updatedWs = {
         ...ws,
         contentTabs: [...ws.contentTabs, ct],
@@ -720,6 +737,7 @@ function App() {
     ? activeTab.workspaces[activeTab.activeDbName] ?? null
     : null;
   const activeContentTab = activeWorkspace?.contentTabs.find((tab) => tab.id === activeWorkspace.activeContentTabId);
+  activeContentTypeRef.current = activeContentTab?.type ?? null;
 
   // Clear the selected cell/row whenever the visible table/query view changes —
   // otherwise the detail panel keeps showing a row from a tab/connection that's
@@ -774,7 +792,7 @@ function App() {
       window.setTimeout(() => setReconnectNotice(null), 6_000);
       const openTables = Object.values(activeTab.workspaces).flatMap((workspace) =>
         workspace.contentTabs
-          .filter((contentTab) => contentTab.type !== "query")
+          .filter((contentTab) => contentTab.type === "table")
           .map((contentTab) => ({
             connectionId: activeTab.connectionId!,
             db: contentTab.db,
@@ -794,7 +812,7 @@ function App() {
 
   const toggleActiveViewMode = () => {
     if (!activeTab || !activeWorkspace || !activeContentTab) return;
-    if (activeContentTab.type === "query") return;
+    if (activeContentTab.type !== "table") return;
     const nextMode: "data" | "structure" = (activeContentTab.viewMode ?? "data") === "data" ? "structure" : "data";
     setTabs((prev) => prev.map((tab) => {
       if (tab.id !== activeTab.id) return tab;
@@ -1109,6 +1127,18 @@ function App() {
                             }));
                           }}
                         />
+                      ) : ct.type === "view" || ct.type === "function" ? (
+                        <SchemaObjectEditor
+                          connectionId={activeTab.connectionId!}
+                          connectionType={activeTab.profile.type}
+                          db={ct.db}
+                          schema={ct.schema}
+                          name={ct.table}
+                          type={ct.type}
+                          identity={ct.identity}
+                          signature={ct.signature}
+                          active={workspace.db === activeTab.activeDbName && ct.id === workspace.activeContentTabId}
+                        />
                       ) : (
                         <DataTable
                           connectionId={activeTab.connectionId!}
@@ -1184,7 +1214,7 @@ function App() {
                         className="w-96 h-96 opacity-[0.12] pointer-events-none select-none [html[data-theme=dark]_&]:invert"
                       />
                       <p className="text-text-muted text-sm">
-                        {activeTab.activeDbName ? "Select a table to get started" : "Add a database to get started"}
+                        {activeTab.activeDbName ? "Select a table, view, or function to get started" : "Add a database to get started"}
                       </p>
                     </div>
                   )}
@@ -1214,7 +1244,7 @@ function App() {
             </main>
 
             {/* Right detail panel */}
-            {detailPanelVisible && activeTab.mainView !== "users" && activeContentTab?.viewMode !== "structure" && (
+            {detailPanelVisible && activeTab.mainView !== "users" && activeContentTab?.type !== "view" && activeContentTab?.type !== "function" && activeContentTab?.viewMode !== "structure" && (
               <ResizableDetailPanel>
                 <aside className="h-full border-l border-border bg-bg-primary">
                   <ErrorBoundary label="Detail panel">
@@ -1353,9 +1383,11 @@ function ContentTabItem({
         ? <span className="shrink-0 text-[9px] font-bold text-accent leading-none">SQL</span>
         : ct.type === "view"
           ? <Eye size={12} className="shrink-0 text-purple-400" />
-          : <Table2 size={12} className="shrink-0 text-accent" />
+          : ct.type === "function"
+            ? <Code2 size={12} className="shrink-0 text-emerald-400" />
+            : <Table2 size={12} className="shrink-0 text-accent" />
       }
-      <span className="truncate font-medium">{ct.table}</span>
+      <span className="truncate font-medium">{ct.type === "function" && ct.signature ? `${ct.table}(${ct.signature})` : ct.table}</span>
       <button
         onClick={(e) => { e.stopPropagation(); onClose(); }}
         title="Close"

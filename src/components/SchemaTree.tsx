@@ -4,6 +4,9 @@ import {
   Database,
   Table2,
   Eye,
+  Code2,
+  ChevronDown,
+  ChevronRight,
   Loader2,
   Plus,
   Users,
@@ -12,7 +15,8 @@ import {
 import {
   applySchemaChanges,
   fetchSchemas,
-  fetchTables,
+  fetchSchemaObjects,
+  type SchemaObjectInfo,
   type TableInfo,
 } from "../lib/schema";
 import { quoteIdent } from "../lib/schemaDdl";
@@ -38,7 +42,7 @@ interface SchemaTreeProps {
   /** Server-level user management view is showing instead of a db workspace. */
   usersActive?: boolean;
   onOpenUsers?: () => void;
-  onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view") => void;
+  onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view" | "function", identity?: string, signature?: string) => void;
   onTableDrop?: (db: string, schema: string, table: string) => void;
   tableListVisible?: boolean;
 }
@@ -66,7 +70,7 @@ export function SchemaTree({
   onTableDrop,
   tableListVisible = true,
 }: SchemaTreeProps) {
-  const cachesRef = useRef(new ConnectionSchemaCache<TableInfo>());
+  const cachesRef = useRef(new ConnectionSchemaCache<SchemaObjectInfo>());
   const schemaRevision = useSchemaRevision(connectionId);
   const cache = cachesRef.current.forConnection(connectionId, schemaRevision);
   const [schemas, setSchemas] = useState<string[]>([defaultSchema(connectionType)]);
@@ -277,19 +281,22 @@ function TableList({
   schema: string;
   connectionId: string;
   connectionType: "postgres" | "mysql" | "sqlite";
-  cache: SchemaCache<TableInfo>;
-  onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view") => void;
+  cache: SchemaCache<SchemaObjectInfo>;
+  onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view" | "function", identity?: string, signature?: string) => void;
   onTableDrop?: (db: string, schema: string, table: string) => void;
   schemaRevision: number;
   schemas: string[];
   onSchemaChange: (schema: string) => void;
   onCreate: () => void;
 }) {
-  const [tables, setTables] = useState<TableInfo[]>([]);
+  const [objects, setObjects] = useState<SchemaObjectInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [selectedTableKey, setSelectedTableKey] = useState<string | null>(null);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<SchemaObjectInfo["type"]>>(
+    () => new Set<SchemaObjectInfo["type"]>(["view", "function"]),
+  );
   const [contextMenu, setContextMenu] = useState<{ table: TableInfo; x: number; y: number } | null>(null);
   const [pendingAction, setPendingAction] = useState<{ kind: "truncate" | "drop"; table: TableInfo; statement: string } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -323,18 +330,18 @@ function TableList({
       try {
         const cached = cache.get(db)?.get(schema);
         if (cached) {
-          if (!cancelled) { setTables(cached); setLoading(false); }
+          if (!cancelled) { setObjects(cached); setLoading(false); }
           return;
         }
 
-        const result = await fetchTables(connectionId, db, schema);
+        const result = await fetchSchemaObjects(connectionId, db, schema);
 
         if (!cache.has(db)) {
           cache.set(db, new Map());
         }
         cache.get(db)!.set(schema, result);
 
-        if (!cancelled) setTables(result);
+        if (!cancelled) setObjects(result);
       } catch (err: unknown) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -347,17 +354,28 @@ function TableList({
 
   const filtered = useMemo(
     () =>
-      fuzzySearchResults(tables, query, { keys: [{ name: "name", weight: 2 }, "type"] }).map((result) => ({
+      fuzzySearchResults(objects, query, { keys: [{ name: "name", weight: 2 }, "signature", "type"] }).map((result) => ({
         ...result.item,
         indices: result.indices,
       })),
-    [tables, query],
+    [objects, query],
   );
 
-  const selectedIdx = filtered.findIndex((table) => `${table.type}:${table.name}` === selectedTableKey);
-  const selectTable = (table: TableInfo, open = true) => {
-    setSelectedTableKey(`${table.type}:${table.name}`);
-    if (open) onTableSelect?.(db, schema, table.name, table.type === "view" ? "view" : "table");
+  const grouped = useMemo(() => ({
+    table: filtered.filter((object) => object.type === "table"),
+    view: filtered.filter((object) => object.type === "view"),
+    function: filtered.filter((object) => object.type === "function"),
+  }), [filtered]);
+  const navigable = useMemo(
+    () => (["table", "view", "function"] as const).flatMap((type) => collapsedGroups.has(type) && !query ? [] : grouped[type]),
+    [collapsedGroups, grouped, query],
+  );
+
+  const objectKey = (object: SchemaObjectInfo) => `${object.type}:${object.identity || object.name}`;
+  const selectedIdx = navigable.findIndex((object) => objectKey(object) === selectedTableKey);
+  const selectTable = (object: SchemaObjectInfo, open = true) => {
+    setSelectedTableKey(objectKey(object));
+    if (open) onTableSelect?.(db, schema, object.name, object.type, object.identity, object.signature);
   };
 
   const tableReference = (table: string) => {
@@ -402,20 +420,20 @@ function TableList({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Tab" && filtered.length > 0) {
+    if (e.key === "Tab" && navigable.length > 0) {
       e.preventDefault();
       const dir = e.shiftKey ? -1 : 1;
-      const next = selectedIdx < 0 ? 0 : (selectedIdx + dir + filtered.length) % filtered.length;
-      selectTable(filtered[next], false);
-    } else if (e.key === "ArrowDown" && filtered.length > 0) {
+      const next = selectedIdx < 0 ? 0 : (selectedIdx + dir + navigable.length) % navigable.length;
+      selectTable(navigable[next], false);
+    } else if (e.key === "ArrowDown" && navigable.length > 0) {
       e.preventDefault();
-      selectTable(filtered[Math.min(selectedIdx + 1, filtered.length - 1)], false);
-    } else if (e.key === "ArrowUp" && filtered.length > 0) {
+      selectTable(navigable[Math.min(selectedIdx + 1, navigable.length - 1)], false);
+    } else if (e.key === "ArrowUp" && navigable.length > 0) {
       e.preventDefault();
-      selectTable(filtered[Math.max(selectedIdx - 1, 0)], false);
-    } else if (e.key === "Enter" && selectedIdx >= 0 && selectedIdx < filtered.length) {
+      selectTable(navigable[Math.max(selectedIdx - 1, 0)], false);
+    } else if (e.key === "Enter" && selectedIdx >= 0 && selectedIdx < navigable.length) {
       e.preventDefault();
-      selectTable(filtered[selectedIdx]);
+      selectTable(navigable[selectedIdx]);
     }
   };
 
@@ -433,16 +451,16 @@ function TableList({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Filter tables..."
+          placeholder="Filter schema objects..."
           className="w-full bg-bg-hover text-text-primary text-[12px] font-mono placeholder-text-muted px-2 py-1 rounded outline-none focus:ring-1 focus:ring-accent/50"
         />
       </div>
 
-      <div className="flex-1 overflow-y-auto min-h-0 py-1">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {loading && (
           <div className="flex items-center gap-2 px-3 py-4 text-xs text-text-muted">
             <Loader2 size={12} className="animate-spin" />
-            Loading tables...
+            Loading schema objects...
           </div>
         )}
 
@@ -452,21 +470,28 @@ function TableList({
 
         {!loading && !error && filtered.length === 0 && (
           <div className="px-3 py-4 text-xs text-text-muted">
-            {query ? "No matches." : "No tables found."}
+            {query ? "No matches." : "No schema objects found."}
           </div>
         )}
 
-        {!loading && !error && filtered.map((t, i) => (
-          <TableNode
-            key={`${t.type}:${t.name}`}
-            table={t}
-            indices={t.indices}
-            selected={i === selectedIdx}
-            onSelect={() => selectTable(t)}
-            onContextMenu={(event) => {
+        {!loading && !error && (!query || filtered.length > 0) && (["table", "view", "function"] as const).map((type) => (
+          <ObjectGroup
+            key={type}
+            type={type}
+            objects={grouped[type]}
+            collapsed={!query && collapsedGroups.has(type)}
+            selectedKey={selectedTableKey}
+            objectKey={objectKey}
+            onToggle={() => setCollapsedGroups((current) => {
+              const next = new Set(current);
+              if (next.has(type)) next.delete(type); else next.add(type);
+              return next;
+            })}
+            onSelect={selectTable}
+            onContextMenu={(object, event) => {
               event.preventDefault();
-              selectTable(t, false);
-              if (t.type === "table") setContextMenu({ table: t, x: event.clientX, y: event.clientY });
+              selectTable(object, false);
+              if (object.type === "table") setContextMenu({ table: { name: object.name, type: "table" }, x: event.clientX, y: event.clientY });
             }}
           />
         ))}
@@ -501,7 +526,7 @@ function TableList({
   );
 }
 
-/* ── Table node ──────────────────────────────────────────── */
+/* ── Grouped schema object nodes ─────────────────────────── */
 
 function highlightMatch(name: string, indices: readonly number[]): React.ReactNode {
   if (indices.length === 0) return name;
@@ -514,20 +539,80 @@ function highlightMatch(name: string, indices: readonly number[]): React.ReactNo
   );
 }
 
-function TableNode({
-  table,
+function ObjectGroup({
+  type,
+  objects,
+  collapsed,
+  selectedKey,
+  objectKey,
+  onToggle,
+  onSelect,
+  onContextMenu,
+}: {
+  type: SchemaObjectInfo["type"];
+  objects: Array<SchemaObjectInfo & { indices: readonly number[] }>;
+  collapsed: boolean;
+  selectedKey: string | null;
+  objectKey: (object: SchemaObjectInfo) => string;
+  onToggle: () => void;
+  onSelect: (object: SchemaObjectInfo) => void;
+  onContextMenu: (object: SchemaObjectInfo, event: React.MouseEvent) => void;
+}) {
+  const label = type === "table" ? "Tables" : type === "view" ? "Views" : "Functions";
+  const icon = type === "table"
+    ? <Table2 size={11} className="text-accent" />
+    : type === "view"
+      ? <Eye size={11} className="text-purple-400" />
+      : <Code2 size={11} className="text-emerald-400" />;
+
+  const expanded = !collapsed && objects.length > 0;
+  const panelClassName = !expanded
+    ? "shrink-0"
+    : type === "table"
+      ? "flex min-h-0 flex-1 flex-col"
+      : "flex max-h-[40%] shrink-0 flex-col";
+
+  return <section className={panelClassName}>
+    <button
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+      className="flex w-full shrink-0 items-center gap-1.5 border-y border-border/70 bg-bg-secondary px-2 py-1 text-left text-[9px] font-semibold uppercase tracking-wider text-text-muted hover:bg-bg-hover"
+    >
+      {collapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
+      {icon}
+      <span>{label}</span>
+      <span className="ml-auto rounded-full bg-bg-hover px-1.5 py-px text-[8px] tabular-nums">{objects.length}</span>
+    </button>
+    {expanded && (
+      <div className={`min-h-0 overflow-y-auto py-0.5 ${type === "table" ? "flex-1" : ""}`}>
+        {objects.map((object) => (
+          <SchemaObjectNode
+            key={objectKey(object)}
+            object={object}
+            indices={object.indices}
+            selected={selectedKey === objectKey(object)}
+            onSelect={() => onSelect(object)}
+            onContextMenu={(event) => onContextMenu(object, event)}
+          />
+        ))}
+      </div>
+    )}
+  </section>;
+}
+
+function SchemaObjectNode({
+  object,
   indices = [],
   selected,
   onSelect,
   onContextMenu,
 }: {
-  table: TableInfo;
+  object: SchemaObjectInfo;
   indices?: readonly number[];
   selected?: boolean;
   onSelect: () => void;
   onContextMenu: (event: React.MouseEvent) => void;
 }) {
-  const isView = table.type === "view";
   const nodeRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -545,11 +630,16 @@ function TableNode({
       onClick={onSelect}
       onContextMenu={onContextMenu}
     >
-      {isView
+      {object.type === "view"
         ? <Eye size={14} className="shrink-0 text-purple-400" />
-        : <Table2 size={14} className="shrink-0 text-accent" />
+        : object.type === "function"
+          ? <Code2 size={14} className="shrink-0 text-emerald-400" />
+          : <Table2 size={14} className="shrink-0 text-accent" />
       }
-      <span className="truncate text-[12px] font-mono text-text-primary">{highlightMatch(table.name, indices)}</span>
+      <span className="truncate text-[12px] font-mono text-text-primary">
+        {highlightMatch(object.name, indices)}
+        {object.type === "function" && <span className="text-text-muted">({object.signature || ""})</span>}
+      </span>
     </div>
   );
 }

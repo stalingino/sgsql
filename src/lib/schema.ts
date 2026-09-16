@@ -8,6 +8,18 @@ export interface TableInfo {
   type: "table" | "view";
 }
 
+export type SchemaObjectType = "table" | "view" | "function";
+
+export interface SchemaObjectInfo {
+  /** Unqualified object name, used for DDL operations. */
+  name: string;
+  type: SchemaObjectType;
+  /** Stable backend identifier (PostgreSQL functions use their OID). */
+  identity?: string;
+  /** Function argument signature, without the function name. */
+  signature?: string;
+}
+
 export interface CatalogInfo {
   databases: string[];
   tables: Array<TableInfo & { db: string; schema: string }>;
@@ -133,6 +145,24 @@ export async function fetchTables(
     ...table,
     type: String(table.type).toUpperCase().includes("VIEW") ? "view" : "table",
   }));
+}
+
+export async function fetchSchemaObjects(
+  connId: string,
+  db: string,
+  schema: string,
+): Promise<SchemaObjectInfo[]> {
+  const params = new URLSearchParams({ db, schema });
+  const res = await sidecarFetch<{ objects: Array<{ name: string; type: string; identity?: string; signature?: string }> }>(
+    `/schema/${connId}/objects?${params.toString()}`,
+  );
+  return res.objects.map((object) => {
+    const rawType = String(object.type).toUpperCase();
+    const type: SchemaObjectType = rawType.includes("FUNCTION")
+      ? "function"
+      : rawType.includes("VIEW") ? "view" : "table";
+    return { ...object, type };
+  });
 }
 
 export async function fetchCatalog(
@@ -398,6 +428,20 @@ export async function fetchForeignKeys(connId: string, db: string, schema: strin
 
 export async function fetchTableDdl(connId: string, db: string, schema: string, table: string): Promise<string> {
   const res = await sidecarFetch<{ ddl: string }>(schemaUrl(connId, "ddl", db, schema, table));
+  return res.ddl;
+}
+
+export async function fetchSchemaObjectDdl(
+  connId: string,
+  db: string,
+  schema: string,
+  name: string,
+  type: "view" | "function",
+  identity = "",
+): Promise<string> {
+  const params = new URLSearchParams({ db, schema, table: name, kind: type });
+  if (identity) params.set("identity", identity);
+  const res = await sidecarFetch<{ ddl: string }>(`/schema/${connId}/object-ddl?${params.toString()}`);
   return res.ddl;
 }
 
