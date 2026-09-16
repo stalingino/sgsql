@@ -3,6 +3,7 @@ import { ArrowUp, ArrowDown, Copy, ClipboardCopy, ChevronRight, CopyPlus } from 
 import { horizontalVisibilityDelta } from "../lib/scrollVisibility";
 import { formatDateTimeValue } from "../lib/formatDateTime";
 import { SqlExpression } from "../lib/editStore";
+import { serializeExportChunk, type ExportDialect } from "../lib/dataExport";
 
 /* ── Constants ─────────────────────────────────────────── */
 
@@ -104,18 +105,8 @@ function rowsToCSV(cols: string[], rows: unknown[][], withHeader: boolean): stri
   return lines.join("\n");
 }
 
-function rowsToInsert(cols: string[], rows: unknown[][], tableName = "table_name"): string {
-  const colList = cols.map((c) => `\`${c}\``).join(", ");
-  const valRows = rows.map((r) => {
-    const vals = (r as unknown[]).map((v) => {
-      if (v === null || v === undefined) return "NULL";
-      if (typeof v === "number" || typeof v === "boolean") return String(v);
-      const text = typeof v === "object" ? JSON.stringify(v) : String(v);
-      return `'${text.replace(/'/g, "''")}'`;
-    });
-    return `(${vals.join(", ")})`;
-  });
-  return `INSERT INTO \`${tableName}\` (${colList})\nVALUES\n  ${valRows.join(",\n  ")};`;
+function rowsToInsert(cols: string[], rows: unknown[][], tableName = "table_name", dialect: ExportDialect = "sqlite", database?: string, schema?: string): string {
+  return serializeExportChunk({ format: "sql", columns: cols, rows, table: tableName, dialect, database, schema, first: true }).trimEnd();
 }
 
 /* ── Auto-size: estimate column widths from data ───────── */
@@ -347,6 +338,9 @@ function ContextMenu({
   selectedRows,
   onClose,
   tableName = "table_name",
+  dialect = "sqlite",
+  database,
+  schema,
   onDuplicateRows,
 }: {
   state: CtxMenuState;
@@ -355,6 +349,9 @@ function ContextMenu({
   selectedRows: Set<number>;
   onClose: () => void;
   tableName?: string;
+  dialect?: ExportDialect;
+  database?: string;
+  schema?: string;
   onDuplicateRows?: (rowIndices: number[]) => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -396,7 +393,7 @@ function ContextMenu({
     { label: "Markdown Table", fn: () => copyText(rowsToMarkdown(columns, selRows)) },
     { label: "CSV", fn: () => copyText(rowsToCSV(columns, selRows, false)) },
     { label: "CSV with Header", fn: () => copyText(rowsToCSV(columns, selRows, true)) },
-    { label: "INSERT Statement", fn: () => copyText(rowsToInsert(columns, selRows, tableName)) },
+    { label: "INSERT Statement", fn: () => copyText(rowsToInsert(columns, selRows, tableName, dialect, database, schema)) },
   ];
 
   return (
@@ -505,10 +502,14 @@ interface ResultGridProps {
   isRowInserted?: (rowIndex: number) => boolean;
   /** Notify parent when selection changes */
   onSelectionChange?: (selectedIndices: Set<number>) => void;
+  onSelectedRowsChange?: (rows: unknown[][]) => void;
   /** Callback to duplicate selected rows */
   onDuplicateRows?: (rowIndices: number[]) => void;
   /** Table name for copy-as-insert */
   tableName?: string;
+  dialect?: ExportDialect;
+  database?: string;
+  schema?: string;
   /** Visually activate and horizontally reveal a cell without taking DOM focus. */
   revealCell?: CellRevealRequest | null;
   /** Double-click or Enter on a cell (e.g. open a pop-out editor). */
@@ -534,8 +535,12 @@ export function ResultGrid({
   isRowDeleted,
   isRowInserted,
   onSelectionChange,
+  onSelectedRowsChange,
   onDuplicateRows,
   tableName: _tableName,
+  dialect,
+  database,
+  schema,
   revealCell,
   onCellActivate,
   displayValue,
@@ -606,6 +611,15 @@ export function ResultGrid({
   }, [clientSort, internalSort, rows, columns]);
 
   const displayRows = clientSort ? sortedRows : rows;
+
+  useEffect(() => {
+    if (!onSelectedRowsChange) return;
+    const selected = Array.from(selectedRows)
+      .sort((a, b) => a - b)
+      .map((index) => displayRows[index]?.map((value, columnIndex) => displayValue?.(index, columnIndex, value) ?? value))
+      .filter((row): row is unknown[] => !!row);
+    onSelectedRowsChange(selected);
+  }, [selectedRows, displayRows, displayValue, onSelectedRowsChange]);
 
   // ── Selection logic ──────────────────────────────────
   const selectSingle = useCallback(
@@ -966,6 +980,9 @@ export function ResultGrid({
           displayRows={displayRows}
           selectedRows={selectedRows}
           tableName={_tableName}
+          dialect={dialect}
+          database={database}
+          schema={schema}
           onClose={() => setCtxMenu(null)}
           onDuplicateRows={onDuplicateRows}
         />

@@ -230,11 +230,12 @@ export async function fetchTableRows(
   offset = 0,
   orderBy?: string,
   where?: string,
+  signal?: AbortSignal,
 ): Promise<TableRowsResult> {
   let url = `/schema/${connId}/rows?db=${encodeURIComponent(db)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}&limit=${limit}&offset=${offset}`;
   if (orderBy) url += `&orderBy=${encodeURIComponent(orderBy)}`;
   if (where) url += `&where=${encodeURIComponent(where)}`;
-  return sidecarFetch<TableRowsResult>(url);
+  return sidecarFetch<TableRowsResult>(url, { signal });
 }
 
 export interface QueryResult {
@@ -246,6 +247,17 @@ export interface QueryResult {
   affectedRows?: number;
 }
 
+export interface QueryBatchItem extends Partial<QueryResult> {
+  query: string;
+  duration: number;
+  error?: string;
+}
+
+export interface QueryBatchResult {
+  results: QueryBatchItem[];
+  rolledBack: boolean;
+}
+
 export async function executeQuery(
   connId: string,
   sql: string,
@@ -255,6 +267,20 @@ export async function executeQuery(
   return sidecarFetch<QueryResult>("/query", {
     method: "POST",
     body: JSON.stringify({ connectionId: connId, sql, db: db || undefined }),
+    signal,
+  });
+}
+
+export async function executeQueryBatch(
+  connId: string,
+  statements: string[],
+  db: string,
+  atomic: boolean,
+  signal?: AbortSignal,
+): Promise<QueryBatchResult> {
+  return sidecarFetch<QueryBatchResult>("/query/batch", {
+    method: "POST",
+    body: JSON.stringify({ connectionId: connId, statements, db, atomic }),
     signal,
   });
 }

@@ -6,6 +6,7 @@ use std::sync::Mutex;
 mod keychain;
 mod encrypted_store;
 mod config;
+mod file_export;
 #[cfg(target_os = "macos")]
 mod macos_icon;
 
@@ -29,6 +30,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         // tauri-plugin-store removed — using encrypted_store via keychain + AES-256-GCM
         .invoke_handler(tauri::generate_handler![
             keychain::keychain_set,
@@ -38,6 +40,7 @@ pub fn run() {
             encrypted_store::encrypted_store_load,
             config::config_load,
             config::config_save,
+            file_export::export_write,
         ])
         .setup(|app| {
             app.manage(AppExiting(Mutex::new(false)));

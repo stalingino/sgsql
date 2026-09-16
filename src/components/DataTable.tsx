@@ -37,6 +37,9 @@ import {
 import { HighlightedSQL } from "../lib/highlightSQL";
 import { FilterPanel, type FilterRow, createFilter, buildWhereClause } from "./FilterPanel";
 import { SchemaEditor } from "./SchemaEditor";
+import { ExportMenu, type ExportScope } from "./ExportMenu";
+import { finishExport, serializeExportChunk, type ExportFormat } from "../lib/dataExport";
+import { chooseExportPath, writeExportFile } from "../lib/fileExport";
 
 interface DataTableProps {
   connectionId: string;
@@ -356,6 +359,11 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   const [schemaDdlOpen, setSchemaDdlOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+  const [selectedRowData, setSelectedRowData] = useState<unknown[][]>([]);
+  const [exporting, setExporting] = useState(false);
+  const [exportedRows, setExportedRows] = useState(0);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const exportAbortRef = useRef<AbortController | null>(null);
 
   const lastFilterRefreshRevisionRef = useRef(filterRefreshRevision);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -601,6 +609,71 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   const previewWhere = buildWhereClause(filters, connectionType, true);
   const previewSql = buildPreviewSql({ connectionType, db, schema, table, where: previewWhere, sort });
 
+  const handleExport = useCallback(async (format: ExportFormat, scope: ExportScope) => {
+    if (exporting || !data) return;
+    const path = await chooseExportPath(table.replace(/[^A-Za-z0-9_.-]+/g, "_"), format);
+    if (!path) return;
+    const controller = new AbortController();
+    exportAbortRef.current = controller;
+    setExporting(true);
+    setExportedRows(0);
+    setExportNotice(null);
+    let first = true;
+    let wroteRows = false;
+    let count = 0;
+    try {
+      const writeRows = async (rows: unknown[][]) => {
+        const chunk = serializeExportChunk({ format, columns: headerColumns, rows, dialect: connectionType, table, schema, database: db, first });
+        if (chunk || first) await writeExportFile(path, chunk, !first);
+        first = false;
+        wroteRows ||= rows.length > 0;
+        count += rows.length;
+        setExportedRows(count);
+      };
+
+      if (scope === "selected") {
+        await writeRows(selectedRowData);
+      } else if (scope === "page") {
+        await writeRows(data.rows);
+      } else {
+        const orderBy = sort ? `${sort.column} ${sort.dir}` : undefined;
+        const chunkSize = 1000;
+        let exportOffset = 0;
+        while (!controller.signal.aborted) {
+          const page = await fetchTableRows(connectionId, db, schema, table, chunkSize, exportOffset, orderBy, appliedWhere || undefined, controller.signal);
+          await writeRows(page.rows);
+          if (page.rows.length < chunkSize) break;
+          exportOffset += page.rows.length;
+        }
+      }
+
+      if (first) {
+        const empty = serializeExportChunk({ format, columns: headerColumns, rows: [], dialect: connectionType, table, schema, database: db, first: true });
+        await writeExportFile(path, empty, false);
+        first = false;
+      }
+      const footer = finishExport(format, wroteRows);
+      if (footer) await writeExportFile(path, footer, true);
+      setExportNotice(controller.signal.aborted ? `Partial export saved (${count.toLocaleString()} rows).` : `Exported ${count.toLocaleString()} rows.`);
+    } catch (cause) {
+      if (controller.signal.aborted) {
+        if (first) {
+          const empty = serializeExportChunk({ format, columns: headerColumns, rows: [], dialect: connectionType, table, schema, database: db, first: true });
+          await writeExportFile(path, empty, false).catch(() => {});
+          first = false;
+        }
+        const footer = finishExport(format, wroteRows);
+        if (footer) await writeExportFile(path, footer, true).catch(() => {});
+        setExportNotice(`Partial export saved (${count.toLocaleString()} rows).`);
+      } else {
+        setExportNotice(`Export failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+      }
+    } finally {
+      exportAbortRef.current = null;
+      setExporting(false);
+    }
+  }, [exporting, data, table, headerColumns, connectionType, schema, db, selectedRowData, sort, appliedWhere, connectionId]);
+
   return (
     <div ref={containerRef} className="flex flex-col h-full min-h-0">
       {/* Content area */}
@@ -622,6 +695,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
             onCellSelect={onCellSelect}
             revealCell={revealCell}
             onSelectionChange={setSelectedRows}
+            onSelectedRowsChange={setSelectedRowData}
             pkColumns={pkColumns}
             columnMeta={columnMeta}
           />
@@ -770,6 +844,15 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
         <div className="flex items-center gap-1">
           {mode === "data" && (
             <>
+              {exportNotice && <span className={`max-w-56 truncate px-1 text-[10px] ${exportNotice.startsWith("Export failed") ? "text-error" : "text-success"}`} title={exportNotice}>{exportNotice}</span>}
+              <ExportMenu
+                selectedCount={selectedRowData.length}
+                pageCount={data?.rows.length ?? 0}
+                exporting={exporting}
+                exportedRows={exportedRows}
+                onExport={(format, scope) => void handleExport(format, scope)}
+                onCancel={() => exportAbortRef.current?.abort()}
+              />
               <button
                 onClick={() => setFilterRefreshRevision((revision) => revision + 1)}
                 disabled={loading}
@@ -911,6 +994,7 @@ function DataView({
   onCellSelect,
   revealCell,
   onSelectionChange,
+  onSelectedRowsChange,
   pkColumns,
   columnMeta,
 }: {
@@ -929,6 +1013,7 @@ function DataView({
   onCellSelect?: (selection: CellSelection | null) => void;
   revealCell?: CellRevealRequest | null;
   onSelectionChange?: (selectedIndices: Set<number>) => void;
+  onSelectedRowsChange?: (rows: unknown[][]) => void;
   pkColumns: string[];
   columnMeta: { name: string; dataType: string; udtName: string; enumValues?: string[]; defaultValue: string | null }[];
 }) {
@@ -1102,12 +1187,16 @@ function DataView({
         onCellActivate={handleCellActivate}
         revealCell={revealCell}
         tableName={table}
+        dialect={connectionType}
+        database={db}
+        schema={schema}
         isCellDirty={pkColumns.length > 0 ? isCellDirty : undefined}
         displayValue={pkColumns.length > 0 ? displayCellValue : undefined}
         isRowDirty={pkColumns.length > 0 ? isRowDirty : undefined}
         isRowDeleted={pkColumns.length > 0 ? isRowDeleted : undefined}
         isRowInserted={isRowInserted}
         onSelectionChange={onSelectionChange}
+        onSelectedRowsChange={onSelectedRowsChange}
         onDuplicateRows={handleDuplicateRows}
       />
       {editorSelection && (

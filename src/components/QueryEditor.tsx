@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ctrlKey } from "../lib/platform";
-import { Loader2, Play, Sparkles, ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
+import { ctrlKey, modKey } from "../lib/platform";
+import { Loader2, Play, Sparkles, ChevronLeft, ChevronRight, ChevronDown, ListStart, RotateCw } from "lucide-react";
 import { fetchColumns, fetchSchemas, fetchTables, type ColumnInfo, type QueryResult } from "../lib/schema";
 import { useExecutionQueue } from "../lib/executionQueue";
 import { useEditStore } from "../lib/editStore";
@@ -11,6 +11,10 @@ import { dialectToFormatterLanguage, formatSql } from "../lib/sqlFormat";
 import { ResultGrid, type CellSelection, type CellRevealRequest } from "./ResultGrid";
 import { CellEditorModal } from "./CellEditorModal";
 import { useSchemaRevision } from "../lib/schemaRevision";
+import { applyRowLimit, findSqlVariables, splitSqlStatements, sqlErrorMarker, statementAtCursor, substituteSqlVariables, type SqlErrorMarker, type SqlStatement } from "../lib/sqlStatements";
+import { ExportMenu, type ExportScope } from "./ExportMenu";
+import { exportRows } from "../lib/fileExport";
+import type { ExportFormat } from "../lib/dataExport";
 
 // Monaco's core bundle is a few MB — code-split it into its own chunk so
 // app startup isn't penalized for sessions that never open a query tab.
@@ -45,62 +49,18 @@ interface MysqlTableSource {
   table: string;
 }
 
+interface QueryExecution {
+  id: string;
+  statement: SqlStatement;
+  executedSql: string;
+  result?: QueryResult;
+  error?: string;
+  editableContext: EditableTableContext | null;
+  running?: boolean;
+  rolledBack?: boolean;
+}
+
 /* ── Helpers ────────────────────────────────────────────── */
-
-/** Adjust cursor position: if cursor is at end of a line right after a semicolon,
- *  treat it as belonging to that statement (not the next one).
- *  Only checks same-line — spaces/tabs before the semicolon, not across newlines. */
-function adjustCursorForSemicolon(sql: string, cursorPos: number): number {
-  let pos = cursorPos;
-  // Only walk back over spaces/tabs on the same line
-  while (pos > 0 && (sql[pos - 1] === " " || sql[pos - 1] === "\t")) pos--;
-  // If we land right after a semicolon, shift into the previous statement
-  if (pos > 0 && sql[pos - 1] === ";") return pos - 1;
-  return cursorPos;
-}
-
-/** Find the statement (semicolon-delimited) around the cursor position. */
-function getStatementAtCursor(sql: string, cursorPos: number): string {
-  const pos = adjustCursorForSemicolon(sql, cursorPos);
-  // Split by semicolons, tracking character positions
-  let start = 0;
-  const stmts: { text: string; start: number; end: number }[] = [];
-  const parts = sql.split(";");
-  for (let i = 0; i < parts.length; i++) {
-    const end = start + parts[i].length;
-    stmts.push({ text: parts[i], start, end });
-    start = end + 1; // +1 for the semicolon
-  }
-  // Find which statement the cursor is in
-  for (const s of stmts) {
-    if (pos >= s.start && pos <= s.end) {
-      return s.text.trim();
-    }
-  }
-  // Fallback: last non-empty statement
-  for (let i = stmts.length - 1; i >= 0; i--) {
-    if (stmts[i].text.trim()) return stmts[i].text.trim();
-  }
-  return sql.trim();
-}
-
-/** Get the start/end char indices of the statement at cursor. */
-function getStatementRange(sql: string, cursorPos: number): [number, number] {
-  const pos = adjustCursorForSemicolon(sql, cursorPos);
-  let start = 0;
-  const parts = sql.split(";");
-  for (let i = 0; i < parts.length; i++) {
-    const end = start + parts[i].length;
-    if (pos >= start && pos <= end) {
-      // Trim leading whitespace from the statement range
-      const trimStart = start + parts[i].search(/\S|$/);
-      const trimEnd = start + parts[i].trimEnd().length;
-      return [trimStart, trimEnd];
-    }
-    start = end + 1;
-  }
-  return [0, sql.length];
-}
 
 /**
  * Resolve the one source table for a conservative subset of MySQL SELECTs.
@@ -149,15 +109,21 @@ function defaultAutocompleteSchema(type: QueryEditorProps["connectionType"]): st
 
 export function QueryEditor({ connectionId, connectionType, activeDb, initialSql = "", onSqlChange, onCellSelect, revealCell }: QueryEditorProps) {
   const [sql, setSql] = useState(initialSql);
-  const [result, setResult] = useState<QueryResult | null>(null);
+  const [executions, setExecutions] = useState<QueryExecution[]>([]);
+  const [activeExecutionId, setActiveExecutionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
   const [rowLimit, setRowLimit] = useState(50);
   const [showLimitMenu, setShowLimitMenu] = useState(false);
+  const [atomicRunAll, setAtomicRunAll] = useState(false);
   const [cursorPos, setCursorPos] = useState(0);
   const [editorHeight, setEditorHeight] = useState(120);
-  const [editableContext, setEditableContext] = useState<EditableTableContext | null>(null);
+  const [selectedResultRows, setSelectedResultRows] = useState<Set<number>>(new Set());
+  const [selectedResultData, setSelectedResultData] = useState<unknown[][]>([]);
+  const [exporting, setExporting] = useState(false);
+  const [exportedRows, setExportedRows] = useState(0);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [variableRequest, setVariableRequest] = useState<{ statements: SqlStatement[]; variables: string[] } | null>(null);
   const [catalog, setCatalog] = useState<CatalogTable[]>([]);
   const [columnRevision, setColumnRevision] = useState(0);
   const dataRevision = useEditStore((s) => s.dataRevision);
@@ -167,6 +133,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   const onSqlChangeRef = useRef(onSqlChange);
   onSqlChangeRef.current = onSqlChange;
   const execQueue = useExecutionQueue((s) => s.execute);
+  const execBatch = useExecutionQueue((s) => s.executeBatch);
   const executionPhase = useExecutionQueue((s) => s.connections.get(connectionId)?.phase ?? "idle");
   const limitMenuRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
@@ -179,13 +146,17 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
       setEditorHeight(Math.round(containerRef.current.offsetHeight * 0.8));
     }
   }, []);
-  const lastExecutedQueryRef = useRef<string | null>(null);
+  const lastExecutedRef = useRef<QueryExecution | null>(null);
   const selectedResultRef = useRef<CellSelection | null>(null);
   const lastDataRevisionRef = useRef(dataRevision);
   const editableContextRef = useRef<EditableTableContext | null>(null);
   const columnCacheRef = useRef<Map<string, ColumnInfo[]>>(new Map());
   const pendingColumnsRef = useRef<Set<string>>(new Set());
   const metadataGenerationRef = useRef(0);
+  const activeExecution = executions.find((execution) => execution.id === activeExecutionId) ?? executions[0] ?? null;
+  const result = activeExecution?.result ?? null;
+  const error = activeExecution?.error ?? null;
+  const editableContext = activeExecution?.editableContext ?? null;
 
   // Load relation metadata up front. Column metadata remains lazy and is only
   // requested for relations referenced by the active statement.
@@ -238,11 +209,12 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   // Determine the active statement (for highlighting)
   const activeRange = useMemo(() => {
     if (!sql.trim()) return null;
-    return getStatementRange(sql, cursorPos);
+    const statement = statementAtCursor(sql, cursorPos);
+    return statement ? [statement.start, statement.end] as [number, number] : null;
   }, [sql, cursorPos]);
 
   const defaultSchema = defaultAutocompleteSchema(connectionType);
-  const activeStatement = useMemo(() => getStatementAtCursor(sql, cursorPos), [sql, cursorPos]);
+  const activeStatement = useMemo(() => statementAtCursor(sql, cursorPos)?.text ?? "", [sql, cursorPos]);
   const tableReferences = useMemo(
     () => findTableReferences(activeStatement, catalog, defaultSchema),
     [activeStatement, catalog, defaultSchema],
@@ -373,49 +345,123 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
     setEditorSelection(editableContext ? { ...selection, tableContext: editableContext } : selection);
   }, [editableContext]);
 
-  const runQuery = useCallback(async () => {
-    if (loading) return;
+  const executeStatements = useCallback(async (statements: SqlStatement[], variableValues: Record<string, string> = {}) => {
+    if (loading || statements.length === 0) return;
+    const prepared = statements.map((statement, index): QueryExecution => {
+      const substituted = substituteSqlVariables(statement.text, variableValues);
+      return {
+        id: `result-${Date.now()}-${index}`,
+        statement,
+        executedSql: applyRowLimit(substituted, rowLimit),
+        editableContext: null,
+        running: true,
+      };
+    });
 
-    const selected = editorRef.current?.getSelectionText().trim();
-    // 1. If text is selected, run selection. 2. Otherwise, run the statement at cursor.
-    const queryToRun = selected || getStatementAtCursor(sql, cursorPos);
+    setExecutions(prepared);
+    setActiveExecutionId(prepared[0].id);
+    setLoading(true);
+    setOffset(0);
+    setSelectedResultRows(new Set());
+    setSelectedResultData([]);
+    selectedResultRef.current = null;
+    editableContextRef.current = null;
+    onCellSelect?.(null);
+    editorRef.current?.setErrorMarkers([]);
+    const markers: SqlErrorMarker[] = [];
 
-    if (!queryToRun) return;
+    if (prepared.length > 1) {
+      try {
+        const batch = await execBatch(connectionId, prepared.map((item) => item.executedSql), activeDb, atomicRunAll);
+        const completed = prepared.map((pending, index): QueryExecution => {
+          const item = batch.results[index];
+          if (!item) return { ...pending, running: false, error: batch.rolledBack ? "Not run (transaction rolled back)" : "Not run" };
+          if (item.error) {
+            markers.push(sqlErrorMarker(item.error, pending.statement));
+            return { ...pending, running: false, error: item.error, rolledBack: batch.rolledBack };
+          }
+          const response: QueryResult = {
+            columns: item.columns ?? [],
+            rows: item.rows ?? [],
+            rowCount: item.rowCount ?? item.rows?.length ?? 0,
+            query: item.query,
+            duration: item.duration,
+            affectedRows: item.affectedRows,
+          };
+          return { ...pending, running: false, result: response, rolledBack: batch.rolledBack };
+        });
+        setExecutions(completed);
+        lastExecutedRef.current = completed[completed.length - 1] ?? null;
+        editorRef.current?.setErrorMarkers(markers);
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        markers.push(sqlErrorMarker(message, prepared[0].statement));
+        setExecutions(prepared.map((item, index) => ({ ...item, running: false, error: index === 0 ? message : "Not run" })));
+        editorRef.current?.setErrorMarkers(markers);
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
 
-    // Append LIMIT if not already present and rowLimit > 0
-    let finalQuery = queryToRun;
-    if (rowLimit > 0 && /^\s*(SELECT|SHOW|DESCRIBE|EXPLAIN)/i.test(queryToRun)) {
-      if (!/\bLIMIT\b/i.test(queryToRun)) {
-        // Remove trailing semicolon before appending LIMIT
-        finalQuery = queryToRun.replace(/;\s*$/, "") + ` LIMIT ${rowLimit}`;
+    for (let executionIndex = 0; executionIndex < prepared.length; executionIndex += 1) {
+      const pending = prepared[executionIndex];
+      try {
+        const response = await execQueue(connectionId, pending.executedSql, activeDb);
+        const context = statements.length === 1 ? await resolveEditableContext(pending.executedSql, response) : null;
+        const completed = { ...pending, result: response, editableContext: context, running: false };
+        lastExecutedRef.current = completed;
+        editableContextRef.current = context;
+        setExecutions((current) => current.map((item) => item.id === pending.id ? completed : item));
+      } catch (cause) {
+        const raw = cause instanceof Error ? cause.message : String(cause);
+        const cancelled = raw === "Cancelled" || raw.includes("aborted") || (cause instanceof DOMException && cause.name === "AbortError");
+        const message = cancelled ? "Query killed" : raw;
+        markers.push(sqlErrorMarker(message, pending.statement));
+        const failed = { ...pending, error: message, running: false };
+        lastExecutedRef.current = failed;
+        setExecutions((current) => current.map((item) => item.id === pending.id ? failed : item));
+        if (cancelled) {
+          const skippedIds = new Set(prepared.slice(executionIndex + 1).map((item) => item.id));
+          setExecutions((current) => current.map((item) => skippedIds.has(item.id) ? { ...item, running: false, error: "Not run (execution cancelled)" } : item));
+          break;
+        }
       }
     }
+    editorRef.current?.setErrorMarkers(markers);
+    setLoading(false);
+  }, [loading, rowLimit, execQueue, execBatch, connectionId, activeDb, atomicRunAll, resolveEditableContext, onCellSelect]);
 
-    setLoading(true);
-    setError(null);
-    setResult(null);
-    setEditableContext(null);
-    editableContextRef.current = null;
-    selectedResultRef.current = null;
-    onCellSelect?.(null);
-    setOffset(0);
+  const requestExecution = useCallback((statements: SqlStatement[]) => {
+    const variables = Array.from(new Set(statements.flatMap((statement) => findSqlVariables(statement.text).map((variable) => variable.name))));
+    if (variables.length > 0) setVariableRequest({ statements, variables });
+    else void executeStatements(statements);
+  }, [executeStatements]);
 
-    try {
-      const res = await execQueue(connectionId, finalQuery, activeDb);
-      const context = await resolveEditableContext(finalQuery, res);
-      setResult(res);
-      setEditableContext(context);
-      editableContextRef.current = context;
-      lastExecutedQueryRef.current = finalQuery;
-    } catch (err) {
-      const raw = err instanceof Error ? err.message : String(err);
-      const isCancelled = raw === "Cancelled" || raw.includes("aborted") || (err instanceof DOMException && err.name === "AbortError");
-      const msg = isCancelled ? "Query killed" : raw;
-      setError(msg);
-    } finally {
-      setLoading(false);
+  const runQuery = useCallback(() => {
+    if (loading) return;
+    const selection = editorRef.current?.getSelection();
+    if (selection) {
+      const statements = splitSqlStatements(selection.text).map((statement) => ({
+        ...statement,
+        start: statement.start + selection.start,
+        end: statement.end + selection.start,
+      }));
+      requestExecution(statements);
+      return;
     }
-  }, [sql, connectionId, loading, cursorPos, rowLimit, activeDb, execQueue, onCellSelect, resolveEditableContext]);
+    const statement = statementAtCursor(sql, cursorPos);
+    if (statement) requestExecution([statement]);
+  }, [loading, sql, cursorPos, requestExecution]);
+
+  const runAll = useCallback(() => {
+    if (!loading) requestExecution(splitSqlStatements(sql));
+  }, [loading, sql, requestExecution]);
+
+  const rerunLast = useCallback(() => {
+    const last = lastExecutedRef.current;
+    if (last && !loading) requestExecution([last.statement]);
+  }, [loading, requestExecution]);
 
   // Saving an editable query row increments the shared data revision. Rerun
   // the exact executed query and keep the detail panel on the same primary key.
@@ -423,8 +469,9 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
     if (lastDataRevisionRef.current === dataRevision) return;
     lastDataRevisionRef.current = dataRevision;
 
-    const executedSql = lastExecutedQueryRef.current;
-    if (!executedSql || !editableContextRef.current) return;
+    const lastExecution = lastExecutedRef.current;
+    const executedSql = lastExecution?.executedSql;
+    if (!lastExecution || !executedSql || !editableContextRef.current) return;
     let cancelled = false;
 
     setLoading(true);
@@ -432,13 +479,17 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
       .then(async (res) => {
         const context = await resolveEditableContext(executedSql, res);
         if (cancelled) return;
-        setResult(res);
-        setEditableContext(context);
+        const completed = { ...lastExecution, result: res, error: undefined, editableContext: context };
+        setExecutions((current) => current.map((item) => item.id === lastExecution.id ? completed : item));
+        lastExecutedRef.current = completed;
         editableContextRef.current = context;
         publishRefreshedSelection(res, context);
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) {
+          const message = err instanceof Error ? err.message : String(err);
+          setExecutions((current) => current.map((item) => item.id === lastExecution.id ? { ...item, error: message } : item));
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -460,8 +511,36 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
 
   const handleEditorChange = useCallback((value: string) => {
     setSql(value);
+    editorRef.current?.setErrorMarkers([]);
     onSqlChangeRef.current?.(value);
   }, []);
+
+  const handleExport = useCallback(async (format: ExportFormat, scope: ExportScope) => {
+    if (!result) return;
+    const visibleRows = result.rows.slice(offset, offset + PAGE_SIZE);
+    const rows = scope === "selected"
+      ? selectedResultData
+      : scope === "page" ? visibleRows : result.rows;
+    setExporting(true);
+    setExportedRows(rows.length);
+    setExportNotice(null);
+    try {
+      const path = await exportRows({
+        suggestedName: `${activeDb}-query-result`,
+        format,
+        columns: result.columns,
+        rows,
+        dialect: connectionType,
+        table: "query_result",
+        database: activeDb,
+      });
+      if (path) setExportNotice(`Exported ${rows.length.toLocaleString()} rows.`);
+    } catch (cause) {
+      setExportNotice(`Export failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    } finally {
+      setExporting(false);
+    }
+  }, [result, offset, selectedResultData, activeDb, connectionType]);
 
   // Resizable editor pane
   const onDragStart = useCallback((e: React.MouseEvent) => {
@@ -514,6 +593,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
               onChange={handleEditorChange}
               onCursorChange={setCursorPos}
               onRunQuery={runQuery}
+              onRunAll={runAll}
               getCompletionContext={getCompletionContext}
             />
           </Suspense>
@@ -560,13 +640,40 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
           Beautify
         </button>
 
+        <button
+          onClick={rerunLast}
+          disabled={loading || !lastExecutedRef.current}
+          title="Rerun the last statement"
+          className="flex items-center gap-1 px-2 py-1 rounded text-[11px] text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer border border-border disabled:opacity-40 disabled:cursor-default"
+        >
+          <RotateCw size={11} /> Rerun
+        </button>
+
         <div className="flex-1" />
 
-        {/* Run button */}
+        <button
+          onClick={runAll}
+          disabled={loading || !sql.trim()}
+          title={`Run all statements (${modKey("⇧↩", "Shift+Enter")})`}
+          className="flex items-center gap-1 px-2 py-1 rounded-md border border-accent/50 text-accent hover:bg-accent/10 text-[11px] font-medium disabled:opacity-40 disabled:cursor-default cursor-pointer transition-colors"
+        >
+          <ListStart size={12} /> Run All
+        </button>
+        <button
+          onClick={() => setAtomicRunAll((value) => !value)}
+          title={connectionType === "mysql"
+            ? "Run multiple statements on one connection inside a transaction; MySQL DDL may auto-commit"
+            : "Run multiple statements on one connection inside a transaction; any error rolls the batch back"}
+          className={`px-2 py-1 rounded-md border text-[11px] transition-colors cursor-pointer ${atomicRunAll ? "border-warning/60 bg-warning/10 text-warning" : "border-border text-text-muted hover:bg-bg-hover"}`}
+        >
+          {atomicRunAll ? "Atomic on" : "Atomic off"}
+        </button>
+
+        {/* Run current/selection button */}
         <button
           onClick={runQuery}
           disabled={loading || !sql.trim()}
-          title={`Run query (${ctrlKey("↩", "Enter")})`}
+          title={`Run query (${modKey("↩", "Enter")})`}
           className="flex items-center gap-1 px-3 py-1 rounded-md bg-accent hover:bg-accent-hover text-white text-[11px] font-medium disabled:opacity-40 disabled:cursor-default cursor-pointer transition-colors"
         >
           {loading ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
@@ -584,17 +691,41 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
 
       {/* Results area */}
       <div className="flex-1 flex flex-col min-h-0">
+        {executions.length > 0 && (
+          <div className="flex h-8 shrink-0 items-center overflow-x-auto border-b border-border bg-bg-secondary no-scrollbar">
+            {executions.map((execution, index) => (
+              <button
+                key={execution.id}
+                onClick={() => {
+                  setActiveExecutionId(execution.id);
+                  setOffset(0);
+                  setSelectedResultRows(new Set());
+                  setSelectedResultData([]);
+                  editableContextRef.current = execution.editableContext;
+                  selectedResultRef.current = null;
+                  onCellSelect?.(null);
+                }}
+                className={`h-full shrink-0 border-r border-border px-3 text-[11px] transition-colors ${execution.id === activeExecution?.id ? "bg-bg-primary text-text-primary" : "text-text-muted hover:bg-bg-hover"}`}
+                title={execution.statement.text}
+              >
+                {execution.running ? <Loader2 size={10} className="mr-1 inline animate-spin" /> : execution.error ? <span className="mr-1 text-error">●</span> : execution.rolledBack ? <span className="mr-1 text-warning">●</span> : <span className="mr-1 text-success">●</span>}
+                {execution.error ? "Error" : execution.result?.columns?.length ? "Result" : "Statement"} {index + 1}
+              </button>
+            ))}
+          </div>
+        )}
         {/* Error */}
         {error && (
           <div className="px-4 py-3 text-xs text-error bg-error/5 border-b border-border">
             {error}
+            {activeExecution?.rolledBack && <div className="mt-1 text-warning">The atomic batch was rolled back.</div>}
           </div>
         )}
 
         {/* Success message for non-SELECT */}
         {result && !result.columns?.length && result.affectedRows !== undefined && (
-          <div className="px-4 py-3 text-xs text-success bg-success/5 border-b border-border">
-            Query executed successfully. {result.affectedRows} row{result.affectedRows !== 1 ? "s" : ""} affected. ({Math.round(result.duration * 100) / 100}ms)
+          <div className={`px-4 py-3 text-xs border-b border-border ${activeExecution?.rolledBack ? "text-warning bg-warning/5" : "text-success bg-success/5"}`}>
+            {activeExecution?.rolledBack ? "Statement executed, then the atomic batch was rolled back." : "Query executed successfully."} {result.affectedRows} row{result.affectedRows !== 1 ? "s" : ""} affected. ({Math.round(result.duration * 100) / 100}ms)
           </div>
         )}
 
@@ -603,6 +734,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
           <>
             <div className="flex-1 min-h-0">
               <ResultGrid
+                key={activeExecution?.id}
                 columns={result.columns}
                 rows={pageRows}
                 offset={offset}
@@ -611,6 +743,11 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
                 onCellSelect={handleResultCellSelect}
                 onCellActivate={handleResultCellActivate}
                 revealCell={revealCell}
+                tableName="query_result"
+                dialect={connectionType}
+                database={activeDb}
+                onSelectionChange={setSelectedResultRows}
+                onSelectedRowsChange={setSelectedResultData}
               />
             </div>
             {editorSelection && (
@@ -618,7 +755,17 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
             )}
 
             {/* Pagination */}
-            <div className="flex items-center justify-center px-3 py-1 border-t border-border bg-bg-secondary text-[11px] text-text-secondary gap-1 shrink-0">
+            <div className="flex items-center px-3 py-1 border-t border-border bg-bg-secondary text-[11px] text-text-secondary gap-1 shrink-0">
+              <ExportMenu
+                selectedCount={selectedResultRows.size}
+                pageCount={pageRows.length}
+                allLabel={`All result rows (${result.rows.length.toLocaleString()})`}
+                exporting={exporting}
+                exportedRows={exportedRows}
+                onExport={(format, scope) => void handleExport(format, scope)}
+              />
+              {exportNotice && <span className={`max-w-52 truncate px-1 text-[10px] ${exportNotice.startsWith("Export failed") ? "text-error" : "text-success"}`} title={exportNotice}>{exportNotice}</span>}
+              <div className="flex-1 flex items-center justify-center gap-1">
               <span
                 className={editableContext ? "text-success mr-2" : "text-text-muted mr-2"}
                 title={editableContext
@@ -649,14 +796,15 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
                   </button>
                 </>
               )}
+              </div>
             </div>
           </>
         )}
 
         {/* Empty state */}
-        {!result && !error && !loading && (
+        {!activeExecution && !loading && (
           <div className="flex-1 flex items-center justify-center text-text-muted text-xs">
-            {`Write a query and press ${ctrlKey("↩", "Enter")} to run`}
+            {`Write a query and press ${modKey("↩", "Enter")} to run`}
           </div>
         )}
 
@@ -672,6 +820,41 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
           </div>
         )}
       </div>
+      {variableRequest && (
+        <VariablePromptModal
+          variables={variableRequest.variables}
+          onCancel={() => setVariableRequest(null)}
+          onRun={(values) => {
+            const statements = variableRequest.statements;
+            setVariableRequest(null);
+            void executeStatements(statements, values);
+          }}
+        />
+      )}
     </div>
   );
+}
+
+function VariablePromptModal({ variables, onCancel, onRun }: { variables: string[]; onCancel: () => void; onRun: (values: Record<string, string>) => void }) {
+  const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries(variables.map((name) => [name, ""])));
+  const firstRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { firstRef.current?.focus(); }, []);
+  return <div className="fixed inset-0 z-[400] flex items-center justify-center bg-black/55 p-6" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+    <form className="w-full max-w-md rounded-lg border border-border bg-bg-primary shadow-2xl" onSubmit={(event) => { event.preventDefault(); onRun(values); }}>
+      <div className="border-b border-border px-4 py-3">
+        <div className="text-sm font-semibold">Query variables</div>
+        <div className="mt-1 text-[11px] text-text-muted">Values in <code>{"{{name}}"}</code> are safely quoted. Use <code>{"{{name:raw}}"}</code> for SQL fragments.</div>
+      </div>
+      <div className="max-h-[50vh] space-y-3 overflow-auto p-4">
+        {variables.map((name, index) => <label key={name} className="block">
+          <span className="mb-1 block text-[11px] font-medium text-text-secondary">{name}</span>
+          <input ref={index === 0 ? firstRef : undefined} value={values[name]} onChange={(event) => setValues((current) => ({ ...current, [name]: event.target.value }))} className="w-full rounded border border-border bg-bg-secondary px-2.5 py-1.5 font-mono text-xs outline-none focus:border-accent" />
+        </label>)}
+      </div>
+      <div className="flex justify-end gap-2 border-t border-border px-4 py-3">
+        <button type="button" onClick={onCancel} className="rounded border border-border px-3 py-1.5 text-xs">Cancel</button>
+        <button type="submit" className="rounded bg-accent px-3 py-1.5 text-xs text-white">Run</button>
+      </div>
+    </form>
+  </div>;
 }

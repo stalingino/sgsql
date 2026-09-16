@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { executeQuery as rawExecuteQuery, cancelQuery, ensureConnection, type QueryResult } from "./schema";
+import { executeQuery as rawExecuteQuery, executeQueryBatch as rawExecuteQueryBatch, cancelQuery, ensureConnection, type QueryBatchResult, type QueryResult } from "./schema";
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -22,6 +22,8 @@ interface ExecutionQueueState {
   connections: Map<string, ConnectionQueue>;
   /** Submit a query for serial execution. Returns when the query completes. */
   execute: (connectionId: string, sql: string, db: string) => Promise<QueryResult>;
+  /** Execute several statements on one pinned connection, optionally in one transaction. */
+  executeBatch: (connectionId: string, statements: string[], db: string, atomic: boolean) => Promise<QueryBatchResult>;
   /** Cancel the currently running query and clear the queue. */
   cancel: (connectionId: string) => Promise<void>;
   /** Check if a query is currently running for this connection. */
@@ -104,6 +106,20 @@ export const useExecutionQueue = create<ExecutionQueueState>((set, get) => {
           });
         }
       });
+    },
+
+    async executeBatch(connectionId: string, statements: string[], db: string, atomic: boolean): Promise<QueryBatchResult> {
+      const q = getQueue(connectionId);
+      if (q.running) throw new Error("Another query is already running on this connection");
+      const controller = new AbortController();
+      updateQueue(connectionId, { running: true, phase: "checking", abortController: controller, queue: [] });
+      try {
+        await ensureConnection(connectionId);
+        updateQueue(connectionId, { phase: "executing" });
+        return await rawExecuteQueryBatch(connectionId, statements, db, atomic, controller.signal);
+      } finally {
+        drainNext(connectionId);
+      }
     },
 
     async cancel(connectionId: string) {

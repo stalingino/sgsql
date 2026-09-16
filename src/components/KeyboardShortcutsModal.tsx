@@ -39,7 +39,8 @@ const GROUPS = [
   {
     label: "Query editor",
     shortcuts: [
-      { action: "Run query", keys: ctrlKey("↩", "Enter") },
+      { action: "Run query", keys: modKey("↩", "Enter") },
+      { action: "Run all queries", keys: modKey("⇧↩", "Shift+Enter") },
       { action: "Open autocomplete", keys: ctrlKey("Space") },
     ],
   },

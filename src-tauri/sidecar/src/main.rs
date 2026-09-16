@@ -52,6 +52,7 @@ async fn main() {
         .route("/connections/ensure", post(routes::connections::handle_ensure_connection))
         .route("/connections/reload", post(routes::connections::handle_reload_connection))
         .route("/query", post(routes::query::handle_query))
+        .route("/query/batch", post(routes::query::handle_query_batch))
         .route("/cancel", post(routes::cancel::handle_cancel))
         .route("/query-log", any(routes::ws::handle_query_log))
         .route("/schema/{connId}/apply", post(routes::apply::handle_schema_apply))

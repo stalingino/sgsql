@@ -3,7 +3,7 @@ members = ["sidecar"]
 
 [package]
 name = "SGSql"
-version = "1.5.2"
+version = "1.6.0"
 description = "Stupidly Good SQL"
 authors = ["you"]
 license = ""
@@ -24,6 +24,7 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.10.3", features = [] }
 tauri-plugin-log = "2"
+tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-store = "2"
 tauri-plugin-updater = "2"

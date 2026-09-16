@@ -229,6 +229,42 @@ pub async fn exec_pg_conn(conn: &mut sqlx::PgConnection, sql: &str) -> Result<u6
     Ok(conn.execute(sql).await?.rows_affected())
 }
 
+pub async fn fetch_pg_conn_traced(conn: &mut sqlx::PgConnection, conn_id: &str, db: &str, sql: &str) -> Result<QueryOutput, SidecarError> {
+    let rows = traced(conn_id, db, sql, |rows: &Vec<PgRow>| Some(rows.len() as u64), async {
+        use sqlx::Executor;
+        conn.fetch_all(sql).await
+    }).await?;
+    Ok(pg_output(&rows))
+}
+
+pub async fn fetch_mysql_conn_traced(conn: &mut sqlx::MySqlConnection, conn_id: &str, db: &str, sql: &str) -> Result<QueryOutput, SidecarError> {
+    let rows = traced(conn_id, db, sql, |rows: &Vec<MySqlRow>| Some(rows.len() as u64), async {
+        use sqlx::Executor;
+        conn.fetch_all(sql).await
+    }).await?;
+    Ok(mysql_output(&rows))
+}
+
+pub async fn fetch_sqlite_conn_traced(conn: &mut sqlx::SqliteConnection, conn_id: &str, db: &str, sql: &str) -> Result<QueryOutput, SidecarError> {
+    let rows = traced(conn_id, db, sql, |rows: &Vec<SqliteRow>| Some(rows.len() as u64), async {
+        use sqlx::Executor;
+        conn.fetch_all(sql).await
+    }).await?;
+    Ok(sqlite_output(&rows))
+}
+
+pub async fn exec_pg_conn_traced(conn: &mut sqlx::PgConnection, conn_id: &str, db: &str, sql: &str) -> Result<u64, SidecarError> {
+    traced(conn_id, db, sql, |rows: &u64| Some(*rows), async { exec_pg_conn(conn, sql).await }).await
+}
+
+pub async fn exec_mysql_conn_traced(conn: &mut sqlx::MySqlConnection, conn_id: &str, db: &str, sql: &str) -> Result<u64, SidecarError> {
+    traced(conn_id, db, sql, |rows: &u64| Some(*rows), async { exec_mysql_conn(conn, sql).await }).await
+}
+
+pub async fn exec_sqlite_conn_traced(conn: &mut sqlx::SqliteConnection, conn_id: &str, db: &str, sql: &str) -> Result<u64, SidecarError> {
+    traced(conn_id, db, sql, |rows: &u64| Some(*rows), async { exec_sqlite_conn(conn, sql).await }).await
+}
+
 pub async fn exec_mysql_conn(conn: &mut sqlx::MySqlConnection, sql: &str) -> Result<u64, sqlx::Error> {
     use sqlx::Executor;
     Ok(conn.execute(sql).await?.rows_affected())

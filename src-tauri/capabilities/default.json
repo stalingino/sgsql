@@ -16,6 +16,7 @@
     "shell:allow-execute",
     "shell:allow-spawn",
     "shell:allow-kill",
+    "dialog:allow-save",
     "updater:default",
     "process:allow-restart"
   ]
