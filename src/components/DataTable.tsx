@@ -37,7 +37,7 @@ import {
 import { HighlightedSQL } from "../lib/highlightSQL";
 import { FilterPanel, type FilterRow, createFilter, buildWhereClause } from "./FilterPanel";
 import { SchemaEditor } from "./SchemaEditor";
-import { ExportMenu, type ExportScope } from "./ExportMenu";
+import { ExportMenu, type ExportAction, type ExportScope } from "./ExportMenu";
 import { finishExport, serializeExportChunk, type ExportFormat } from "../lib/dataExport";
 import { chooseExportPath, writeExportFile } from "../lib/fileExport";
 
@@ -609,10 +609,12 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   const previewWhere = buildWhereClause(filters, connectionType, true);
   const previewSql = buildPreviewSql({ connectionType, db, schema, table, where: previewWhere, sort });
 
-  const handleExport = useCallback(async (format: ExportFormat, scope: ExportScope) => {
+  const handleExport = useCallback(async (format: ExportFormat, scope: ExportScope, action: ExportAction) => {
     if (exporting || !data) return;
-    const path = await chooseExportPath(table.replace(/[^A-Za-z0-9_.-]+/g, "_"), format);
-    if (!path) return;
+    const path = action === "download"
+      ? await chooseExportPath(table.replace(/[^A-Za-z0-9_.-]+/g, "_"), format)
+      : null;
+    if (action === "download" && !path) return;
     const controller = new AbortController();
     exportAbortRef.current = controller;
     setExporting(true);
@@ -621,10 +623,15 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     let first = true;
     let wroteRows = false;
     let count = 0;
+    const copyChunks: string[] = [];
     try {
+      const outputChunk = async (chunk: string, append: boolean) => {
+        if (action === "copy") copyChunks.push(chunk);
+        else if (path) await writeExportFile(path, chunk, append);
+      };
       const writeRows = async (rows: unknown[][]) => {
         const chunk = serializeExportChunk({ format, columns: headerColumns, rows, dialect: connectionType, table, schema, database: db, first });
-        if (chunk || first) await writeExportFile(path, chunk, !first);
+        if (chunk || first) await outputChunk(chunk, !first);
         first = false;
         wroteRows ||= rows.length > 0;
         count += rows.length;
@@ -647,26 +654,37 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
         }
       }
 
+      if (controller.signal.aborted && action === "copy") {
+        setExportNotice(`Copy cancelled after ${count.toLocaleString()} rows.`);
+        return;
+      }
       if (first) {
         const empty = serializeExportChunk({ format, columns: headerColumns, rows: [], dialect: connectionType, table, schema, database: db, first: true });
-        await writeExportFile(path, empty, false);
+        await outputChunk(empty, false);
         first = false;
       }
       const footer = finishExport(format, wroteRows);
-      if (footer) await writeExportFile(path, footer, true);
-      setExportNotice(controller.signal.aborted ? `Partial export saved (${count.toLocaleString()} rows).` : `Exported ${count.toLocaleString()} rows.`);
+      if (footer) await outputChunk(footer, true);
+      if (action === "copy") await navigator.clipboard.writeText(copyChunks.join(""));
+      setExportNotice(controller.signal.aborted
+        ? `Partial download saved (${count.toLocaleString()} rows).`
+        : `${action === "copy" ? "Copied" : "Downloaded"} ${count.toLocaleString()} rows.`);
     } catch (cause) {
       if (controller.signal.aborted) {
-        if (first) {
-          const empty = serializeExportChunk({ format, columns: headerColumns, rows: [], dialect: connectionType, table, schema, database: db, first: true });
-          await writeExportFile(path, empty, false).catch(() => {});
-          first = false;
+        if (action === "copy") {
+          setExportNotice(`Copy cancelled after ${count.toLocaleString()} rows.`);
+        } else if (path) {
+          if (first) {
+            const empty = serializeExportChunk({ format, columns: headerColumns, rows: [], dialect: connectionType, table, schema, database: db, first: true });
+            await writeExportFile(path, empty, false).catch(() => {});
+            first = false;
+          }
+          const footer = finishExport(format, wroteRows);
+          if (footer) await writeExportFile(path, footer, true).catch(() => {});
+          setExportNotice(`Partial download saved (${count.toLocaleString()} rows).`);
         }
-        const footer = finishExport(format, wroteRows);
-        if (footer) await writeExportFile(path, footer, true).catch(() => {});
-        setExportNotice(`Partial export saved (${count.toLocaleString()} rows).`);
       } else {
-        setExportNotice(`Export failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+        setExportNotice(`${action === "copy" ? "Copy" : "Download"} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
       }
     } finally {
       exportAbortRef.current = null;
@@ -850,7 +868,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
                 pageCount={data?.rows.length ?? 0}
                 exporting={exporting}
                 exportedRows={exportedRows}
-                onExport={(format, scope) => void handleExport(format, scope)}
+                onExport={(format, scope, action) => void handleExport(format, scope, action)}
                 onCancel={() => exportAbortRef.current?.abort()}
               />
               <button

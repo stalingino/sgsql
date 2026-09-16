@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { exportTableReference, finishExport, serializeExportChunk } from "../src/lib/dataExport";
+import { exportTableReference, finishExport, serializeExport, serializeExportChunk } from "../src/lib/dataExport";
 
 const base = { columns: ["id", "display name"], dialect: "postgres" as const, table: "people", schema: "public" };
 
@@ -15,6 +15,11 @@ describe("data export", () => {
     const text = serializeExportChunk({ ...base, format: "json", rows: [], first: true })
       + finishExport("json", false);
     expect(JSON.parse(text)).toEqual([]);
+  });
+
+  test("serializes a complete copy payload", () => {
+    const text = serializeExport({ ...base, format: "json", rows: [[1, "Ada"]] });
+    expect(JSON.parse(text)).toEqual([{ id: 1, "display name": "Ada" }]);
   });
 
   test("escapes CSV and emits a header once", () => {

@@ -71,3 +71,7 @@ export function finishExport(format: ExportFormat, wroteRows: boolean): string {
   if (format !== "json") return "";
   return wroteRows ? "\n]\n" : "]\n";
 }
+
+export function serializeExport(options: Omit<ExportChunkOptions, "first">): string {
+  return serializeExportChunk({ ...options, first: true }) + finishExport(options.format, options.rows.length > 0);
+}

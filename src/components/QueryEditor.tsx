@@ -12,9 +12,9 @@ import { ResultGrid, type CellSelection, type CellRevealRequest } from "./Result
 import { CellEditorModal } from "./CellEditorModal";
 import { useSchemaRevision } from "../lib/schemaRevision";
 import { applyRowLimit, findSqlVariables, splitSqlStatements, sqlErrorMarker, statementAtCursor, substituteSqlVariables, type SqlErrorMarker, type SqlStatement } from "../lib/sqlStatements";
-import { ExportMenu, type ExportScope } from "./ExportMenu";
+import { ExportMenu, type ExportAction, type ExportScope } from "./ExportMenu";
 import { exportRows } from "../lib/fileExport";
-import type { ExportFormat } from "../lib/dataExport";
+import { serializeExport, type ExportFormat } from "../lib/dataExport";
 
 // Monaco's core bundle is a few MB — code-split it into its own chunk so
 // app startup isn't penalized for sessions that never open a query tab.
@@ -515,7 +515,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
     onSqlChangeRef.current?.(value);
   }, []);
 
-  const handleExport = useCallback(async (format: ExportFormat, scope: ExportScope) => {
+  const handleExport = useCallback(async (format: ExportFormat, scope: ExportScope, action: ExportAction) => {
     if (!result) return;
     const visibleRows = result.rows.slice(offset, offset + PAGE_SIZE);
     const rows = scope === "selected"
@@ -525,7 +525,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
     setExportedRows(rows.length);
     setExportNotice(null);
     try {
-      const path = await exportRows({
+      const options = {
         suggestedName: `${activeDb}-query-result`,
         format,
         columns: result.columns,
@@ -533,10 +533,16 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
         dialect: connectionType,
         table: "query_result",
         database: activeDb,
-      });
-      if (path) setExportNotice(`Exported ${rows.length.toLocaleString()} rows.`);
+      };
+      if (action === "copy") {
+        await navigator.clipboard.writeText(serializeExport(options));
+        setExportNotice(`Copied ${rows.length.toLocaleString()} rows.`);
+      } else {
+        const path = await exportRows(options);
+        if (path) setExportNotice(`Downloaded ${rows.length.toLocaleString()} rows.`);
+      }
     } catch (cause) {
-      setExportNotice(`Export failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+      setExportNotice(`${action === "copy" ? "Copy" : "Download"} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
     } finally {
       setExporting(false);
     }
@@ -762,7 +768,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
                 allLabel={`All result rows (${result.rows.length.toLocaleString()})`}
                 exporting={exporting}
                 exportedRows={exportedRows}
-                onExport={(format, scope) => void handleExport(format, scope)}
+                onExport={(format, scope, action) => void handleExport(format, scope, action)}
               />
               {exportNotice && <span className={`max-w-52 truncate px-1 text-[10px] ${exportNotice.startsWith("Export failed") ? "text-error" : "text-success"}`} title={exportNotice}>{exportNotice}</span>}
               <div className="flex-1 flex items-center justify-center gap-1">

@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
-import { exportExtension, type ExportFormat } from "./dataExport";
-import { finishExport, serializeExportChunk, type ExportDialect } from "./dataExport";
+import { exportExtension, serializeExport, type ExportDialect, type ExportFormat } from "./dataExport";
 
 const LABELS: Record<ExportFormat, string> = {
   csv: "CSV",
@@ -35,7 +34,6 @@ export interface ExportRowsOptions {
 export async function exportRows(options: ExportRowsOptions): Promise<string | null> {
   const path = await chooseExportPath(options.suggestedName, options.format);
   if (!path) return null;
-  const body = serializeExportChunk({ ...options, first: true });
-  await writeExportFile(path, body + finishExport(options.format, options.rows.length > 0), false);
+  await writeExportFile(path, serializeExport(options), false);
   return path;
 }
