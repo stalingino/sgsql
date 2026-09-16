@@ -171,6 +171,10 @@ export function registerSqlLanguageSupport() {
       const range = new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column);
 
       return {
+        // The catalog is intentionally capped by buildSqlCompletions. Marking
+        // it incomplete asks Monaco to call us again as the user types instead
+        // of repeatedly filtering the stale first page of table names.
+        incomplete: true,
         suggestions: completions.map((completion, index): monaco.languages.CompletionItem => ({
           label: completion.label,
           kind: COMPLETION_KIND_MAP[completion.kind],
@@ -178,7 +182,9 @@ export function registerSqlLanguageSupport() {
           detail: completion.detail,
           range,
           sortText: String(index).padStart(5, "0"),
-          filterText: target.prefix || undefined,
+          // Keep this stable across keystrokes. Using the current prefix here
+          // makes every item disappear on the next character until a refresh.
+          filterText: completion.filterText,
         })),
       };
     },

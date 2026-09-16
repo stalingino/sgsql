@@ -108,6 +108,7 @@ export function CommandPalette({
   const [items, setItems] = useState<PaletteItem[]>(() => initialCatalog ? paletteItems(initialCatalog, connectionType, preferredDb) : []);
   const [loading, setLoading] = useState(!initialCatalog);
   const [selectedIdx, setSelectedIdx] = useState(0);
+  const [mouseActive, setMouseActive] = useState(false);
   const lruScope = cacheKey || connectionId;
   const [recentItems, setRecentItems] = useState(() => getSearchLru(lruScope));
   const inputRef = useRef<HTMLInputElement>(null);
@@ -182,11 +183,6 @@ export function CommandPalette({
       .map((result) => ({ ...result.item.item, indices: result.indices }));
   }, [currentDatabase, items, itemKey, query, recentItems]);
 
-  // Reset selection when query changes
-  useEffect(() => {
-    setSelectedIdx(0);
-  }, [query]);
-
   // Scroll selected into view
   useEffect(() => {
     const list = listRef.current;
@@ -209,6 +205,10 @@ export function CommandPalette({
   );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Keyboard interaction owns the selection until the pointer physically
+    // moves again. A stationary pointer may otherwise sit over a row that
+    // shifts beneath it while the search results are being filtered.
+    setMouseActive(false);
     if (e.key === "Escape") {
       e.preventDefault();
       onClose();
@@ -274,7 +274,11 @@ export function CommandPalette({
             ref={inputRef}
             type="text"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setSelectedIdx(0);
+              setMouseActive(false);
+            }}
             placeholder={mode === "db-only" ? "Search databases..." : "Stupidly Good Search..."}
             className="flex-1 bg-transparent text-sm text-text-primary placeholder:text-text-muted outline-none"
             spellCheck={false}
@@ -304,9 +308,12 @@ export function CommandPalette({
               <div
                 key={`${item.kind}:${item.db}:${item.schema}:${item.name}`}
                 className={`flex items-center gap-2.5 px-4 py-2 cursor-pointer transition-colors ${
-                  i === selectedIdx ? "bg-accent/20" : "hover:bg-bg-hover"
+                  i === selectedIdx ? "bg-accent/20" : mouseActive ? "hover:bg-bg-hover" : ""
                 }`}
-                onMouseEnter={() => setSelectedIdx(i)}
+                onMouseMove={() => {
+                  setMouseActive(true);
+                  setSelectedIdx(i);
+                }}
                 onClick={() => handleSelect(item)}
               >
                 {kindIcon(item.kind)}

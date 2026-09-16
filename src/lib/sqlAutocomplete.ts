@@ -1,5 +1,5 @@
 import type { ColumnInfo } from "./schema";
-import { fuzzySearch } from "./fuzzySearch";
+import { fuzzySearchResults } from "./fuzzySearch";
 
 export interface CatalogTable {
   db: string;
@@ -24,6 +24,7 @@ export interface CompletionTarget {
 export interface SqlCompletion {
   key: string;
   label: string;
+  filterText: string;
   insertText: string;
   detail: string;
   kind: "schema" | "table" | "view" | "column";
@@ -189,6 +190,43 @@ function matchesQualifier(reference: TableReference, qualifier: string): boolean
     `${reference.db}.${reference.name}`.toLowerCase() === q;
 }
 
+function identifierMatchTier(value: string, query: string): number {
+  const candidate = value.toLowerCase();
+  const search = query.toLowerCase();
+  if (candidate === search) return 0;
+  if (candidate.startsWith(search)) return 1;
+  if (candidate.split(/[\s_.-]+/).some((part) => part.startsWith(search))) return 2;
+  if (candidate.includes(search)) return 3;
+  return 4;
+}
+
+/**
+ * SQL identifiers use predictable editor-style ordering: direct name matches
+ * always beat fuzzy matches. The fuzzy pass is retained only as a final tier
+ * for small typos such as `usres` -> `users`.
+ */
+function rankIdentifiers<T>(items: readonly T[], query: string, getName: (item: T) => string): T[] {
+  const search = query.trim();
+  if (!search) {
+    return [...items].sort((a, b) => getName(a).localeCompare(getName(b), undefined, { numeric: true }));
+  }
+
+  const ranked = fuzzySearchResults(
+    items.map((item) => ({ item, name: getName(item) })),
+    search,
+    { keys: ["name"] },
+  );
+  ranked.sort((a, b) => {
+    const aName = a.item.name;
+    const bName = b.item.name;
+    return identifierMatchTier(aName, search) - identifierMatchTier(bName, search) ||
+      a.score - b.score ||
+      aName.length - bName.length ||
+      aName.localeCompare(bName, undefined, { numeric: true });
+  });
+  return ranked.map(({ item }) => item.item);
+}
+
 export function buildSqlCompletions({
   target,
   catalog,
@@ -209,11 +247,8 @@ export function buildSqlCompletions({
   if (target.relationPosition) {
     const qualifier = target.qualifier?.toLowerCase();
     const eligibleTables = catalog
-      .filter((table) => !qualifier || table.schema.toLowerCase() === qualifier || table.db.toLowerCase() === qualifier)
-      .map((table) => ({ ...table, qualifiedName: `${table.schema}.${table.name}` }));
-    const tables = fuzzySearch(eligibleTables, target.prefix, {
-      keys: [{ name: "name", weight: 2 }, "qualifiedName", "schema", "db"],
-    })
+      .filter((table) => !qualifier || table.schema.toLowerCase() === qualifier || table.db.toLowerCase() === qualifier);
+    const tables = rankIdentifiers(eligibleTables, target.prefix, (table) => table.name)
       .map((table): SqlCompletion => {
         const tableIdent = quoteCompletionIdentifier(table.name, dialect);
         const schemaIdent = quoteCompletionIdentifier(table.schema, dialect);
@@ -221,6 +256,7 @@ export function buildSqlCompletions({
         return {
           key: `table:${catalogTableKey(table)}`,
           label: qualified ? `${table.schema}.${table.name}` : table.name,
+          filterText: table.name,
           insertText: target.qualifier || !qualified ? tableIdent : `${schemaIdent}.${tableIdent}`,
           detail: `${table.type} · ${table.schema || table.db}`,
           kind: table.type,
@@ -228,18 +264,20 @@ export function buildSqlCompletions({
       });
 
     if (!target.qualifier && dialect === "postgres") {
-      const schemas = fuzzySearch(
+      const schemas = rankIdentifiers(
         Array.from(new Set(catalog.map((table) => table.schema))).filter(Boolean),
         target.prefix,
+        (schema) => schema,
       )
         .map((schema): SqlCompletion => ({
           key: `schema:${schema}`,
           label: schema,
+          filterText: schema,
           insertText: `${quoteCompletionIdentifier(schema, dialect)}.`,
           detail: "schema",
           kind: "schema",
         }));
-      return [...schemas, ...tables].slice(0, 100);
+      return [...tables, ...schemas].slice(0, 100);
     }
     return tables.slice(0, 100);
   }
@@ -255,6 +293,7 @@ export function buildSqlCompletions({
       suggestions.push({
         key: `column:${catalogTableKey(reference)}:${column.name}`,
         label: column.name,
+        filterText: column.name,
         insertText: quoteCompletionIdentifier(column.name, dialect),
         detail: `${reference.alias ?? reference.name} · ${column.dataType || column.udtName}`,
         kind: "column",
@@ -262,11 +301,6 @@ export function buildSqlCompletions({
     }
   }
 
-  const rankedSuggestions = fuzzySearch(suggestions, target.prefix, {
-    keys: [{ name: "label", weight: 2 }, "detail"],
-  });
-  if (!target.prefix) {
-    rankedSuggestions.sort((a, b) => a.label.localeCompare(b.label) || a.detail.localeCompare(b.detail));
-  }
+  const rankedSuggestions = rankIdentifiers(suggestions, target.prefix, (suggestion) => suggestion.label);
   return rankedSuggestions.slice(0, 100);
 }

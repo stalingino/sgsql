@@ -58,6 +58,47 @@ describe("SQL autocomplete", () => {
     expect(columnSuggestions.map((item) => item.label)).toEqual(["name"]);
   });
 
+  test("keeps direct table-name prefixes first with stable filter text", () => {
+    const noisyCatalog: CatalogTable[] = [
+      { db: "app", schema: "public", name: "axis_mel_guarantor_details", type: "table" },
+      { db: "app", schema: "public", name: "migration_loan_accounts_backup", type: "table" },
+      { db: "app", schema: "public", name: "global_settings", type: "table" },
+      { db: "app", schema: "public", name: "customer_global_history", type: "table" },
+    ];
+
+    for (const prefix of ["g", "gl", "glo", "glob", "globa"]) {
+      const sql = `SELECT * FROM ${prefix}`;
+      const suggestions = buildSqlCompletions({
+        target: getCompletionTarget(sql, sql.length),
+        catalog: noisyCatalog,
+        references: [],
+        columnsByTable: new Map(),
+        defaultSchema: "public",
+        dialect: "postgres",
+      });
+
+      expect(suggestions[0]?.label).toBe("global_settings");
+      expect(suggestions[0]?.filterText).toBe("global_settings");
+    }
+  });
+
+  test("does not match table names merely because their schema matches", () => {
+    const sql = "SELECT * FROM fin";
+    const suggestions = buildSqlCompletions({
+      target: getCompletionTarget(sql, sql.length),
+      catalog: [
+        { db: "app", schema: "financialForms", name: "unrelated_table", type: "table" },
+        { db: "app", schema: "public", name: "financial_accounts", type: "table" },
+      ],
+      references: [],
+      columnsByTable: new Map(),
+      defaultSchema: "public",
+      dialect: "postgres",
+    });
+
+    expect(suggestions.filter((item) => item.kind !== "schema").map((item) => item.label)).toEqual(["financial_accounts"]);
+  });
+
   test("resolves aliases and restricts qualified column suggestions", () => {
     const statement = "SELECT u.na FROM users AS u JOIN orders o ON o.user_id = u.id";
     const references = findTableReferences(statement, catalog, "public");
