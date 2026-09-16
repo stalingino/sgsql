@@ -52,7 +52,7 @@ export function ExportMenu({ selectedCount, pageCount, allowAll = true, allLabel
     <button onClick={() => setOpen((value) => !value)} className="flex items-center gap-1 px-2 py-0.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer" title="Export data to a file">
       <Download size={11} /> Export
     </button>
-    {open && <div className="absolute bottom-full right-0 mb-1 w-52 rounded-md border border-border bg-bg-primary shadow-xl z-[300] p-2">
+    {open && <div className="absolute bottom-full left-0 mb-1 w-52 rounded-md border border-border bg-bg-primary shadow-xl z-[300] p-2">
       <label className="block text-[10px] uppercase tracking-wide text-text-muted mb-1">Format</label>
       <select value={format} onChange={(event) => setFormat(event.target.value as ExportFormat)} className="w-full mb-2 rounded border border-border bg-bg-secondary px-2 py-1 text-[11px] outline-none">
         {FORMATS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
