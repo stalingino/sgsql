@@ -1,3 +1,7 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use rand::{rngs::OsRng, RngCore};
+use serde::Serialize;
+use std::io::{Read, Write};
 use tauri::Manager;
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::CommandChild;
@@ -12,6 +16,45 @@ mod macos_icon;
 
 struct SidecarChild(Mutex<Option<CommandChild>>);
 struct AppExiting(Mutex<bool>);
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SidecarCredentials {
+    port: u16,
+    token: String,
+}
+
+#[tauri::command]
+fn sidecar_credentials(credentials: tauri::State<'_, SidecarCredentials>) -> SidecarCredentials {
+    credentials.inner().clone()
+}
+
+fn generate_sidecar_token() -> String {
+    let mut bytes = [0_u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn authenticated_sidecar_running(port: u16, token: &str) -> bool {
+    let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", port)) else {
+        return false;
+    };
+    let timeout = Some(std::time::Duration::from_millis(500));
+    let _ = stream.set_read_timeout(timeout);
+    let _ = stream.set_write_timeout(timeout);
+    let request = format!(
+        "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut response = [0_u8; 64];
+    let Ok(length) = stream.read(&mut response) else {
+        return false;
+    };
+    response[..length].starts_with(b"HTTP/1.1 200")
+        || response[..length].starts_with(b"HTTP/1.0 200")
+}
 
 fn stop_managed_sidecar(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<SidecarChild>() {
@@ -41,9 +84,24 @@ pub fn run() {
             config::config_load,
             config::config_save,
             file_export::export_write,
+            sidecar_credentials,
         ])
         .setup(|app| {
             app.manage(AppExiting(Mutex::new(false)));
+
+            let sidecar_port = 45821;
+            let sidecar_token = if cfg!(debug_assertions) {
+                std::env::var("SGSQL_SIDECAR_TOKEN")
+                    .ok()
+                    .filter(|token| token.len() >= 32)
+                    .unwrap_or_else(generate_sidecar_token)
+            } else {
+                generate_sidecar_token()
+            };
+            app.manage(SidecarCredentials {
+                port: sidecar_port,
+                token: sidecar_token.clone(),
+            });
 
             #[cfg(target_os = "macos")]
             macos_icon::init(app.handle());
@@ -56,15 +114,14 @@ pub fn run() {
                 )?;
             }
 
-            // In dev mode, check if a sidecar is already running (e.g. `bun run sidecar/index.ts`)
+            // A directly-run development sidecar is reused only when it proves
+            // possession of the token shared through SGSQL_SIDECAR_TOKEN.
             let dev_sidecar_running = if cfg!(debug_assertions) {
-                match std::net::TcpStream::connect("127.0.0.1:45821") {
-                    Ok(_) => {
-                        log::info!("Dev sidecar already running on port 45821 — skipping spawn");
-                        true
-                    }
-                    Err(_) => false,
+                let running = authenticated_sidecar_running(sidecar_port, &sidecar_token);
+                if running {
+                    log::info!("Authenticated dev sidecar already running — skipping spawn");
                 }
+                running
             } else {
                 false
             };
@@ -74,7 +131,11 @@ pub fn run() {
                 app.manage(SidecarChild(Mutex::new(None)));
             } else {
                 // Spawn the compiled sidecar binary
-                let sidecar_command = app.shell().sidecar("dbsidecar").unwrap();
+                let sidecar_command = app
+                    .shell()
+                    .sidecar("dbsidecar")
+                    .unwrap()
+                    .env("SGSQL_SIDECAR_TOKEN", &sidecar_token);
                 let (mut rx, child) = sidecar_command.spawn()
                     .expect("Failed to spawn sidecar");
 

@@ -1,3 +1,4 @@
+mod auth;
 mod db;
 mod error;
 mod pool;
@@ -7,10 +8,11 @@ mod trace;
 mod types;
 mod value;
 
-use axum::http::Method;
+use axum::http::{header, HeaderValue, Method};
+use axum::middleware;
 use axum::routing::{any, get, post};
 use axum::Router;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 
 const DEFAULT_PORT: u16 = 45821; // distinctive high port — avoids collisions
 
@@ -18,6 +20,16 @@ fn get_port() -> u16 {
     std::env::args()
         .find_map(|arg| arg.strip_prefix("--port=").and_then(|p| p.parse().ok()))
         .unwrap_or(DEFAULT_PORT)
+}
+
+fn get_auth_token() -> String {
+    std::env::var("SGSQL_SIDECAR_TOKEN")
+        .ok()
+        .filter(|token| token.len() >= 32)
+        .unwrap_or_else(|| {
+            eprintln!("SGSQL_SIDECAR_TOKEN must contain at least 32 characters");
+            std::process::exit(2);
+        })
 }
 
 async fn not_found() -> axum::response::Response {
@@ -37,12 +49,17 @@ fn assert_handlers_send() {
 #[tokio::main]
 async fn main() {
     let port = get_port();
+    let auth = auth::AuthState::new(get_auth_token());
     routes::health::init_uptime();
 
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
-        .allow_headers(Any);
+        .allow_origin(vec![
+            HeaderValue::from_static("tauri://localhost"),
+            HeaderValue::from_static("http://tauri.localhost"),
+            HeaderValue::from_static("http://localhost:5173"),
+        ])
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
 
     let app = Router::new()
         .route("/health", get(routes::health::handle_health))
@@ -58,6 +75,7 @@ async fn main() {
         .route("/schema/{connId}/apply", post(routes::apply::handle_schema_apply))
         .route("/schema/{connId}/{action}", get(routes::schema::handle_schema_request))
         .fallback(not_found)
+        .layer(middleware::from_fn_with_state(auth, auth::require_auth))
         .layer(cors);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))

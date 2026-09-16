@@ -4,7 +4,7 @@ use axum::response::Response;
 use crate::trace;
 
 pub async fn handle_query_log(ws: WebSocketUpgrade) -> Response {
-    ws.on_upgrade(handle_socket)
+    ws.protocols(["sgsql"]).on_upgrade(handle_socket)
 }
 
 async fn handle_socket(mut socket: WebSocket) {

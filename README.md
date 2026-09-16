@@ -48,6 +48,14 @@ Tauri starts the Vite development server automatically and launches the desktop 
 
 To run the sidecar directly while developing it, use two terminals:
 
+First generate a temporary development token, then export the same value in
+both terminals:
+
+```bash
+openssl rand -hex 32
+export SGSQL_SIDECAR_TOKEN="<generated value>"
+```
+
 ```bash
 # Terminal 1
 bun run sidecar:dev
@@ -58,7 +66,10 @@ bun run sidecar:dev
 bun run tauri dev
 ```
 
-The development application detects the sidecar on port `45821` and uses it instead of starting the compiled binary. Stop both processes when finished.
+The development application reuses the sidecar on port `45821` only after an
+authenticated health check with that token. Running `bun run tauri dev` by
+itself generates a fresh token and passes it to its managed sidecar
+automatically. Stop both processes when finished.
 
 ### Create the application bundle
 

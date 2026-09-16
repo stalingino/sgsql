@@ -1,6 +1,5 @@
 import { create } from "zustand";
-
-const QUERY_LOG_URL = "ws://localhost:45821/query-log";
+import { getSidecarConnection } from "./sidecar";
 
 export interface QueryLogEntry {
   id: number;
@@ -50,13 +49,18 @@ export const useQueryLog = create<QueryLogState>((set) => ({
   },
 }));
 
-function connect(): void {
+async function connect(): Promise<void> {
+  let connection;
   try {
-    socket = new WebSocket(QUERY_LOG_URL);
+    connection = await getSidecarConnection();
+    socket = new WebSocket(`${connection.webSocketUrl}/query-log`, [
+      "sgsql",
+      `sgsql-auth.${connection.token}`,
+    ]);
   } catch (error) {
     console.warn("[query-log] WebSocket connection failed:", error);
     socket = null;
-    reconnectTimer = setTimeout(connect, 1_000);
+    reconnectTimer = setTimeout(() => void connect(), 1_000);
     return;
   }
   socket.onopen = () => {
@@ -75,7 +79,7 @@ function connect(): void {
   socket.onerror = () => socket?.close();
   socket.onclose = () => {
     socket = null;
-    reconnectTimer = setTimeout(connect, 1_000);
+    reconnectTimer = setTimeout(() => void connect(), 1_000);
   };
 }
 
@@ -83,5 +87,5 @@ export function startQueryLog(): void {
   if (started) return;
   started = true;
   if (reconnectTimer) clearTimeout(reconnectTimer);
-  connect();
+  void connect();
 }

@@ -1,5 +1,28 @@
-const SIDECAR_PORT = 45821;
-const BASE_URL = `http://localhost:${SIDECAR_PORT}`;
+import { invoke } from "@tauri-apps/api/core";
+
+interface SidecarCredentials {
+  port: number;
+  token: string;
+}
+
+export interface SidecarConnection extends SidecarCredentials {
+  baseUrl: string;
+  webSocketUrl: string;
+}
+
+let connectionPromise: Promise<SidecarConnection> | null = null;
+
+export function getSidecarConnection(): Promise<SidecarConnection> {
+  if (!connectionPromise) {
+    connectionPromise = invoke<SidecarCredentials>("sidecar_credentials").then(({ port, token }) => ({
+      port,
+      token,
+      baseUrl: `http://127.0.0.1:${port}`,
+      webSocketUrl: `ws://127.0.0.1:${port}`,
+    }));
+  }
+  return connectionPromise;
+}
 
 export const CONNECTION_RESTORED_EVENT = "sgsql:connection-restored";
 
@@ -21,11 +44,15 @@ export async function sidecarFetch<T = unknown>(
   path: string,
   options?: RequestInit,
 ): Promise<T> {
-  const url = `${BASE_URL}${path}`;
+  const connection = await getSidecarConnection();
+  const url = `${connection.baseUrl}${path}`;
+  const headers = new Headers(options?.headers);
+  headers.set("Authorization", `Bearer ${connection.token}`);
+  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   console.log(`[sidecar] ${options?.method || "GET"} ${url}`);
   const res = await fetch(url, {
-    headers: { "Content-Type": "application/json" },
     ...options,
+    headers,
   });
   console.log(`[sidecar] response: ${res.status} ${res.statusText}`);
   if (!res.ok) {
@@ -43,11 +70,20 @@ export async function waitForSidecar(
   maxAttempts = 20,
   delayMs = 500,
 ): Promise<boolean> {
+  let connection: SidecarConnection;
+  try {
+    connection = await getSidecarConnection();
+  } catch {
+    return false;
+  }
+
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise((r) => setTimeout(r, delayMs));
     try {
-      await fetch(`${BASE_URL}/health`);
-      return true;
+      const response = await fetch(`${connection.baseUrl}/health`, {
+        headers: { Authorization: `Bearer ${connection.token}` },
+      });
+      if (response.ok) return true;
     } catch {
       // not ready yet
     }
