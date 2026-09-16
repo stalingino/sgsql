@@ -151,6 +151,69 @@ export async function fetchCatalog(
   };
 }
 
+/* ── User management ─────────────────────────────────────── */
+
+export interface DbUser {
+  name: string;
+  /** MySQL only — accounts are (user, host) pairs. */
+  host?: string;
+  canLogin: boolean;
+  superuser: boolean;
+  locked: boolean;
+  passwordExpired?: boolean;
+  authPlugin?: string;
+  /** Postgres role attributes. */
+  inherit?: boolean;
+  createRole?: boolean;
+  createDb?: boolean;
+  replication?: boolean;
+  bypassRls?: boolean;
+  /** null = unlimited. */
+  connLimit?: number | null;
+  validUntil?: string | null;
+  /** Roles this account is a direct member of. */
+  roles: string[];
+  /** Postgres: roles held WITH ADMIN OPTION. */
+  adminOf?: string[];
+}
+
+export interface ScopedGrant {
+  privileges: string[];
+  withGrant: boolean;
+}
+
+export interface DatabaseGrant extends ScopedGrant { db: string }
+export interface SchemaGrant extends ScopedGrant { db: string; schema: string }
+export interface TableGrant extends ScopedGrant { db: string; schema: string; table: string }
+export interface ColumnGrant { db: string; schema: string; table: string; column: string; privileges: string[] }
+export interface RoutineGrant { db: string; schema?: string; name: string; kind: string; privileges: string[] }
+export interface HostAccessRule { type: string; database: string; user: string; address: string; netmask?: string; method: string }
+
+export interface UserGrants {
+  global: ScopedGrant;
+  databases: DatabaseGrant[];
+  schemas: SchemaGrant[];
+  tables: TableGrant[];
+  columns: ColumnGrant[];
+  routines: RoutineGrant[];
+  /** SHOW GRANTS lines (MySQL) or rebuilt GRANT statements (Postgres). */
+  raw: string[];
+  /** Postgres pg_hba rules matching this role, when readable. */
+  hostAccess: HostAccessRule[] | null;
+  /** Postgres: object-level grants are only visible for this database. */
+  objectScope: string | null;
+}
+
+export async function fetchUsers(connId: string): Promise<{ users: DbUser[]; partial: boolean }> {
+  return sidecarFetch(`/schema/${connId}/users`);
+}
+
+export async function fetchUserGrants(connId: string, user: string, host?: string): Promise<UserGrants> {
+  const params = new URLSearchParams({ user });
+  if (host !== undefined) params.set("host", host);
+  return sidecarFetch(`/schema/${connId}/user-grants?${params.toString()}`);
+}
+
 export interface TableRowsResult {
   columns: string[];
   rows: unknown[][];

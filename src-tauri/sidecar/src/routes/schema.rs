@@ -9,7 +9,7 @@ use crate::error::SidecarError;
 use crate::pool;
 use crate::trace;
 
-fn s_of(v: &Value, key: &str) -> String {
+pub(crate) fn s_of(v: &Value, key: &str) -> String {
     let value = v.get(key).or_else(|| {
         v.as_object()?
             .iter()
@@ -68,6 +68,8 @@ struct SchemaParams {
     offset: i64,
     order_by: Option<String>,
     where_clause: Option<String>,
+    user: Option<String>,
+    host: Option<String>,
 }
 
 pub async fn handle_schema_request(
@@ -89,6 +91,8 @@ pub async fn handle_schema_request(
         offset: raw.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0),
         order_by: raw.get("orderBy").cloned(),
         where_clause: raw.get("where").cloned(),
+        user: raw.get("user").cloned(),
+        host: raw.get("host").cloned(),
     };
 
     let attempt = async {
@@ -150,6 +154,11 @@ async fn dispatch(
         "fks" => get_foreign_keys(client, conn_id, trace_db, p.db.as_deref(), p.schema.as_deref(), &need_table()?).await,
         "ddl" => get_table_ddl(client, conn_id, trace_db, p.db.as_deref(), p.schema.as_deref(), &need_table()?).await,
         "artifacts" => get_table_artifacts(client, conn_id, trace_db, &need_table()?).await,
+        "users" => super::users::get_users(client, conn_id, trace_db).await,
+        "user-grants" => {
+            let user = p.user.clone().filter(|u| !u.is_empty()).ok_or_else(|| SidecarError::msg("Missing ?user= param"))?;
+            super::users::get_user_grants(client, conn_id, trace_db, &user, p.host.as_deref()).await
+        }
         "rows" => {
             get_rows(
                 client,

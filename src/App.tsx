@@ -38,6 +38,7 @@ import { DataTable } from "./components/DataTable";
 import { QueryEditor } from "./components/QueryEditor";
 import { QueryConsole } from "./components/QueryConsole";
 import { DetailPanel } from "./components/DetailPanel";
+import { UserManager } from "./components/UserManager";
 import { SettingsModal } from "./components/SettingsModal";
 import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { CommandPalette } from "./components/CommandPalette";
@@ -79,6 +80,8 @@ interface Tab {
   openDbs: string[];
   activeDbName: string | null;
   workspaces: Record<string, DbWorkspace>;
+  /** Server-scoped views replace the db workspace in the main area. */
+  mainView: "workspace" | "users";
 }
 
 let tabCounter = 0;
@@ -286,6 +289,12 @@ function App() {
         const curTab = tabsRef.current.find((t) => t.id === curTabId);
         if (!curTab) return;
 
+        // 0. User management view — return to the workspace first
+        if (curTab.mainView === "users") {
+          setTabs((prev) => prev.map((t) => t.id === curTabId ? { ...t, mainView: "workspace" } : t));
+          return;
+        }
+
         // 1. If active db has content tabs, close the active one
         if (curTab.activeDbName) {
           const ws = curTab.workspaces[curTab.activeDbName];
@@ -396,6 +405,7 @@ function App() {
           openDbs: initialDbs,
           activeDbName: profile.database || null,
           workspaces: initialWorkspaces,
+          mainView: "workspace",
         };
 
         setTabs((prev) => [...prev, newTab]);
@@ -456,7 +466,7 @@ function App() {
       if (!newWorkspaces[db]) {
         newWorkspaces[db] = { db, contentTabs: [], activeContentTabId: null };
       }
-      return { ...t, openDbs: newDbs, activeDbName: db, workspaces: newWorkspaces };
+      return { ...t, openDbs: newDbs, activeDbName: db, workspaces: newWorkspaces, mainView: "workspace" };
     }));
   }, [activeTabId]);
 
@@ -483,8 +493,15 @@ function App() {
 
   const setActiveDb = useCallback((db: string) => {
     setTabs((prev) => prev.map((t) =>
-      t.id !== activeTabId ? t : { ...t, activeDbName: db }
+      t.id !== activeTabId ? t : { ...t, activeDbName: db, mainView: "workspace" }
     ));
+  }, [activeTabId]);
+
+  const openUsersView = useCallback(() => {
+    setTabs((prev) => prev.map((t) =>
+      t.id !== activeTabId ? t : { ...t, mainView: "users" }
+    ));
+    setCellSelection(null);
   }, [activeTabId]);
 
   const reorderDbs = useCallback((sourceDb: string, targetDb: string) => {
@@ -514,7 +531,7 @@ function App() {
       );
       if (existing) {
         const updatedWs = { ...ws, activeContentTabId: existing.id };
-        return { ...tab, activeDbName: db, workspaces: { ...tab.workspaces, [db]: updatedWs } };
+        return { ...tab, activeDbName: db, workspaces: { ...tab.workspaces, [db]: updatedWs }, mainView: "workspace" };
       }
 
       const ct: ContentTab = { id: nextContentTabId(), db, schema, table, type };
@@ -523,7 +540,7 @@ function App() {
         contentTabs: [...ws.contentTabs, ct],
         activeContentTabId: ct.id,
       };
-      return { ...tab, activeDbName: db, workspaces: { ...tab.workspaces, [db]: updatedWs } };
+      return { ...tab, activeDbName: db, workspaces: { ...tab.workspaces, [db]: updatedWs }, mainView: "workspace" };
     }));
   }, [activeTabId]);
 
@@ -627,7 +644,7 @@ function App() {
         contentTabs: [...ws.contentTabs, ct],
         activeContentTabId: ct.id,
       };
-      return { ...tab, workspaces: { ...tab.workspaces, [tab.activeDbName]: updatedWs } };
+      return { ...tab, workspaces: { ...tab.workspaces, [tab.activeDbName]: updatedWs }, mainView: "workspace" };
     }));
   }, [activeTabId]);
   addQueryTabRef.current = addQueryTab;
@@ -709,7 +726,7 @@ function App() {
   // no longer on screen.
   useEffect(() => {
     setCellSelection(null);
-  }, [activeTabId, activeTab?.activeDbName, activeContentTab?.id]);
+  }, [activeTabId, activeTab?.activeDbName, activeContentTab?.id, activeTab?.mainView]);
 
   /* ── Loading ──────────────────────────────────────────── */
 
@@ -981,6 +998,8 @@ function App() {
                 onCloseDb={closeDb}
                 onDbReorder={reorderDbs}
                 onAddDb={() => setCommandPaletteOpen("db-only")}
+                usersActive={activeTab.mainView === "users"}
+                onOpenUsers={openUsersView}
                 onTableSelect={handleTableSelect}
                 onTableDrop={handleTableDrop}
                 tableListVisible={sidebarVisible}
@@ -1002,6 +1021,16 @@ function App() {
 
             {/* Main content */}
             <main className="flex-1 flex flex-col min-h-0 min-w-0 bg-bg-primary">
+              {activeTab.mainView === "users" && activeTab.connectionId && activeTab.profile.type !== "sqlite" ? (
+                <ErrorBoundary label="User management">
+                  <UserManager
+                    key={activeTab.connectionId}
+                    connectionId={activeTab.connectionId}
+                    dialect={activeTab.profile.type}
+                    currentDb={activeTab.profile.database || activeTab.activeDbName || ""}
+                  />
+                </ErrorBoundary>
+              ) : (<>
               {/* Content tab bar — always visible */}
               <div className="flex items-center h-8 border-b border-border bg-bg-secondary shrink-0">
                 <DragDropProvider
@@ -1172,6 +1201,7 @@ function App() {
                   </p>
                 </div>
               )}
+              </>)}
               {/* Bottom console panel */}
               {consoleVisible && (
                 <ResizableConsole>
@@ -1184,7 +1214,7 @@ function App() {
             </main>
 
             {/* Right detail panel */}
-            {detailPanelVisible && activeContentTab?.viewMode !== "structure" && (
+            {detailPanelVisible && activeTab.mainView !== "users" && activeContentTab?.viewMode !== "structure" && (
               <ResizableDetailPanel>
                 <aside className="h-full border-l border-border bg-bg-primary">
                   <ErrorBoundary label="Detail panel">

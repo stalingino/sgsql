@@ -6,6 +6,7 @@ import {
   Eye,
   Loader2,
   Plus,
+  Users,
   X,
 } from "lucide-react";
 import {
@@ -34,6 +35,9 @@ interface SchemaTreeProps {
   onCloseDb: (db: string) => void;
   onDbReorder: (sourceDb: string, targetDb: string) => void;
   onAddDb: () => void;
+  /** Server-level user management view is showing instead of a db workspace. */
+  usersActive?: boolean;
+  onOpenUsers?: () => void;
   onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view") => void;
   onTableDrop?: (db: string, schema: string, table: string) => void;
   tableListVisible?: boolean;
@@ -56,6 +60,8 @@ export function SchemaTree({
   onCloseDb,
   onDbReorder,
   onAddDb,
+  usersActive = false,
+  onOpenUsers,
   onTableSelect,
   onTableDrop,
   tableListVisible = true,
@@ -122,10 +128,27 @@ export function SchemaTree({
             <span className="text-[11px] font-medium leading-tight">Add Database</span>
           </button>
         )}
+
+        {/* Users: server-scoped pseudo-tab pinned to the bottom of the strip */}
+        {!isSqlite && onOpenUsers && (
+          <button
+            onClick={onOpenUsers}
+            title="Manage users and access"
+            className={`relative mt-auto flex flex-col items-center gap-0.5 w-full px-1.5 py-4 transition-colors cursor-pointer border-t border-border ${
+              usersActive
+                ? "bg-bg-secondary text-text-primary"
+                : "text-text-muted hover:text-text-secondary hover:bg-bg-hover"
+            }`}
+          >
+            {usersActive && <div className="absolute left-0 top-0 bottom-0 w-[2px] bg-accent" />}
+            <Users size={13} className={`shrink-0 ${usersActive ? "text-accent" : ""}`} />
+            <span className="text-[11px] font-medium leading-tight">Users</span>
+          </button>
+        )}
       </div>
 
       {/* ── Right: table list for active database (toggleable + resizable) ── */}
-      {tableListVisible && activeDb && (
+      {tableListVisible && activeDb && !usersActive && (
         <ResizableTableList>
           <TableList
             db={activeDb}
