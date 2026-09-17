@@ -122,6 +122,8 @@ function buildTheme(base: "vs-dark" | "vs", c: typeof DARK_COLORS): monaco.edito
       "editorSuggestWidget.border": c.borderLight,
       "editorSuggestWidget.foreground": c.textPrimary,
       "editorSuggestWidget.selectedBackground": c.bgHover,
+      "editorSuggestWidget.selectedForeground": c.textPrimary,
+      "editorSuggestWidget.selectedIconForeground": c.textSecondary,
       "editorSuggestWidget.highlightForeground": c.accent,
       "editorSuggestWidget.focusHighlightForeground": c.accent,
       "editorWidget.background": c.bgSecondary,
