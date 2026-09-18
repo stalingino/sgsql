@@ -129,7 +129,13 @@ fn friendly_from_parts(err: &SidecarError, msgs: &str, codes: &str) -> String {
     if has("ECONNRESET") {
         return "Connection was reset by the server.".into();
     }
-    if has("password authentication failed") || has("Access denied for user") {
+    // MySQL uses "Access denied for user" for both authentication failures
+    // (1045) and authorization failures such as no access to a database
+    // (1044). Only rewrite the former; permission errors must reach the query
+    // editor unchanged so users can see why their statement was rejected.
+    let mysql_login_failed = codes.split_whitespace().any(|code| code == "1045")
+        || (has("Access denied for user") && msgs.contains("using password:"));
+    if has("password authentication failed") || mysql_login_failed {
         return "Authentication failed. Check your username and password.".into();
     }
     if has("does not exist") && (has("database") || has("role")) {
@@ -175,6 +181,22 @@ mod tests {
     fn auth_failure_maps_to_friendly_message() {
         let e = SidecarError::msg("FATAL: password authentication failed for user \"x\"");
         assert_eq!(e.friendly(), "Authentication failed. Check your username and password.");
+    }
+
+    #[test]
+    fn mysql_auth_failure_maps_to_friendly_message() {
+        let e = SidecarError::msg("Access denied for user 'x'@'localhost' (using password: YES)");
+        assert_eq!(
+            friendly_from_parts(&e, &e.to_string(), "1045 28000"),
+            "Authentication failed. Check your username and password."
+        );
+    }
+
+    #[test]
+    fn mysql_database_permission_error_passes_through() {
+        let message = "Access denied for user 'reader'@'%' to database 'app'";
+        let e = SidecarError::msg(message);
+        assert_eq!(friendly_from_parts(&e, message, "1044 42000"), message);
     }
 
     #[test]
