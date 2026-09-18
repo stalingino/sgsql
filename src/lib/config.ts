@@ -1,4 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+  popQueryHistory,
+  pushQueryHistory,
+  type QueryHistory,
+} from "./queryHistory";
 
 /* ── Shape ──────────────────────────────────────────────── */
 
@@ -15,7 +20,9 @@ export interface AppConfig {
   sidebar?: { visible: boolean; width: number };
   console?: { visible: boolean; height: number; split?: number };
   detailPanel?: { visible: boolean; width: number };
-  queryStack?: string[]; // LIFO — last closed query on top
+  /** @deprecated Unscoped history from older releases; deliberately not restored. */
+  queryStack?: string[];
+  queryHistory?: QueryHistory; // LIFO stacks scoped by connection profile + database
   searchLru?: Record<string, string[]>; // Most-recently selected palette item first
   settings?: AppSettings;
 }
@@ -29,6 +36,7 @@ export interface AppSettings {
 
 let cache: AppConfig = {};
 let _loaded = false;
+let saveQueue: Promise<void> = Promise.resolve();
 
 export async function loadConfig(): Promise<AppConfig> {
   try {
@@ -56,34 +64,43 @@ export async function saveConfig(partial: Partial<AppConfig>): Promise<void> {
       (cache as any)[k] = v;
     }
   }
-  try {
-    await invoke("config_save", { data: cache });
-  } catch (e) {
-    console.warn("[config] save failed:", e);
-  }
+  // Tauri commands may complete out of order. Serialize immutable snapshots so
+  // a slower, older write can never overwrite newer query history or UI state.
+  const snapshot = structuredClone(cache);
+  saveQueue = saveQueue.then(async () => {
+    try {
+      await invoke("config_save", { data: snapshot });
+    } catch (e) {
+      console.warn("[config] save failed:", e);
+    }
+  });
+  await saveQueue;
 }
 
-/* ── Query stack helpers ────────────────────────────────── */
+/* ── Query history helpers ──────────────────────────────── */
 
-const STACK_MAX = 50;
-
-export function queryStackPop(): string {
-  const stack = cache.queryStack ?? [];
-  if (stack.length === 0) return "";
-  const sql = stack[stack.length - 1];
-  cache.queryStack = stack.slice(0, -1);
-  // Fire-and-forget save — just the stack changed
-  saveConfig({ queryStack: cache.queryStack });
-  return sql;
+export function queryHistoryPop(profileId: string, database: string): string {
+  const result = popQueryHistory(cache.queryHistory ?? {}, profileId, database);
+  if (!result.sql) return "";
+  cache.queryHistory = result.history;
+  void saveConfig({ queryHistory: result.history });
+  return result.sql;
 }
 
-export function queryStackPush(sql: string): void {
-  if (!sql.trim()) return;
-  const stack = cache.queryStack ?? [];
-  stack.push(sql);
-  if (stack.length > STACK_MAX) stack.shift();
-  cache.queryStack = stack;
-  saveConfig({ queryStack: cache.queryStack });
+export function queryHistoryPush(profileId: string, database: string, sql: string): Promise<void> {
+  return queryHistoryPushMany(profileId, database, [sql]);
+}
+
+export function queryHistoryPushMany(
+  profileId: string,
+  database: string,
+  sqlStatements: readonly string[],
+): Promise<void> {
+  const current = cache.queryHistory ?? {};
+  const next = pushQueryHistory(current, profileId, database, sqlStatements);
+  if (next === current) return Promise.resolve();
+  cache.queryHistory = next;
+  return saveConfig({ queryHistory: next });
 }
 
 export { _loaded as configLoaded };

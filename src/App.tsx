@@ -30,7 +30,7 @@ import { closeConnection, reloadConnection } from "./lib/schema";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useThemeStore, type ThemeMode, initTheme } from "./lib/theme";
 import { useWindowPersist } from "./lib/useWindowPersist";
-import { loadConfig, getConfig, saveConfig, queryStackPop, queryStackPush } from "./lib/config";
+import { loadConfig, getConfig, saveConfig, queryHistoryPop, queryHistoryPush, queryHistoryPushMany } from "./lib/config";
 import { useExecutionQueue } from "./lib/executionQueue";
 import { useEditStore } from "./lib/editStore";
 import { notifySchemaChanged } from "./lib/schemaRevision";
@@ -118,6 +118,18 @@ function defaultSchema(type: "postgres" | "mysql" | "sqlite"): string {
   if (type === "postgres") return "public";
   if (type === "sqlite") return "main";
   return "";
+}
+
+function saveTabQueries(tab: Tab): Promise<void>[] {
+  return Object.values(tab.workspaces).map((workspace) =>
+    queryHistoryPushMany(
+      tab.profile.id,
+      workspace.db,
+      workspace.contentTabs
+        .filter((contentTab) => contentTab.type === "query")
+        .map((contentTab) => contentTab.sql ?? ""),
+    ),
+  );
 }
 
 /* ── App ────────────────────────────────────────────────── */
@@ -348,10 +360,16 @@ function App() {
 
   useEffect(() => {
     const unlisten = getCurrentWindow().onCloseRequested(async () => {
+      const tabsToClose = tabsRef.current;
+
+      // Persist every open editor before clearing React state. The main window
+      // is normally hidden (not destroyed) by Tauri, so this also covers app
+      // shutdown after the connection manager is subsequently closed.
+      await Promise.all(tabsToClose.flatMap(saveTabQueries));
+
       // Reset the UI and duplicate-event guard before closing connections. The
       // connection manager is shown immediately by Tauri, so a user can start
       // reconnecting while these requests are still in flight.
-      const tabsToClose = tabsRef.current;
       tabsRef.current = [];
       openedConnectionIdsRef.current.clear();
       setTabs([]);
@@ -389,7 +407,7 @@ function App() {
         if (profile.database) {
           // Default database known up front — jump straight into a fresh query
           // tab instead of making the user click "+ SQL" after connecting.
-          const restoredSql = queryStackPop();
+          const restoredSql = queryHistoryPop(profile.id, profile.database);
           const ct: ContentTab = {
             id: nextContentTabId(),
             db: profile.database,
@@ -437,6 +455,7 @@ function App() {
 
   const closeTab = useCallback((tabId: string) => {
     const tab = tabsRef.current.find((t) => t.id === tabId);
+    if (tab) void Promise.all(saveTabQueries(tab));
     if (tab?.connectionId) {
       openedConnectionIdsRef.current.delete(tab.connectionId);
       closeConnection(tab.connectionId).catch(() => {});
@@ -480,17 +499,22 @@ function App() {
   }, [activeTabId]);
 
   const closeDb = useCallback((db: string) => {
+    const tabToUpdate = tabsRef.current.find((tab) => tab.id === activeTabId);
+    const workspaceToClose = tabToUpdate?.workspaces[db];
+    if (tabToUpdate && workspaceToClose) {
+      void queryHistoryPushMany(
+        tabToUpdate.profile.id,
+        db,
+        workspaceToClose.contentTabs
+          .filter((contentTab) => contentTab.type === "query")
+          .map((contentTab) => contentTab.sql ?? ""),
+      );
+    }
+
     setTabs((prev) => prev.map((t) => {
       if (t.id !== activeTabId) return t;
       const newDbs = t.openDbs.filter((d) => d !== db);
       const newWorkspaces = { ...t.workspaces };
-      // Save query SQL before removing
-      const ws = newWorkspaces[db];
-      if (ws) {
-        for (const ct of ws.contentTabs) {
-          if (ct.type === "query" && ct.sql) queryStackPush(ct.sql);
-        }
-      }
       delete newWorkspaces[db];
       const newActive = t.activeDbName === db
         ? (newDbs.length > 0 ? newDbs[newDbs.length - 1] : null)
@@ -562,15 +586,20 @@ function App() {
   }, [activeTabId]);
 
   const closeContentTab = useCallback((contentTabId: string) => {
+    const tabToUpdate = tabsRef.current.find((tab) => tab.id === activeTabId);
+    const workspace = tabToUpdate?.activeDbName
+      ? tabToUpdate.workspaces[tabToUpdate.activeDbName]
+      : undefined;
+    const closingTab = workspace?.contentTabs.find((contentTab) => contentTab.id === contentTabId);
+    if (tabToUpdate?.activeDbName && closingTab?.type === "query" && closingTab.sql) {
+      void queryHistoryPush(tabToUpdate.profile.id, tabToUpdate.activeDbName, closingTab.sql);
+    }
+
     setTabs((prev) => prev.map((tab) => {
       if (tab.id !== activeTabId || !tab.activeDbName) return tab;
       const ws = tab.workspaces[tab.activeDbName];
       if (!ws) return tab;
 
-      const closing = ws.contentTabs.find((ct) => ct.id === contentTabId);
-      if (closing?.type === "query" && closing.sql) {
-        queryStackPush(closing.sql);
-      }
       const idx = ws.contentTabs.findIndex((ct) => ct.id === contentTabId);
       const next = ws.contentTabs.filter((ct) => ct.id !== contentTabId);
       let newActiveId = ws.activeContentTabId;
@@ -641,12 +670,15 @@ function App() {
   }, []);
 
   const addQueryTab = useCallback(() => {
+    const active = tabsRef.current.find((tab) => tab.id === activeTabId);
+    if (!active?.activeDbName || !active.workspaces[active.activeDbName]) return;
+    const restoredSql = queryHistoryPop(active.profile.id, active.activeDbName);
+
     setTabs((prev) => prev.map((tab) => {
       if (tab.id !== activeTabId || !tab.activeDbName) return tab;
       const ws = tab.workspaces[tab.activeDbName];
       if (!ws) return tab;
 
-      const restoredSql = queryStackPop();
       const queryCount = ws.contentTabs.filter((ct) => ct.type === "query").length;
       const ct: ContentTab = {
         id: nextContentTabId(),
