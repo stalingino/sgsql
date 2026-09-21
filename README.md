@@ -83,15 +83,15 @@ bun run tauri build
 The generated bundles are written to:
 
 ```text
-src-tauri/target/release/bundle/macos/SGSql.app
-src-tauri/target/release/bundle/dmg/SGSql_0.1.0_aarch64.dmg
+src-tauri/target/aarch64-apple-darwin/release/bundle/macos/SGSql.app
+src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/SGSql_2.0.0_aarch64.dmg
 ```
 
 Verify the completed application bundle before sharing it:
 
 ```bash
 codesign --verify --deep --strict --verbose=2 \
-  src-tauri/target/release/bundle/macos/SGSql.app
+  src-tauri/target/aarch64-apple-darwin/release/bundle/macos/SGSql.app
 ```
 
 ### Architecture support
@@ -175,7 +175,8 @@ endpoint in `src-tauri/tauri.conf.json` points straight at
 
 To cut a release:
 
-1. Bump `version` in `package.json` and `src-tauri/tauri.conf.json`.
+1. Bump `version` in `package.json`, `src-tauri/tauri.conf.json`, and both
+   Rust manifests; update `src-tauri/Cargo.lock`.
 2. Commit, then tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 3. Wait for the workflow to finish, review the draft release, publish it.
 

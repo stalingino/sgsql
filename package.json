@@ -1,7 +1,7 @@
 {
   "name": "sgsql",
   "private": true,
-  "version": "1.7.2",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "icons:mac": "node scripts/build-macos-icons.mjs",
-    "sidecar:build": "cargo build --release --manifest-path src-tauri/Cargo.toml -p dbsidecar --target aarch64-apple-darwin && cp src-tauri/target/aarch64-apple-darwin/release/dbsidecar src-tauri/binaries/dbsidecar-aarch64-apple-darwin && codesign --force --sign \"SGSql Developer\" src-tauri/binaries/dbsidecar-aarch64-apple-darwin",
+    "sidecar:build": "cargo build --release --manifest-path src-tauri/Cargo.toml -p dbsidecar --target aarch64-apple-darwin && mkdir -p src-tauri/binaries && cp src-tauri/target/aarch64-apple-darwin/release/dbsidecar src-tauri/binaries/dbsidecar-aarch64-apple-darwin && codesign --force --sign \"SGSql Developer\" src-tauri/binaries/dbsidecar-aarch64-apple-darwin",
     "sidecar:dev": "cargo run --manifest-path src-tauri/Cargo.toml -p dbsidecar"
   },
   "devDependencies": {
