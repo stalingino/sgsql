@@ -154,6 +154,7 @@ mod tests {
             CreateShareRequest {
                 connection_id: "conn-test".into(),
                 db: None,
+                full_database: false,
                 tables: vec![AllowedTable { schema: String::new(), name: "users".into(), kind: "table".into() }],
                 read_only: true,
                 max_rows: 10,

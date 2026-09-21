@@ -100,6 +100,8 @@ pub struct Share {
     pub database: String,
     /// Postgres `public`, MySQL = `database`, SQLite `main`.
     pub default_schema: String,
+    /// Grants access to every table in this database without a snapshot allowlist.
+    pub full_database: bool,
     pub allowed: HashSet<TableKey>,
     pub tables: Vec<AllowedTable>,
     pub read_only: bool,
@@ -123,6 +125,7 @@ impl Share {
             "connectionName": self.connection_name,
             "db": self.database,
             "url": self.url(),
+            "fullDatabase": self.full_database,
             "readOnly": self.read_only,
             "maxRows": self.max_rows,
             "timeoutMs": self.timeout_ms,
@@ -139,6 +142,9 @@ impl Share {
     /// Human-readable list of shared tables for error messages and the
     /// server instructions, e.g. `users, orders, sales.invoices`.
     pub fn table_list(&self) -> String {
+        if self.full_database {
+            return "all tables in this database".to_string();
+        }
         self.tables
             .iter()
             .map(|t| {
@@ -150,6 +156,17 @@ impl Share {
             })
             .collect::<Vec<_>>()
             .join(", ")
+    }
+
+    pub fn allows(&self, key: &TableKey) -> bool {
+        if !self.full_database {
+            return self.allowed.contains(key);
+        }
+        match self.db_type {
+            DbType::Postgres => true,
+            DbType::MySql => key.schema.eq_ignore_ascii_case(&self.database),
+            DbType::Sqlite => key.schema.eq_ignore_ascii_case("main"),
+        }
     }
 }
 
@@ -175,6 +192,9 @@ pub struct CreateShareRequest {
     /// Active database (MySQL). Ignored for Postgres and SQLite.
     #[serde(default)]
     pub db: Option<String>,
+    #[serde(default)]
+    pub full_database: bool,
+    #[serde(default)]
     pub tables: Vec<AllowedTable>,
     #[serde(default = "default_true")]
     pub read_only: bool,

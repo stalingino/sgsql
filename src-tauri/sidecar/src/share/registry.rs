@@ -43,11 +43,14 @@ pub fn create(req: CreateShareRequest, profile: &ConnectionProfile) -> Result<Ar
     let db_type = DbType::parse(&profile.db_type)
         .ok_or_else(|| SidecarError::msg(format!("Unsupported connection type: {}", profile.db_type)))?;
 
-    if req.tables.is_empty() {
+    if !req.full_database && req.tables.is_empty() {
         return Err(SidecarError::msg("Select at least one table to share"));
     }
-    if req.tables.len() > MAX_TABLES {
+    if !req.full_database && req.tables.len() > MAX_TABLES {
         return Err(SidecarError::msg(format!("At most {MAX_TABLES} tables can be shared")));
+    }
+    if req.full_database && !req.tables.is_empty() {
+        return Err(SidecarError::msg("Full database shares must not include a table list"));
     }
     if req.max_rows == 0 || req.max_rows > MAX_ROWS_LIMIT {
         return Err(SidecarError::msg(format!("maxRows must be between 1 and {MAX_ROWS_LIMIT}")));
@@ -97,6 +100,7 @@ pub fn create(req: CreateShareRequest, profile: &ConnectionProfile) -> Result<Ar
         db_type,
         database,
         default_schema,
+        full_database: req.full_database,
         allowed,
         tables,
         read_only: req.read_only,
@@ -146,6 +150,24 @@ pub async fn remove_for_connection(connection_id: &str) -> usize {
 mod tests {
     use super::*;
 
+    fn profile() -> ConnectionProfile {
+        serde_json::from_value(serde_json::json!({
+            "id": "c1", "name": "Test", "type": "postgres", "database": "app"
+        })).unwrap()
+    }
+
+    fn request(full_database: bool, tables: Vec<AllowedTable>) -> CreateShareRequest {
+        CreateShareRequest {
+            connection_id: "c1".into(),
+            db: None,
+            full_database,
+            tables,
+            read_only: true,
+            max_rows: 500,
+            timeout_ms: 15_000,
+        }
+    }
+
     #[test]
     fn tokens_are_64_hex_chars_and_unique() {
         let a = new_token();
@@ -153,5 +175,29 @@ mod tests {
         assert_eq!(a.len(), 64);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn full_database_needs_no_table_snapshot() {
+        let share = create(request(true, vec![]), &profile()).unwrap();
+        assert!(share.full_database);
+        assert!(share.tables.is_empty());
+        assert!(share.allowed.is_empty());
+        assert_eq!(share.info(false)["fullDatabase"], true);
+        SHARES.lock().unwrap().remove(&share.id);
+    }
+
+    #[test]
+    fn selected_table_limit_does_not_apply_to_full_database() {
+        let tables = (0..501).map(|i| AllowedTable { schema: "public".into(), name: format!("t{i}"), kind: "table".into() }).collect();
+        assert!(create(request(false, tables), &profile()).is_err());
+        let share = create(request(true, vec![]), &profile()).unwrap();
+        SHARES.lock().unwrap().remove(&share.id);
+    }
+
+    #[test]
+    fn full_database_rejects_a_redundant_table_list() {
+        let table = AllowedTable { schema: "public".into(), name: "users".into(), kind: "table".into() };
+        assert!(create(request(true, vec![table]), &profile()).is_err());
     }
 }

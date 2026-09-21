@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Bot, Check, Clipboard, Eye, EyeOff, Loader2, Search, Square, SquareCheck, SquareMinus, X } from "lucide-react";
+import { AlertTriangle, Check, Clipboard, Eye, EyeOff, Loader2, Search, Square, SquareCheck, SquareMinus, X } from "lucide-react";
 import type { ConnectionProfile } from "../lib/types";
 import { fetchCatalog } from "../lib/schema";
 import { fuzzySearch } from "../lib/fuzzySearch";
 import { createShare, getShare, stopShare, type ShareInfo, type ShareTable } from "../lib/shares";
 import { buildMcpConfig, redactSnippet } from "../lib/mcpConfig";
 import { Chips } from "./PrivilegeChips";
+import { McpIcon } from "./McpIcon";
 
 interface Props {
   open: boolean;
@@ -21,9 +22,12 @@ interface Props {
 
 const TIMEOUTS = [5_000, 15_000, 30_000, 60_000];
 
-const LIMITATIONS =
-  "Enforced by SGSql before each statement reaches the database: one statement per call, only the shared tables, " +
-  "DDL and side-effect functions rejected. Shared views may still read tables that are not shared.";
+function limitations(fullDatabase: boolean): string {
+  return "Enforced by SGSql before each statement reaches the database: one statement per call, " +
+    (fullDatabase ? "only the current database" : "only the selected tables") +
+    ", DDL and side-effect functions rejected." +
+    (fullDatabase ? "" : " Shared views may still read tables that are not shared.");
+}
 
 function tableKey(table: ShareTable): string {
   return `${table.schema}.${table.name}`;
@@ -43,7 +47,7 @@ export function ShareConnectionModal({ open, connectionId, profile, db, share, o
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60 p-6" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div className="w-full max-w-2xl max-h-full flex flex-col rounded-lg border border-border bg-bg-primary shadow-2xl">
         <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
-          <Bot size={15} className="text-accent" />
+          <McpIcon size={15} className="text-accent" />
           <div className="text-sm font-semibold">Share with AI agent</div>
           <span className="text-xs text-text-muted truncate">{profile.name || "Untitled"}</span>
           <button onClick={onClose} className="ml-auto p-1 text-text-muted hover:text-text-primary cursor-pointer"><X size={14} /></button>
@@ -60,6 +64,8 @@ export function ShareConnectionModal({ open, connectionId, profile, db, share, o
 
 function SetupView({ connectionId, profile, db, onStarted, onClose }: Pick<Props, "connectionId" | "profile" | "db" | "onStarted" | "onClose">) {
   const [tables, setTables] = useState<ShareTable[] | null>(null);
+  const [scope, setScope] = useState<"full" | "selected" | null>(null);
+  const fullDatabase = scope === "full";
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
   const [readOnly, setReadOnly] = useState(true);
@@ -69,6 +75,7 @@ function SetupView({ connectionId, profile, db, onStarted, onClose }: Pick<Props
   const [working, setWorking] = useState(false);
 
   useEffect(() => {
+    if (scope !== "selected") return;
     let cancelled = false;
     setTables(null);
     fetchCatalog(connectionId, db)
@@ -81,7 +88,7 @@ function SetupView({ connectionId, profile, db, onStarted, onClose }: Pick<Props
       })
       .catch((cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause)); });
     return () => { cancelled = true; };
-  }, [connectionId, db, profile.type]);
+  }, [connectionId, db, profile.type, scope]);
 
   const visible = useMemo(() => {
     if (!tables) return [];
@@ -119,13 +126,15 @@ function SetupView({ connectionId, profile, db, onStarted, onClose }: Pick<Props
   };
 
   const start = async () => {
-    if (!tables || selected.size === 0) return;
+    if (!scope) return;
+    if (!fullDatabase && (!tables || selected.size === 0)) return;
     setWorking(true); setError(null);
     try {
       const share = await createShare({
         connectionId,
         db: profile.type === "mysql" ? db : undefined,
-        tables: tables.filter((table) => selected.has(tableKey(table))),
+        fullDatabase,
+        tables: fullDatabase ? [] : tables!.filter((table) => selected.has(tableKey(table))),
         readOnly,
         maxRows,
         timeoutMs,
@@ -144,9 +153,21 @@ function SetupView({ connectionId, profile, db, onStarted, onClose }: Pick<Props
     {error && <div className="px-4 py-2 text-xs text-error bg-error/10">{error}</div>}
     <div className="flex flex-col min-h-0 p-4 gap-3">
       <p className="text-[11px] text-text-muted">
-        Starts a local MCP server bound to this connection. The agent only sees the tables you pick, through SGSql — your database credentials are never shared.
+        Starts a local MCP server bound to this connection. Your database credentials are never shared.
       </p>
 
+      <div className="grid grid-cols-2 gap-2">
+        <button type="button" onClick={() => { setError(null); setScope("full"); }} className={`rounded border p-2 text-left cursor-pointer ${fullDatabase ? "border-accent bg-accent/10" : "border-border hover:bg-bg-hover"}`}>
+          <span className="text-xs font-medium text-text-primary">Full database access</span>
+          <span className="block text-[10px] text-text-muted mt-0.5">All tables, including new ones. No table list is sent when sharing starts.</span>
+        </button>
+        <button type="button" onClick={() => { setError(null); setScope("selected"); }} className={`rounded border p-2 text-left cursor-pointer ${scope === "selected" ? "border-accent bg-accent/10" : "border-border hover:bg-bg-hover"}`}>
+          <span className="text-xs font-medium text-text-primary">Selected tables</span>
+          <span className="block text-[10px] text-text-muted mt-0.5">Limit agent access to the tables you choose below.</span>
+        </button>
+      </div>
+
+      {scope === "selected" && <>
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
           <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
@@ -171,12 +192,6 @@ function SetupView({ connectionId, profile, db, onStarted, onClose }: Pick<Props
                   <span className="ml-auto normal-case tracking-normal">{count}/{list.length}</span>
                 </button>
               )}
-              {!showSchema && list.length > 1 && (
-                <button onClick={() => toggleGroup(list)} className="sticky top-0 w-full flex items-center gap-2 px-2.5 py-1.5 bg-bg-secondary border-b border-border text-[10px] text-text-muted hover:text-text-primary cursor-pointer">
-                  <GroupIcon size={12} className={count > 0 ? "text-accent" : ""} />
-                  {count === list.length ? "Deselect all" : "Select all"}
-                </button>
-              )}
               {list.map((table) => {
                 const checked = selected.has(tableKey(table));
                 return (
@@ -191,6 +206,7 @@ function SetupView({ connectionId, profile, db, onStarted, onClose }: Pick<Props
           );
         })}
       </div>
+      </>}
 
       <div className="grid grid-cols-[1fr_auto_auto] gap-4 items-start">
         <label className="flex items-start gap-2.5 py-1 cursor-pointer select-none">
@@ -198,7 +214,7 @@ function SetupView({ connectionId, profile, db, onStarted, onClose }: Pick<Props
           <span className="flex flex-col">
             <span className="text-xs text-text-primary">Read-only</span>
             <span className="text-[10px] text-text-muted">Only SELECT / WITH / EXPLAIN queries are executed.</span>
-            {!readOnly && <span className="flex items-center gap-1 text-[10px] text-warning mt-0.5"><AlertTriangle size={10} />The agent can INSERT, UPDATE and DELETE rows in the selected tables.</span>}
+            {!readOnly && <span className="flex items-center gap-1 text-[10px] text-warning mt-0.5"><AlertTriangle size={10} />The agent can INSERT, UPDATE and DELETE rows in {fullDatabase ? "the entire database" : "the selected tables"}.</span>}
           </span>
         </label>
         <label className="flex flex-col gap-1">
@@ -212,12 +228,12 @@ function SetupView({ connectionId, profile, db, onStarted, onClose }: Pick<Props
           </select>
         </label>
       </div>
-      <p className="text-[10px] text-text-muted">{LIMITATIONS}</p>
+      {scope && <p className="text-[10px] text-text-muted">{limitations(fullDatabase)}</p>}
     </div>
     <div className="flex justify-end gap-2 p-4 border-t border-border">
       <button onClick={onClose} className="px-3 py-1.5 border border-border rounded text-xs cursor-pointer">Cancel</button>
-      <button disabled={working || selected.size === 0} onClick={() => void start()} className="flex items-center gap-1 px-3 py-1.5 rounded bg-accent text-white text-xs cursor-pointer disabled:opacity-50 disabled:cursor-default">
-        {working ? <Loader2 size={12} className="animate-spin" /> : <Bot size={12} />}
+      <button disabled={working || !scope || (scope === "selected" && selected.size === 0)} onClick={() => void start()} className="flex items-center gap-1 px-3 py-1.5 rounded bg-accent text-white text-xs cursor-pointer disabled:opacity-50 disabled:cursor-default">
+        {working ? <Loader2 size={12} className="animate-spin" /> : <McpIcon size={12} />}
         Start sharing
       </button>
     </div>
@@ -285,11 +301,11 @@ function ActiveView({ share, profile, onStopped, onClose }: { share: ShareInfo; 
     <div className="flex flex-col min-h-0 p-4 gap-3 overflow-auto">
       <div className="flex items-center gap-2 text-xs">
         <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full rounded-full bg-success opacity-60 animate-ping" /><span className="relative inline-flex h-2 w-2 rounded-full bg-success" /></span>
-        <span className="text-text-primary">Sharing {share.tables.length} {share.tables.length === 1 ? "table" : "tables"} ({share.readOnly ? "read-only" : "read-write"})</span>
+        <span className="text-text-primary">Sharing {share.fullDatabase ? "the full database" : `${share.tables.length} ${share.tables.length === 1 ? "table" : "tables"}`} ({share.readOnly ? "read-only" : "read-write"})</span>
         <span className="ml-auto text-[11px] text-text-muted">{stats.calls} calls · {stats.rejected} rejected · {stats.errors} errors</span>
       </div>
 
-      <Chips items={share.tables.map((table) => (profile.type === "postgres" && table.schema !== "public" ? `${table.schema}.${table.name}` : table.name))} />
+      {!share.fullDatabase && <Chips items={share.tables.map((table) => (profile.type === "postgres" && table.schema !== "public" ? `${table.schema}.${table.name}` : table.name))} />}
 
       <div className="flex items-center gap-1">
         {tabButton("claude", "Claude Code")}
@@ -308,7 +324,7 @@ function ActiveView({ share, profile, onStopped, onClose }: { share: ShareInfo; 
         <span>Timeout</span><span className="text-text-secondary">{share.timeoutMs / 1000} s per statement</span>
       </div>
       <p className="text-[10px] text-text-muted">
-        Session only — sharing stops when this tab is closed or SGSql quits, and the token changes each time. Agent queries appear in the query console. {LIMITATIONS}
+        Session only — sharing stops when this tab is closed or SGSql quits, and the token changes each time. Agent queries appear in the query console. {limitations(share.fullDatabase)}
       </p>
     </div>
     <div className="flex justify-end gap-2 p-4 border-t border-border">

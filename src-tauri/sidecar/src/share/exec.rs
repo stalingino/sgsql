@@ -293,11 +293,11 @@ pub async fn run(share: &Share, sql: &str) -> Result<QueryResult, ToolError> {
 // Metadata tools, served through the app's pooled connection.
 // ---------------------------------------------------------------------------
 
-fn allowed_entry<'a>(share: &'a Share, key: &TableKey) -> Option<&'a AllowedTable> {
-    share
-        .tables
-        .iter()
-        .find(|t| TableKey::new(&t.schema, &t.name) == *key)
+fn allowed_entry(share: &Share, key: &TableKey) -> Option<AllowedTable> {
+    if share.full_database {
+        return Some(AllowedTable { schema: key.schema.clone(), name: key.name.clone(), kind: "table".into() });
+    }
+    share.tables.iter().find(|t| TableKey::new(&t.schema, &t.name) == *key).cloned()
 }
 
 fn s(value: &Value, key: &str) -> String {
@@ -374,7 +374,7 @@ fn normalize_foreign_keys(share: &Share, raw: &Value) -> Vec<Value> {
                 TableKey::new(&ref_schema, &ref_table)
             };
             // Only reveal relationships to tables the agent can see.
-            if !share.allowed.contains(&key) {
+            if !share.allows(&key) {
                 return None;
             }
             let mut map = Map::new();
@@ -437,14 +437,34 @@ fn normalize_indexes(share: &Share, raw: &Value) -> Vec<Value> {
     }
 }
 
+async fn metadata_entry(share: &Share, table: &str, key: &TableKey, client: &DbClient) -> Result<AllowedTable, ToolError> {
+    let mut entry = allowed_entry(share, key).ok_or(ToolError::Rejected(format!("Table \"{table}\" is not shared.")))?;
+    if !share.full_database {
+        return Ok(entry);
+    }
+    // Resolve the canonical name and type only for the requested schema.
+    // Full-database shares need no table snapshot at creation time.
+    let (db_name, schema_name) = introspection_scope(share, &entry);
+    let listing = schema::get_tables(client, &share.connection_id, &trace_db(share), db_name, schema_name).await?;
+    let found = listing["tables"].as_array().and_then(|tables| tables.iter().find(|candidate| {
+        s(candidate, "name").eq_ignore_ascii_case(&entry.name)
+    }));
+    let Some(found) = found else {
+        return Err(ToolError::Rejected(format!("Table \"{table}\" was not found in the database.")));
+    };
+    entry.name = s(found, "name");
+    entry.kind = if s(found, "type").to_uppercase().contains("VIEW") { "view" } else { "table" }.into();
+    Ok(entry)
+}
+
 pub async fn describe_table(share: &Share, table: &str) -> Result<Value, ToolError> {
     let key = guard::resolve_table_ref(share, table)?;
-    let entry = allowed_entry(share, &key).ok_or(ToolError::Rejected(format!("Table \"{table}\" is not shared.")))?;
     let pooled = pooled_client(share).await?;
     let client: &DbClient = &pooled.client;
     let conn_id = &share.connection_id;
     let db = trace_db(share);
-    let (db_name, schema_name) = introspection_scope(share, entry);
+    let entry = metadata_entry(share, table, &key, client).await?;
+    let (db_name, schema_name) = introspection_scope(share, &entry);
 
     let columns_raw = schema::get_columns(client, conn_id, &db, db_name, schema_name, &entry.name).await?;
     let fks_raw = schema::get_foreign_keys(client, conn_id, &db, db_name, schema_name, &entry.name).await?;
@@ -469,10 +489,76 @@ pub async fn describe_table(share: &Share, table: &str) -> Result<Value, ToolErr
 
 pub async fn table_ddl(share: &Share, table: &str) -> Result<String, ToolError> {
     let key = guard::resolve_table_ref(share, table)?;
-    let entry = allowed_entry(share, &key).ok_or(ToolError::Rejected(format!("Table \"{table}\" is not shared.")))?;
     let pooled = pooled_client(share).await?;
-    let (db_name, schema_name) = introspection_scope(share, entry);
+    let entry = metadata_entry(share, table, &key, &pooled.client).await?;
+    let (db_name, schema_name) = introspection_scope(share, &entry);
     let raw = schema::get_table_ddl(&pooled.client, &share.connection_id, &trace_db(share), db_name, schema_name, &entry.name)
         .await?;
     Ok(s(&raw, "ddl"))
+}
+
+pub async fn list_tables(share: &Share) -> Result<Vec<AllowedTable>, ToolError> {
+    if !share.full_database {
+        return Ok(share.tables.clone());
+    }
+    let pooled = pooled_client(share).await?;
+    let listing = match share.db_type {
+        DbType::Postgres => schema::get_catalog(&pooled.client, &share.connection_id, &trace_db(share), Some(&share.database)).await?,
+        DbType::MySql => schema::get_tables(&pooled.client, &share.connection_id, &trace_db(share), Some(&share.database), None).await?,
+        DbType::Sqlite => schema::get_tables(&pooled.client, &share.connection_id, &trace_db(share), None, None).await?,
+    };
+    Ok(listing["tables"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|table| AllowedTable {
+            schema: match share.db_type {
+                DbType::Postgres => s(table, "schema"),
+                DbType::MySql | DbType::Sqlite => share.default_schema.clone(),
+            },
+            name: s(table, "name"),
+            kind: if s(table, "type").to_uppercase().contains("VIEW") { "view" } else { "table" }.into(),
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::share::registry;
+    use crate::share::types::CreateShareRequest;
+
+    #[tokio::test]
+    async fn full_sqlite_share_discovers_tables_added_after_creation() {
+        let path = std::env::temp_dir().join(format!("sgsql-mcp-{}.sqlite", uuid::Uuid::new_v4()));
+        let connection_id = format!("mcp-test-{}", uuid::Uuid::new_v4());
+        let profile: crate::types::ConnectionProfile = serde_json::from_value(json!({
+            "id": connection_id, "name": "Test SQLite", "type": "sqlite", "database": path.to_str().unwrap()
+        })).unwrap();
+        let (pooled, _) = pool::open_connection(&profile).await.unwrap();
+        let DbClient::Sqlite { pool: sqlite_pool } = &pooled.client else { unreachable!() };
+        sqlx::query("CREATE TABLE first_table (id INTEGER PRIMARY KEY)").execute(sqlite_pool).await.unwrap();
+
+        let share = registry::create(CreateShareRequest {
+            connection_id: profile.id.clone(),
+            db: None,
+            full_database: true,
+            tables: vec![],
+            read_only: true,
+            max_rows: 500,
+            timeout_ms: 15_000,
+        }, &profile).unwrap();
+        ensure_open(&share).await.unwrap();
+        assert_eq!(list_tables(&share).await.unwrap().len(), 1);
+
+        sqlx::query("CREATE TABLE second_table (id INTEGER PRIMARY KEY)").execute(sqlite_pool).await.unwrap();
+        assert_eq!(list_tables(&share).await.unwrap().len(), 2);
+        assert!(run(&share, "SELECT * FROM second_table").await.is_ok());
+        assert_eq!(describe_table(&share, "second_table").await.unwrap()["table"], "second_table");
+        assert!(table_ddl(&share, "second_table").await.unwrap().contains("CREATE TABLE"));
+
+        registry::remove(&share.id).await;
+        pool::close_connection(&profile.id).await;
+        std::fs::remove_file(path).unwrap();
+    }
 }

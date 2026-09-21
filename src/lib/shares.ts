@@ -23,6 +23,7 @@ export interface ShareInfo {
   url: string;
   /** Only present in the create response; never persisted. */
   token?: string;
+  fullDatabase: boolean;
   readOnly: boolean;
   maxRows: number;
   timeoutMs: number;
@@ -34,6 +35,7 @@ export interface ShareInfo {
 export interface CreateShareRequest {
   connectionId: string;
   db?: string;
+  fullDatabase: boolean;
   tables: ShareTable[];
   readOnly: boolean;
   maxRows: number;

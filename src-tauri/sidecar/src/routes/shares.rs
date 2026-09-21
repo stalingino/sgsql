@@ -38,8 +38,11 @@ pub async fn handle_create(bytes: Bytes) -> Response {
         return error_response(&message, 500);
     }
 
-    println!("[mcp] share {} started for connection {} ({} tables, {})",
-        share.id, share.connection_id, share.tables.len(), if share.read_only { "read-only" } else { "read-write" });
+    println!("[mcp] share {} started for connection {} ({}, {})",
+        share.id,
+        share.connection_id,
+        if share.full_database { "full database".to_string() } else { format!("{} tables", share.tables.len()) },
+        if share.read_only { "read-only" } else { "read-write" });
     json_response(201, json!({ "share": share.info(true) }))
 }
 

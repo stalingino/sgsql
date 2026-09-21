@@ -227,7 +227,7 @@ async fn get_databases(client: &DbClient, conn_id: &str, trace_db: &str) -> Resu
 // Search catalog: all searchable relations without one request per database
 // ---------------------------------------------------------------------------
 
-async fn get_catalog(
+pub(crate) async fn get_catalog(
     client: &DbClient,
     conn_id: &str,
     trace_db: &str,
@@ -340,7 +340,7 @@ async fn get_schemas(client: &DbClient, conn_id: &str, trace_db: &str) -> Result
 // Introspection: Tables
 // ---------------------------------------------------------------------------
 
-async fn get_tables(
+pub(crate) async fn get_tables(
     client: &DbClient,
     conn_id: &str,
     trace_db: &str,

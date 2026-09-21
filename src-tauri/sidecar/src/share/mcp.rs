@@ -40,7 +40,7 @@ pub enum Outcome {
 /// What the dispatcher needs from the world; `LiveBackend` talks to the
 /// database, tests use a fake.
 pub trait ToolBackend: Send + Sync {
-    fn list_tables(&self) -> Vec<AllowedTable>;
+    fn list_tables(&self) -> impl Future<Output = Result<Vec<AllowedTable>, ToolError>> + Send;
     fn describe_table(&self, table: &str) -> impl Future<Output = Result<Value, ToolError>> + Send;
     fn table_ddl(&self, table: &str) -> impl Future<Output = Result<String, ToolError>> + Send;
     fn query(&self, sql: &str) -> impl Future<Output = Result<QueryResult, ToolError>> + Send;
@@ -49,8 +49,8 @@ pub trait ToolBackend: Send + Sync {
 pub struct LiveBackend<'a>(pub &'a Share);
 
 impl ToolBackend for LiveBackend<'_> {
-    fn list_tables(&self) -> Vec<AllowedTable> {
-        self.0.tables.clone()
+    async fn list_tables(&self) -> Result<Vec<AllowedTable>, ToolError> {
+        super::exec::list_tables(self.0).await
     }
 
     async fn describe_table(&self, table: &str) -> Result<Value, ToolError> {
@@ -99,30 +99,41 @@ fn table_arg_schema() -> Value {
 pub fn tool_definitions(share: &Share) -> Vec<Value> {
     let query_mode = if share.read_only {
         "This share is read-only: only SELECT / WITH / VALUES / EXPLAIN queries are allowed."
+    } else if share.full_database {
+        "SELECT, INSERT, UPDATE and DELETE are allowed in the shared database; DDL and other statements are rejected."
     } else {
         "SELECT, INSERT, UPDATE and DELETE are allowed on the shared tables only; DDL and other statements are rejected."
+    };
+    let scope = if share.full_database {
+        "Any table in the current database may be referenced."
+    } else {
+        "Only the shared tables may be referenced."
     };
     vec![
         json!({
             "name": "list_tables",
-            "description": "List the tables shared with this agent (name, schema, type). Only these tables can be queried.",
+            "description": if share.full_database {
+                "List tables in the shared database on demand (name, schema, type). No table list is required to create the share."
+            } else {
+                "List the tables shared with this agent (name, schema, type). Only these tables can be queried."
+            },
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
         json!({
             "name": "describe_table",
-            "description": "Columns, primary key, foreign keys (to other shared tables) and indexes of a shared table.",
+            "description": "Columns, primary key, foreign keys and indexes of an accessible table.",
             "inputSchema": table_arg_schema()
         }),
         json!({
             "name": "get_table_ddl",
-            "description": "The CREATE statement of a shared table.",
+            "description": "The CREATE statement of an accessible table.",
             "inputSchema": table_arg_schema()
         }),
         json!({
             "name": "query",
             "description": format!(
-                "Run exactly one SQL statement ({}) against the shared tables. {} Results are capped at {} rows; use LIMIT and WHERE to stay under the cap. Only the shared tables may be referenced.",
-                share.db_type.as_str(), query_mode, share.max_rows
+                "Run exactly one SQL statement ({}). {} Results are capped at {} rows; use LIMIT and WHERE to stay under the cap. {}",
+                share.db_type.as_str(), query_mode, share.max_rows, scope
             ),
             "inputSchema": {
                 "type": "object",
@@ -135,6 +146,16 @@ pub fn tool_definitions(share: &Share) -> Vec<Value> {
 }
 
 fn instructions(share: &Share) -> String {
+    if share.full_database {
+        return format!(
+            "SGSql shares the {} database \"{}\" ({}) with you. All tables in this database are accessible, including tables added later. {} Results are capped at {} rows. Use list_tables only when you need to discover table names; describe_table and get_table_ddl accept a table name directly.",
+            share.db_type.as_str(),
+            share.database,
+            share.connection_name,
+            if share.read_only { "Access is read-only." } else { "Reads and writes (INSERT/UPDATE/DELETE) are allowed." },
+            share.max_rows,
+        );
+    }
     format!(
         "SGSql shares the {} database \"{}\" ({}) with you. Shared tables: {}. {} Results are capped at {} rows. Use list_tables and describe_table to explore, then query.",
         share.db_type.as_str(),
@@ -199,7 +220,7 @@ async fn call_tool<B: ToolBackend>(share: &Share, id: Value, params: &Value, bac
     share.stats.touch();
 
     let result: Result<Value, ToolError> = match name {
-        "list_tables" => Ok(json!({ "tables": backend.list_tables() })),
+        "list_tables" => backend.list_tables().await.map(|tables| json!({ "tables": tables })),
         "describe_table" => match string_arg(params, "table") {
             Some(table) => backend.describe_table(table).await,
             None => return rpc_error(id, INVALID_PARAMS, "Missing required argument: table"),
@@ -266,6 +287,7 @@ mod tests {
             db_type: DbType::Postgres,
             database: "app".into(),
             default_schema: "public".into(),
+            full_database: false,
             allowed,
             tables,
             read_only,
@@ -284,8 +306,8 @@ mod tests {
     }
 
     impl ToolBackend for FakeBackend {
-        fn list_tables(&self) -> Vec<AllowedTable> {
-            vec![AllowedTable { schema: "public".into(), name: "users".into(), kind: "table".into() }]
+        async fn list_tables(&self) -> Result<Vec<AllowedTable>, ToolError> {
+            Ok(vec![AllowedTable { schema: "public".into(), name: "users".into(), kind: "table".into() }])
         }
 
         async fn describe_table(&self, table: &str) -> Result<Value, ToolError> {
@@ -364,6 +386,22 @@ mod tests {
         let v = response(&share(false), request("tools/list", Value::Null), &backend).await;
         let query = v["result"]["tools"].as_array().unwrap().iter().find(|t| t["name"] == "query").unwrap();
         assert!(query["description"].as_str().unwrap().contains("INSERT, UPDATE and DELETE"));
+    }
+
+    #[tokio::test]
+    async fn full_database_does_not_embed_a_table_snapshot_in_instructions() {
+        let mut share = share(true);
+        share.full_database = true;
+        share.tables.clear();
+        share.allowed.clear();
+        let backend = FakeBackend::default();
+        let initialized = response(&share, request("initialize", Value::Null), &backend).await;
+        let instructions = initialized["result"]["instructions"].as_str().unwrap();
+        assert!(instructions.contains("All tables in this database"));
+        assert!(!instructions.contains("users, orders"));
+        let listed = response(&share, request("tools/list", Value::Null), &backend).await;
+        let query = listed["result"]["tools"].as_array().unwrap().iter().find(|tool| tool["name"] == "query").unwrap();
+        assert!(query["description"].as_str().unwrap().contains("current database"));
     }
 
     #[tokio::test]

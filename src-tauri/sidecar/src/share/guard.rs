@@ -332,7 +332,7 @@ pub fn resolve_table_ref(share: &Share, raw: &str) -> Result<TableKey, GuardErro
 }
 
 fn ensure_allowed(share: &Share, key: TableKey, display: &str) -> Result<TableKey, GuardError> {
-    if share.allowed.contains(&key) {
+    if share.allows(&key) {
         Ok(key)
     } else {
         Err(GuardError::TableNotAllowed {
@@ -389,6 +389,7 @@ mod tests {
             db_type: db,
             database: "app".into(),
             default_schema: default_schema.into(),
+            full_database: false,
             allowed,
             tables,
             read_only,
@@ -406,6 +407,30 @@ mod tests {
 
     fn pg_rw() -> Share {
         share(DbType::Postgres, false, &[("", "users"), ("", "orders")])
+    }
+
+    fn full_db(db: DbType, read_only: bool) -> Share {
+        let mut share = share(db, read_only, &[]);
+        share.full_database = true;
+        share
+    }
+
+    #[test]
+    fn full_database_allows_unlisted_and_new_tables_but_keeps_sql_rules() {
+        let share = full_db(DbType::Postgres, true);
+        assert!(check(&share, "SELECT * FROM public.new_table").is_ok());
+        assert!(check(&share, "SELECT * FROM sales.orders").is_ok());
+        assert!(matches!(check(&share, "DELETE FROM public.new_table"), Err(GuardError::WriteInReadOnly)));
+        assert!(matches!(check(&share, "DROP TABLE public.new_table"), Err(GuardError::Forbidden(_))));
+        assert!(matches!(check(&share, "SELECT * FROM other.sales.orders"), Err(GuardError::UnsupportedQualifier(_))));
+    }
+
+    #[test]
+    fn full_mysql_database_does_not_grant_other_databases() {
+        let share = full_db(DbType::MySql, false);
+        assert!(check(&share, "SELECT * FROM app.new_table").is_ok());
+        assert!(check(&share, "INSERT INTO new_table (id) VALUES (1)").is_ok());
+        assert!(matches!(check(&share, "SELECT * FROM other.users"), Err(GuardError::TableNotAllowed { .. })));
     }
 
     fn tables(sql: &str, db: DbType) -> Vec<String> {

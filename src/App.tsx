@@ -21,7 +21,6 @@ import {
   FilePenLine,
   RefreshCw,
   Code2,
-  Bot,
 } from "lucide-react";
 import { DragDropProvider, type DragEndEvent } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
@@ -30,6 +29,7 @@ import { openConnectionManager } from "./lib/openConnectionManager";
 import { closeConnection, reloadConnection } from "./lib/schema";
 import { stopShare, type ShareInfo } from "./lib/shares";
 import { ShareConnectionModal } from "./components/ShareConnectionModal";
+import { McpIcon } from "./components/McpIcon";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useThemeStore, type ThemeMode, initTheme } from "./lib/theme";
 import { useWindowPersist } from "./lib/useWindowPersist";
@@ -939,7 +939,7 @@ function App() {
                 : "text-text-muted hover:text-text-secondary hover:bg-bg-hover"
             }`}
           >
-            <Bot size={14} />
+            <McpIcon size={14} />
           </button>
 
           {/* Reload active connection */}
@@ -1385,7 +1385,7 @@ function TabItem({
         </span>
       )}
       <span className="truncate font-medium">{tab.profile.name || "Untitled"}</span>
-      {tab.share && <Bot size={10} className="text-accent shrink-0" aria-label="Shared with AI agent" />}
+      {tab.share && <McpIcon size={10} className="text-accent shrink-0" aria-label="Shared with AI agent" />}
       <button
         onClick={(e) => { e.stopPropagation(); onClose(); }}
         title="Close tab"

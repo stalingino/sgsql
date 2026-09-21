@@ -84,7 +84,7 @@ The generated bundles are written to:
 
 ```text
 src-tauri/target/aarch64-apple-darwin/release/bundle/macos/SGSql.app
-src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/SGSql_2.0.1_aarch64.dmg
+src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/SGSql_2.0.2_aarch64.dmg
 ```
 
 Verify the completed application bundle before sharing it:
@@ -136,9 +136,11 @@ Developer ID certificate instead of the self-signed one described above.
 
 Any open connection can be shared with an AI coding agent (Claude Code,
 Cursor, Codex, …) as a local [MCP](https://modelcontextprotocol.io) server.
-Click the robot icon in the top-right toolbar, pick the tables the agent may
-see, choose **Read-only** (default) or read-write, and start sharing. The
-dialog shows a ready-to-paste config, for example:
+Click the MCP icon in the top-right toolbar, choose **Selected tables** or
+**Full database access**, choose **Read-only** (default) or read-write, and
+start sharing. Full database access does not enumerate tables when the share
+starts; it also covers tables added later. The dialog shows a ready-to-paste
+config, for example:
 
 ```bash
 claude mcp add --transport http sgsql-my-db http://127.0.0.1:45822/mcp/<share id> \
@@ -150,11 +152,14 @@ and `query` — and never sees your database credentials: the sidecar executes
 statements on its own dedicated connection and enforces the rules before
 anything reaches the database.
 
-- Every statement is parsed; only the shared tables may be referenced, one
-  statement per call, DDL / `SET` / `COPY` / transaction control and
+- Every statement is parsed; only selected tables or tables in the current
+  database (for full access) may be referenced, one statement per call.
+  DDL / `SET` / `COPY` / transaction control and
   side-effect functions (`pg_sleep`, `pg_terminate_backend`, `sleep`, …) are
   rejected. Read-only shares also run in a database-level read-only session.
 - Results are capped (500 rows by default) and each statement has a timeout.
+  The 500-table limit applies only to selected-table shares; full database
+  shares have no table-count limit. `list_tables` discovers names on demand.
 - Shares are session-only: they stop when the tab is closed or SGSql quits,
   and a new token is generated every time.
 - Agent statements show up in the query console like your own.
