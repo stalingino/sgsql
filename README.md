@@ -84,7 +84,7 @@ The generated bundles are written to:
 
 ```text
 src-tauri/target/aarch64-apple-darwin/release/bundle/macos/SGSql.app
-src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/SGSql_2.0.0_aarch64.dmg
+src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/SGSql_2.0.1_aarch64.dmg
 ```
 
 Verify the completed application bundle before sharing it:
