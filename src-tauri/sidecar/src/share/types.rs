@@ -102,6 +102,8 @@ pub struct Share {
     pub default_schema: String,
     /// Grants access to every table in this database without a snapshot allowlist.
     pub full_database: bool,
+    /// MySQL only: grants access to every database visible to the connection.
+    pub all_databases: bool,
     pub allowed: HashSet<TableKey>,
     pub tables: Vec<AllowedTable>,
     pub read_only: bool,
@@ -126,6 +128,7 @@ impl Share {
             "db": self.database,
             "url": self.url(),
             "fullDatabase": self.full_database,
+            "allDatabases": self.all_databases,
             "readOnly": self.read_only,
             "maxRows": self.max_rows,
             "timeoutMs": self.timeout_ms,
@@ -142,6 +145,9 @@ impl Share {
     /// Human-readable list of shared tables for error messages and the
     /// server instructions, e.g. `users, orders, sales.invoices`.
     pub fn table_list(&self) -> String {
+        if self.all_databases {
+            return "all databases accessible to this MySQL connection".to_string();
+        }
         if self.full_database {
             return "all tables in this database".to_string();
         }
@@ -159,6 +165,9 @@ impl Share {
     }
 
     pub fn allows(&self, key: &TableKey) -> bool {
+        if self.all_databases && self.db_type == DbType::MySql {
+            return true;
+        }
         if !self.full_database {
             return self.allowed.contains(key);
         }
@@ -194,6 +203,8 @@ pub struct CreateShareRequest {
     pub db: Option<String>,
     #[serde(default)]
     pub full_database: bool,
+    #[serde(default)]
+    pub all_databases: bool,
     #[serde(default)]
     pub tables: Vec<AllowedTable>,
     #[serde(default = "default_true")]

@@ -43,14 +43,20 @@ pub fn create(req: CreateShareRequest, profile: &ConnectionProfile) -> Result<Ar
     let db_type = DbType::parse(&profile.db_type)
         .ok_or_else(|| SidecarError::msg(format!("Unsupported connection type: {}", profile.db_type)))?;
 
-    if !req.full_database && req.tables.is_empty() {
+    if req.all_databases && db_type != DbType::MySql {
+        return Err(SidecarError::msg("All databases access is only supported for MySQL connections"));
+    }
+    if req.all_databases && req.full_database {
+        return Err(SidecarError::msg("Choose either full database or all databases access"));
+    }
+    if !req.full_database && !req.all_databases && req.tables.is_empty() {
         return Err(SidecarError::msg("Select at least one table to share"));
     }
-    if !req.full_database && req.tables.len() > MAX_TABLES {
+    if !req.full_database && !req.all_databases && req.tables.len() > MAX_TABLES {
         return Err(SidecarError::msg(format!("At most {MAX_TABLES} tables can be shared")));
     }
-    if req.full_database && !req.tables.is_empty() {
-        return Err(SidecarError::msg("Full database shares must not include a table list"));
+    if (req.full_database || req.all_databases) && !req.tables.is_empty() {
+        return Err(SidecarError::msg("Unrestricted database shares must not include a table list"));
     }
     if req.max_rows == 0 || req.max_rows > MAX_ROWS_LIMIT {
         return Err(SidecarError::msg(format!("maxRows must be between 1 and {MAX_ROWS_LIMIT}")));
@@ -101,6 +107,7 @@ pub fn create(req: CreateShareRequest, profile: &ConnectionProfile) -> Result<Ar
         database,
         default_schema,
         full_database: req.full_database,
+        all_databases: req.all_databases,
         allowed,
         tables,
         read_only: req.read_only,
@@ -161,6 +168,7 @@ mod tests {
             connection_id: "c1".into(),
             db: None,
             full_database,
+            all_databases: false,
             tables,
             read_only: true,
             max_rows: 500,
@@ -199,5 +207,36 @@ mod tests {
     fn full_database_rejects_a_redundant_table_list() {
         let table = AllowedTable { schema: "public".into(), name: "users".into(), kind: "table".into() };
         assert!(create(request(true, vec![table]), &profile()).is_err());
+    }
+
+    #[test]
+    fn all_databases_is_mysql_only_and_needs_no_table_snapshot() {
+        let mysql: ConnectionProfile = serde_json::from_value(serde_json::json!({
+            "id": "c1", "name": "Test", "type": "mysql", "database": "app"
+        })).unwrap();
+        let mut req = request(false, vec![]);
+        req.all_databases = true;
+        assert!(create(request(false, vec![]), &mysql).is_err());
+        let mut pg_req = request(false, vec![]);
+        pg_req.all_databases = true;
+        assert!(create(pg_req, &profile()).is_err());
+        let share = create(req, &mysql).unwrap();
+        assert!(share.all_databases);
+        assert!(share.tables.is_empty());
+        assert_eq!(share.info(false)["allDatabases"], true);
+        SHARES.lock().unwrap().remove(&share.id);
+    }
+
+    #[test]
+    fn all_databases_rejects_conflicting_scope_and_tables() {
+        let mysql: ConnectionProfile = serde_json::from_value(serde_json::json!({
+            "id": "c1", "name": "Test", "type": "mysql", "database": "app"
+        })).unwrap();
+        let mut req = request(true, vec![]);
+        req.all_databases = true;
+        assert!(create(req, &mysql).is_err());
+        let mut req = request(false, vec![AllowedTable { schema: "app".into(), name: "users".into(), kind: "table".into() }]);
+        req.all_databases = true;
+        assert!(create(req, &mysql).is_err());
     }
 }

@@ -84,7 +84,7 @@ The generated bundles are written to:
 
 ```text
 src-tauri/target/aarch64-apple-darwin/release/bundle/macos/SGSql.app
-src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/SGSql_2.0.2_aarch64.dmg
+src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/SGSql_2.0.3_aarch64.dmg
 ```
 
 Verify the completed application bundle before sharing it:
@@ -137,29 +137,33 @@ Developer ID certificate instead of the self-signed one described above.
 Any open connection can be shared with an AI coding agent (Claude Code,
 Cursor, Codex, …) as a local [MCP](https://modelcontextprotocol.io) server.
 Click the MCP icon in the top-right toolbar, choose **Selected tables** or
-**Full database access**, choose **Read-only** (default) or read-write, and
-start sharing. Full database access does not enumerate tables when the share
-starts; it also covers tables added later. The dialog shows a ready-to-paste
-config, for example:
+**Full database access** (the current database). MySQL connections also offer
+**All server databases** for every database the account can access. Choose
+**Read-only** (default) or read-write, and start sharing. Neither full-database
+nor all-server access enumerates tables when the share starts; both cover tables
+added later. The dialog shows a ready-to-paste config, for example:
 
 ```bash
 claude mcp add --transport http sgsql-my-db http://127.0.0.1:45822/mcp/<share id> \
   --header "Authorization: Bearer <token>"
 ```
 
-The agent gets four tools — `list_tables`, `describe_table`, `get_table_ddl`
-and `query` — and never sees your database credentials: the sidecar executes
-statements on its own dedicated connection and enforces the rules before
-anything reaches the database.
+The agent gets `list_tables`, `describe_table`, `get_table_ddl` and `query`;
+all-server MySQL shares also get `list_databases`. It never sees your database
+credentials: the sidecar executes statements on its own dedicated connection
+and enforces the rules before anything reaches the database.
 
-- Every statement is parsed; only selected tables or tables in the current
-  database (for full access) may be referenced, one statement per call.
+- Every statement is parsed; only selected tables, tables in the current
+  database (full access), or databases accessible to the MySQL account
+  (all-server access) may be referenced, one statement per call. Other MySQL
+  databases use qualified names such as `analytics.events`.
   DDL / `SET` / `COPY` / transaction control and
   side-effect functions (`pg_sleep`, `pg_terminate_backend`, `sleep`, …) are
   rejected. Read-only shares also run in a database-level read-only session.
 - Results are capped (500 rows by default) and each statement has a timeout.
   The 500-table limit applies only to selected-table shares; full database
-  shares have no table-count limit. `list_tables` discovers names on demand.
+  and all-server shares have no table-count limit. `list_databases` discovers
+  database names and `list_tables` discovers tables in one database on demand.
 - Shares are session-only: they stop when the tab is closed or SGSql quits,
   and a new token is generated every time.
 - Agent statements show up in the query console like your own.

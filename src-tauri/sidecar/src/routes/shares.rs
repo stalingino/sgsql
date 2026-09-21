@@ -41,7 +41,7 @@ pub async fn handle_create(bytes: Bytes) -> Response {
     println!("[mcp] share {} started for connection {} ({}, {})",
         share.id,
         share.connection_id,
-        if share.full_database { "full database".to_string() } else { format!("{} tables", share.tables.len()) },
+        if share.all_databases { "all databases".to_string() } else if share.full_database { "full database".to_string() } else { format!("{} tables", share.tables.len()) },
         if share.read_only { "read-only" } else { "read-write" });
     json_response(201, json!({ "share": share.info(true) }))
 }

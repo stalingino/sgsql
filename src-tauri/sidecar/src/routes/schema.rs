@@ -197,7 +197,7 @@ async fn dispatch(
 // Introspection: Databases
 // ---------------------------------------------------------------------------
 
-async fn database_names(client: &DbClient, conn_id: &str, trace_db: &str) -> Result<Vec<String>, SidecarError> {
+pub(crate) async fn database_names(client: &DbClient, conn_id: &str, trace_db: &str) -> Result<Vec<String>, SidecarError> {
     match client {
         DbClient::Postgres { .. } => {
             let rows = db::pg_fetch(

@@ -390,6 +390,7 @@ mod tests {
             database: "app".into(),
             default_schema: default_schema.into(),
             full_database: false,
+            all_databases: false,
             allowed,
             tables,
             read_only,
@@ -431,6 +432,16 @@ mod tests {
         assert!(check(&share, "SELECT * FROM app.new_table").is_ok());
         assert!(check(&share, "INSERT INTO new_table (id) VALUES (1)").is_ok());
         assert!(matches!(check(&share, "SELECT * FROM other.users"), Err(GuardError::TableNotAllowed { .. })));
+    }
+
+    #[test]
+    fn all_mysql_databases_allow_cross_database_queries_but_keep_sql_rules() {
+        let mut share = share(DbType::MySql, true, &[]);
+        share.all_databases = true;
+        assert!(check(&share, "SELECT * FROM other.users").is_ok());
+        assert!(check(&share, "SELECT * FROM app.users JOIN other.orders ON 1 = 1").is_ok());
+        assert!(matches!(check(&share, "DELETE FROM other.users"), Err(GuardError::WriteInReadOnly)));
+        assert!(matches!(check(&share, "DROP TABLE other.users"), Err(GuardError::Forbidden(_))));
     }
 
     fn tables(sql: &str, db: DbType) -> Vec<String> {

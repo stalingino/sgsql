@@ -40,7 +40,8 @@ pub enum Outcome {
 /// What the dispatcher needs from the world; `LiveBackend` talks to the
 /// database, tests use a fake.
 pub trait ToolBackend: Send + Sync {
-    fn list_tables(&self) -> impl Future<Output = Result<Vec<AllowedTable>, ToolError>> + Send;
+    fn list_databases(&self) -> impl Future<Output = Result<Vec<String>, ToolError>> + Send;
+    fn list_tables(&self, database: Option<&str>) -> impl Future<Output = Result<Vec<AllowedTable>, ToolError>> + Send;
     fn describe_table(&self, table: &str) -> impl Future<Output = Result<Value, ToolError>> + Send;
     fn table_ddl(&self, table: &str) -> impl Future<Output = Result<String, ToolError>> + Send;
     fn query(&self, sql: &str) -> impl Future<Output = Result<QueryResult, ToolError>> + Send;
@@ -49,8 +50,12 @@ pub trait ToolBackend: Send + Sync {
 pub struct LiveBackend<'a>(pub &'a Share);
 
 impl ToolBackend for LiveBackend<'_> {
-    async fn list_tables(&self) -> Result<Vec<AllowedTable>, ToolError> {
-        super::exec::list_tables(self.0).await
+    async fn list_databases(&self) -> Result<Vec<String>, ToolError> {
+        super::exec::list_databases(self.0).await
+    }
+
+    async fn list_tables(&self, database: Option<&str>) -> Result<Vec<AllowedTable>, ToolError> {
+        super::exec::list_tables(self.0, database).await
     }
 
     async fn describe_table(&self, table: &str) -> Result<Value, ToolError> {
@@ -88,7 +93,7 @@ fn table_arg_schema() -> Value {
         "properties": {
             "table": {
                 "type": "string",
-                "description": "Table name, optionally schema-qualified (e.g. \"orders\" or \"sales.invoices\")."
+                "description": "Table name, optionally schema- or database-qualified (e.g. \"orders\" or \"sales.invoices\")."
             }
         },
         "required": ["table"],
@@ -99,25 +104,45 @@ fn table_arg_schema() -> Value {
 pub fn tool_definitions(share: &Share) -> Vec<Value> {
     let query_mode = if share.read_only {
         "This share is read-only: only SELECT / WITH / VALUES / EXPLAIN queries are allowed."
+    } else if share.all_databases {
+        "SELECT, INSERT, UPDATE and DELETE are allowed in databases accessible to this MySQL connection; DDL and other statements are rejected."
     } else if share.full_database {
         "SELECT, INSERT, UPDATE and DELETE are allowed in the shared database; DDL and other statements are rejected."
     } else {
         "SELECT, INSERT, UPDATE and DELETE are allowed on the shared tables only; DDL and other statements are rejected."
     };
-    let scope = if share.full_database {
+    let scope = if share.all_databases {
+        "Any table in a database accessible to this MySQL connection may be referenced; qualify tables outside the default database as database.table."
+    } else if share.full_database {
         "Any table in the current database may be referenced."
     } else {
         "Only the shared tables may be referenced."
     };
-    vec![
+    let mut tools = vec![];
+    if share.all_databases {
+        tools.push(json!({
+            "name": "list_databases",
+            "description": "List MySQL databases visible to this connection on demand. Database permissions still apply.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }));
+    }
+    tools.extend([
         json!({
             "name": "list_tables",
-            "description": if share.full_database {
+            "description": if share.all_databases {
+                "List tables in one MySQL database on demand. Omit database to use the connection's default database."
+            } else if share.full_database {
                 "List tables in the shared database on demand (name, schema, type). No table list is required to create the share."
             } else {
                 "List the tables shared with this agent (name, schema, type). Only these tables can be queried."
             },
-            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+            "inputSchema": if share.all_databases {
+                json!({ "type": "object", "properties": {
+                    "database": { "type": "string", "description": "MySQL database to list; defaults to the connection's current database." }
+                }, "additionalProperties": false })
+            } else {
+                json!({ "type": "object", "properties": {}, "additionalProperties": false })
+            }
         }),
         json!({
             "name": "describe_table",
@@ -142,10 +167,20 @@ pub fn tool_definitions(share: &Share) -> Vec<Value> {
                 "additionalProperties": false
             }
         }),
-    ]
+    ]);
+    tools
 }
 
 fn instructions(share: &Share) -> String {
+    if share.all_databases {
+        return format!(
+            "SGSql shares all MySQL databases visible to this connection ({}) with you. The default database is \"{}\"; qualify tables in other databases as database.table. Database account permissions still apply. {} Results are capped at {} rows. Use list_databases and list_tables only when discovery is needed; describe_table and get_table_ddl accept qualified table names directly.",
+            share.connection_name,
+            share.database,
+            if share.read_only { "Access is read-only." } else { "Reads and writes (INSERT/UPDATE/DELETE) are allowed." },
+            share.max_rows,
+        );
+    }
     if share.full_database {
         return format!(
             "SGSql shares the {} database \"{}\" ({}) with you. All tables in this database are accessible, including tables added later. {} Results are capped at {} rows. Use list_tables only when you need to discover table names; describe_table and get_table_ddl accept a table name directly.",
@@ -220,7 +255,8 @@ async fn call_tool<B: ToolBackend>(share: &Share, id: Value, params: &Value, bac
     share.stats.touch();
 
     let result: Result<Value, ToolError> = match name {
-        "list_tables" => backend.list_tables().await.map(|tables| json!({ "tables": tables })),
+        "list_databases" if share.all_databases => backend.list_databases().await.map(|databases| json!({ "databases": databases })),
+        "list_tables" => backend.list_tables(string_arg(params, "database")).await.map(|tables| json!({ "tables": tables })),
         "describe_table" => match string_arg(params, "table") {
             Some(table) => backend.describe_table(table).await,
             None => return rpc_error(id, INVALID_PARAMS, "Missing required argument: table"),
@@ -288,6 +324,7 @@ mod tests {
             database: "app".into(),
             default_schema: "public".into(),
             full_database: false,
+            all_databases: false,
             allowed,
             tables,
             read_only,
@@ -302,11 +339,17 @@ mod tests {
     #[derive(Default)]
     struct FakeBackend {
         queries: Mutex<Vec<String>>,
+        list_calls: Mutex<Vec<Option<String>>>,
         fail_with: Option<fn() -> ToolError>,
     }
 
     impl ToolBackend for FakeBackend {
-        async fn list_tables(&self) -> Result<Vec<AllowedTable>, ToolError> {
+        async fn list_databases(&self) -> Result<Vec<String>, ToolError> {
+            Ok(vec!["app".into(), "other".into()])
+        }
+
+        async fn list_tables(&self, database: Option<&str>) -> Result<Vec<AllowedTable>, ToolError> {
+            self.list_calls.lock().unwrap().push(database.map(str::to_string));
             Ok(vec![AllowedTable { schema: "public".into(), name: "users".into(), kind: "table".into() }])
         }
 
@@ -402,6 +445,34 @@ mod tests {
         let listed = response(&share, request("tools/list", Value::Null), &backend).await;
         let query = listed["result"]["tools"].as_array().unwrap().iter().find(|tool| tool["name"] == "query").unwrap();
         assert!(query["description"].as_str().unwrap().contains("current database"));
+    }
+
+    #[tokio::test]
+    async fn all_databases_advertises_discovery_without_a_table_snapshot() {
+        let mut instance_share = share(true);
+        instance_share.db_type = DbType::MySql;
+        instance_share.database = "app".into();
+        instance_share.default_schema = "app".into();
+        instance_share.all_databases = true;
+        instance_share.tables.clear();
+        instance_share.allowed.clear();
+        let backend = FakeBackend::default();
+        let initialized = response(&instance_share, request("initialize", Value::Null), &backend).await;
+        let instructions = initialized["result"]["instructions"].as_str().unwrap();
+        assert!(instructions.contains("database.table"));
+        assert!(!instructions.contains("users, orders"));
+        let listed = response(&instance_share, request("tools/list", Value::Null), &backend).await;
+        let tools = listed["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 5);
+        assert!(tools.iter().any(|tool| tool["name"] == "list_databases"));
+        let found = response(&instance_share, request("tools/call", json!({ "name": "list_databases" })), &backend).await;
+        assert!(found["result"]["content"][0]["text"].as_str().unwrap().contains("other"));
+        let listed = response(&instance_share, request("tools/call", json!({ "name": "list_tables", "arguments": { "database": "other" } })), &backend).await;
+        assert!(listed["result"].get("isError").is_none());
+        assert_eq!(backend.list_calls.lock().unwrap().as_slice(), [Some("other".to_string())]);
+        let normal = share(true);
+        let hidden = response(&normal, request("tools/call", json!({ "name": "list_databases" })), &backend).await;
+        assert_eq!(hidden["error"]["code"], INVALID_PARAMS);
     }
 
     #[tokio::test]

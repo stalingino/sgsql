@@ -22,11 +22,13 @@ interface Props {
 
 const TIMEOUTS = [5_000, 15_000, 30_000, 60_000];
 
-function limitations(fullDatabase: boolean): string {
+type ShareScope = "selected" | "full" | "instance";
+
+function limitations(scope: ShareScope): string {
   return "Enforced by SGSql before each statement reaches the database: one statement per call, " +
-    (fullDatabase ? "only the current database" : "only the selected tables") +
+    (scope === "instance" ? "only databases accessible to this MySQL connection" : scope === "full" ? "only the current database" : "only the selected tables") +
     ", DDL and side-effect functions rejected." +
-    (fullDatabase ? "" : " Shared views may still read tables that are not shared.");
+    (scope === "selected" ? " Shared views may still read tables that are not shared." : "");
 }
 
 function tableKey(table: ShareTable): string {
@@ -64,8 +66,9 @@ export function ShareConnectionModal({ open, connectionId, profile, db, share, o
 
 function SetupView({ connectionId, profile, db, onStarted, onClose }: Pick<Props, "connectionId" | "profile" | "db" | "onStarted" | "onClose">) {
   const [tables, setTables] = useState<ShareTable[] | null>(null);
-  const [scope, setScope] = useState<"full" | "selected" | null>(null);
+  const [scope, setScope] = useState<ShareScope | null>(null);
   const fullDatabase = scope === "full";
+  const allDatabases = scope === "instance";
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
   const [readOnly, setReadOnly] = useState(true);
@@ -127,14 +130,15 @@ function SetupView({ connectionId, profile, db, onStarted, onClose }: Pick<Props
 
   const start = async () => {
     if (!scope) return;
-    if (!fullDatabase && (!tables || selected.size === 0)) return;
+    if (scope === "selected" && (!tables || selected.size === 0)) return;
     setWorking(true); setError(null);
     try {
       const share = await createShare({
         connectionId,
         db: profile.type === "mysql" ? db : undefined,
         fullDatabase,
-        tables: fullDatabase ? [] : tables!.filter((table) => selected.has(tableKey(table))),
+        allDatabases,
+        tables: scope === "selected" ? tables!.filter((table) => selected.has(tableKey(table))) : [],
         readOnly,
         maxRows,
         timeoutMs,
@@ -156,11 +160,15 @@ function SetupView({ connectionId, profile, db, onStarted, onClose }: Pick<Props
         Starts a local MCP server bound to this connection. Your database credentials are never shared.
       </p>
 
-      <div className="grid grid-cols-2 gap-2">
+      <div className={`grid grid-cols-1 gap-2 ${profile.type === "mysql" ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
         <button type="button" onClick={() => { setError(null); setScope("full"); }} className={`rounded border p-2 text-left cursor-pointer ${fullDatabase ? "border-accent bg-accent/10" : "border-border hover:bg-bg-hover"}`}>
           <span className="text-xs font-medium text-text-primary">Full database access</span>
-          <span className="block text-[10px] text-text-muted mt-0.5">All tables, including new ones. No table list is sent when sharing starts.</span>
+          <span className="block text-[10px] text-text-muted mt-0.5">All tables in the current database, including new ones. No table snapshot.</span>
         </button>
+        {profile.type === "mysql" && <button type="button" onClick={() => { setError(null); setScope("instance"); }} className={`rounded border p-2 text-left cursor-pointer ${allDatabases ? "border-accent bg-accent/10" : "border-border hover:bg-bg-hover"}`}>
+          <span className="text-xs font-medium text-text-primary">All server databases</span>
+          <span className="block text-[10px] text-text-muted mt-0.5">Every database this MySQL account can access, including new tables. No table snapshot.</span>
+        </button>}
         <button type="button" onClick={() => { setError(null); setScope("selected"); }} className={`rounded border p-2 text-left cursor-pointer ${scope === "selected" ? "border-accent bg-accent/10" : "border-border hover:bg-bg-hover"}`}>
           <span className="text-xs font-medium text-text-primary">Selected tables</span>
           <span className="block text-[10px] text-text-muted mt-0.5">Limit agent access to the tables you choose below.</span>
@@ -214,7 +222,7 @@ function SetupView({ connectionId, profile, db, onStarted, onClose }: Pick<Props
           <span className="flex flex-col">
             <span className="text-xs text-text-primary">Read-only</span>
             <span className="text-[10px] text-text-muted">Only SELECT / WITH / EXPLAIN queries are executed.</span>
-            {!readOnly && <span className="flex items-center gap-1 text-[10px] text-warning mt-0.5"><AlertTriangle size={10} />The agent can INSERT, UPDATE and DELETE rows in {fullDatabase ? "the entire database" : "the selected tables"}.</span>}
+            {!readOnly && <span className="flex items-center gap-1 text-[10px] text-warning mt-0.5"><AlertTriangle size={10} />The agent can INSERT, UPDATE and DELETE rows in {allDatabases ? "all databases this account can access" : fullDatabase ? "the entire database" : "the selected tables"}.</span>}
           </span>
         </label>
         <label className="flex flex-col gap-1">
@@ -228,7 +236,7 @@ function SetupView({ connectionId, profile, db, onStarted, onClose }: Pick<Props
           </select>
         </label>
       </div>
-      {scope && <p className="text-[10px] text-text-muted">{limitations(fullDatabase)}</p>}
+      {scope && <p className="text-[10px] text-text-muted">{limitations(scope)}</p>}
     </div>
     <div className="flex justify-end gap-2 p-4 border-t border-border">
       <button onClick={onClose} className="px-3 py-1.5 border border-border rounded text-xs cursor-pointer">Cancel</button>
@@ -301,11 +309,11 @@ function ActiveView({ share, profile, onStopped, onClose }: { share: ShareInfo; 
     <div className="flex flex-col min-h-0 p-4 gap-3 overflow-auto">
       <div className="flex items-center gap-2 text-xs">
         <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full rounded-full bg-success opacity-60 animate-ping" /><span className="relative inline-flex h-2 w-2 rounded-full bg-success" /></span>
-        <span className="text-text-primary">Sharing {share.fullDatabase ? "the full database" : `${share.tables.length} ${share.tables.length === 1 ? "table" : "tables"}`} ({share.readOnly ? "read-only" : "read-write"})</span>
+        <span className="text-text-primary">Sharing {share.allDatabases ? "all accessible server databases" : share.fullDatabase ? "the full database" : `${share.tables.length} ${share.tables.length === 1 ? "table" : "tables"}`} ({share.readOnly ? "read-only" : "read-write"})</span>
         <span className="ml-auto text-[11px] text-text-muted">{stats.calls} calls · {stats.rejected} rejected · {stats.errors} errors</span>
       </div>
 
-      {!share.fullDatabase && <Chips items={share.tables.map((table) => (profile.type === "postgres" && table.schema !== "public" ? `${table.schema}.${table.name}` : table.name))} />}
+      {!share.fullDatabase && !share.allDatabases && <Chips items={share.tables.map((table) => (profile.type === "postgres" && table.schema !== "public" ? `${table.schema}.${table.name}` : table.name))} />}
 
       <div className="flex items-center gap-1">
         {tabButton("claude", "Claude Code")}
@@ -324,7 +332,7 @@ function ActiveView({ share, profile, onStopped, onClose }: { share: ShareInfo; 
         <span>Timeout</span><span className="text-text-secondary">{share.timeoutMs / 1000} s per statement</span>
       </div>
       <p className="text-[10px] text-text-muted">
-        Session only — sharing stops when this tab is closed or SGSql quits, and the token changes each time. Agent queries appear in the query console. {limitations(share.fullDatabase)}
+        Session only — sharing stops when this tab is closed or SGSql quits, and the token changes each time. Agent queries appear in the query console. {limitations(share.allDatabases ? "instance" : share.fullDatabase ? "full" : "selected")}
       </p>
     </div>
     <div className="flex justify-end gap-2 p-4 border-t border-border">

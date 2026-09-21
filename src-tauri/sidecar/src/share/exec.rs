@@ -294,7 +294,7 @@ pub async fn run(share: &Share, sql: &str) -> Result<QueryResult, ToolError> {
 // ---------------------------------------------------------------------------
 
 fn allowed_entry(share: &Share, key: &TableKey) -> Option<AllowedTable> {
-    if share.full_database {
+    if share.full_database || share.all_databases {
         return Some(AllowedTable { schema: key.schema.clone(), name: key.name.clone(), kind: "table".into() });
     }
     share.tables.iter().find(|t| TableKey::new(&t.schema, &t.name) == *key).cloned()
@@ -439,11 +439,14 @@ fn normalize_indexes(share: &Share, raw: &Value) -> Vec<Value> {
 
 async fn metadata_entry(share: &Share, table: &str, key: &TableKey, client: &DbClient) -> Result<AllowedTable, ToolError> {
     let mut entry = allowed_entry(share, key).ok_or(ToolError::Rejected(format!("Table \"{table}\" is not shared.")))?;
-    if !share.full_database {
+    if !share.full_database && !share.all_databases {
         return Ok(entry);
     }
+    if share.all_databases {
+        entry.schema = mysql_database_name(share, client, &entry.schema).await?;
+    }
     // Resolve the canonical name and type only for the requested schema.
-    // Full-database shares need no table snapshot at creation time.
+    // Unrestricted shares need no table snapshot at creation time.
     let (db_name, schema_name) = introspection_scope(share, &entry);
     let listing = schema::get_tables(client, &share.connection_id, &trace_db(share), db_name, schema_name).await?;
     let found = listing["tables"].as_array().and_then(|tables| tables.iter().find(|candidate| {
@@ -497,14 +500,38 @@ pub async fn table_ddl(share: &Share, table: &str) -> Result<String, ToolError> 
     Ok(s(&raw, "ddl"))
 }
 
-pub async fn list_tables(share: &Share) -> Result<Vec<AllowedTable>, ToolError> {
-    if !share.full_database {
+async fn mysql_database_name(share: &Share, client: &DbClient, requested: &str) -> Result<String, ToolError> {
+    let names = schema::database_names(client, &share.connection_id, &trace_db(share)).await?;
+    names.iter().find(|name| *name == requested)
+        .or_else(|| names.iter().find(|name| name.eq_ignore_ascii_case(requested)))
+        .cloned()
+        .ok_or_else(|| ToolError::Rejected(format!("Database \"{requested}\" is not accessible to this connection.")))
+}
+
+pub async fn list_databases(share: &Share) -> Result<Vec<String>, ToolError> {
+    if !share.all_databases {
+        return Err(ToolError::Rejected("Database listing is only available for all-databases shares.".into()));
+    }
+    let pooled = pooled_client(share).await?;
+    Ok(schema::database_names(&pooled.client, &share.connection_id, &trace_db(share)).await?)
+}
+
+pub async fn list_tables(share: &Share, database: Option<&str>) -> Result<Vec<AllowedTable>, ToolError> {
+    if database.is_some() && !share.all_databases {
+        return Err(ToolError::Rejected("A database argument is only available for all-databases shares.".into()));
+    }
+    if !share.full_database && !share.all_databases {
         return Ok(share.tables.clone());
     }
     let pooled = pooled_client(share).await?;
+    let mysql_db = if share.all_databases {
+        mysql_database_name(share, &pooled.client, database.unwrap_or(&share.database)).await?
+    } else {
+        share.database.clone()
+    };
     let listing = match share.db_type {
         DbType::Postgres => schema::get_catalog(&pooled.client, &share.connection_id, &trace_db(share), Some(&share.database)).await?,
-        DbType::MySql => schema::get_tables(&pooled.client, &share.connection_id, &trace_db(share), Some(&share.database), None).await?,
+        DbType::MySql => schema::get_tables(&pooled.client, &share.connection_id, &trace_db(share), Some(&mysql_db), None).await?,
         DbType::Sqlite => schema::get_tables(&pooled.client, &share.connection_id, &trace_db(share), None, None).await?,
     };
     Ok(listing["tables"]
@@ -514,7 +541,8 @@ pub async fn list_tables(share: &Share) -> Result<Vec<AllowedTable>, ToolError> 
         .map(|table| AllowedTable {
             schema: match share.db_type {
                 DbType::Postgres => s(table, "schema"),
-                DbType::MySql | DbType::Sqlite => share.default_schema.clone(),
+                DbType::MySql => mysql_db.clone(),
+                DbType::Sqlite => share.default_schema.clone(),
             },
             name: s(table, "name"),
             kind: if s(table, "type").to_uppercase().contains("VIEW") { "view" } else { "table" }.into(),
@@ -543,16 +571,17 @@ mod tests {
             connection_id: profile.id.clone(),
             db: None,
             full_database: true,
+            all_databases: false,
             tables: vec![],
             read_only: true,
             max_rows: 500,
             timeout_ms: 15_000,
         }, &profile).unwrap();
         ensure_open(&share).await.unwrap();
-        assert_eq!(list_tables(&share).await.unwrap().len(), 1);
+        assert_eq!(list_tables(&share, None).await.unwrap().len(), 1);
 
         sqlx::query("CREATE TABLE second_table (id INTEGER PRIMARY KEY)").execute(sqlite_pool).await.unwrap();
-        assert_eq!(list_tables(&share).await.unwrap().len(), 2);
+        assert_eq!(list_tables(&share, None).await.unwrap().len(), 2);
         assert!(run(&share, "SELECT * FROM second_table").await.is_ok());
         assert_eq!(describe_table(&share, "second_table").await.unwrap()["table"], "second_table");
         assert!(table_ddl(&share, "second_table").await.unwrap().contains("CREATE TABLE"));
