@@ -132,6 +132,38 @@ Privacy & Security (right-click → Open). To distribute the application
 without that manual approval, code-sign and notarize it with an Apple
 Developer ID certificate instead of the self-signed one described above.
 
+## Share a connection with an AI agent
+
+Any open connection can be shared with an AI coding agent (Claude Code,
+Cursor, Codex, …) as a local [MCP](https://modelcontextprotocol.io) server.
+Click the robot icon in the top-right toolbar, pick the tables the agent may
+see, choose **Read-only** (default) or read-write, and start sharing. The
+dialog shows a ready-to-paste config, for example:
+
+```bash
+claude mcp add --transport http sgsql-my-db http://127.0.0.1:45822/mcp/<share id> \
+  --header "Authorization: Bearer <token>"
+```
+
+The agent gets four tools — `list_tables`, `describe_table`, `get_table_ddl`
+and `query` — and never sees your database credentials: the sidecar executes
+statements on its own dedicated connection and enforces the rules before
+anything reaches the database.
+
+- Every statement is parsed; only the shared tables may be referenced, one
+  statement per call, DDL / `SET` / `COPY` / transaction control and
+  side-effect functions (`pg_sleep`, `pg_terminate_backend`, `sleep`, …) are
+  rejected. Read-only shares also run in a database-level read-only session.
+- Results are capped (500 rows by default) and each statement has a timeout.
+- Shares are session-only: they stop when the tab is closed or SGSql quits,
+  and a new token is generated every time.
+- Agent statements show up in the query console like your own.
+- The MCP listener binds `127.0.0.1:45822` (falls back to a free port if it is
+  taken) and refuses browser origins; each share has its own bearer token.
+
+Known limitations: a shared *view* may read tables that are not shared, and
+SQL the parser does not understand is rejected rather than executed.
+
 ## Releases and auto-update
 
 Tagged pushes (`vX.Y.Z`) trigger [`.github/workflows/release.yml`](.github/workflows/release.yml),

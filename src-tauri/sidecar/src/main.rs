@@ -3,6 +3,7 @@ mod db;
 mod error;
 mod pool;
 mod routes;
+mod share;
 mod ssh;
 mod trace;
 mod types;
@@ -58,7 +59,7 @@ async fn main() {
             HeaderValue::from_static("http://tauri.localhost"),
             HeaderValue::from_static("http://localhost:5173"),
         ])
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
 
     let app = Router::new()
@@ -74,6 +75,8 @@ async fn main() {
         .route("/query-log", any(routes::ws::handle_query_log))
         .route("/schema/{connId}/apply", post(routes::apply::handle_schema_apply))
         .route("/schema/{connId}/{action}", get(routes::schema::handle_schema_request))
+        .route("/shares", post(routes::shares::handle_create).get(routes::shares::handle_list))
+        .route("/shares/{id}", get(routes::shares::handle_get).delete(routes::shares::handle_delete))
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(auth, auth::require_auth))
         .layer(cors);
@@ -83,6 +86,19 @@ async fn main() {
         .unwrap_or_else(|e| panic!("failed to bind port {port}: {e}"));
 
     println!("sgsql-sidecar listening on port {port}");
+
+    // Agent (MCP) listener: separate port, per-share tokens, no app CORS.
+    match share::server::bind().await {
+        Ok(mcp_listener) => {
+            println!("sgsql-sidecar mcp listening on port {}", share::server::mcp_port());
+            tokio::spawn(async move {
+                if let Err(error) = axum::serve(mcp_listener, share::server::router()).await {
+                    eprintln!("[mcp] server error: {error}");
+                }
+            });
+        }
+        Err(error) => eprintln!("[mcp] failed to bind agent listener: {error}"),
+    }
 
     axum::serve(listener, app).await.expect("server error");
 }

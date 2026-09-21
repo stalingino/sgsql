@@ -30,3 +30,8 @@ bigdecimal = "0.4"
 thiserror = "2"
 futures = "0.3"
 subtle = "2"
+sqlparser = { version = "0.63", features = ["visitor"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

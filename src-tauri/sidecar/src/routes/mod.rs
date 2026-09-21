@@ -4,6 +4,7 @@ pub mod connections;
 pub mod health;
 pub mod query;
 pub mod schema;
+pub mod shares;
 pub mod users;
 pub mod ws;
 

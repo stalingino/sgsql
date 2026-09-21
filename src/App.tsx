@@ -21,12 +21,15 @@ import {
   FilePenLine,
   RefreshCw,
   Code2,
+  Bot,
 } from "lucide-react";
 import { DragDropProvider, type DragEndEvent } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
 import { waitForSidecar, CONNECTION_RESTORED_EVENT } from "./lib/sidecar";
 import { openConnectionManager } from "./lib/openConnectionManager";
 import { closeConnection, reloadConnection } from "./lib/schema";
+import { stopShare, type ShareInfo } from "./lib/shares";
+import { ShareConnectionModal } from "./components/ShareConnectionModal";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useThemeStore, type ThemeMode, initTheme } from "./lib/theme";
 import { useWindowPersist } from "./lib/useWindowPersist";
@@ -86,6 +89,8 @@ interface Tab {
   workspaces: Record<string, DbWorkspace>;
   /** Server-scoped views replace the db workspace in the main area. */
   mainView: "workspace" | "users";
+  /** Active MCP share for an AI agent, if any (session-only). */
+  share: ShareInfo | null;
 }
 
 let tabCounter = 0;
@@ -150,6 +155,7 @@ function App() {
   const [cellRevealRequest, setCellRevealRequest] = useState<CellRevealRequest | null>(null);
   const cellRevealRequestIdRef = useRef(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState<false | "all" | "db-only">(false);
   const [reconnectNotice, setReconnectNotice] = useState<string | null>(null);
@@ -433,6 +439,7 @@ function App() {
           activeDbName: profile.database || null,
           workspaces: initialWorkspaces,
           mainView: "workspace",
+          share: null,
         };
 
         setTabs((prev) => [...prev, newTab]);
@@ -456,6 +463,7 @@ function App() {
   const closeTab = useCallback((tabId: string) => {
     const tab = tabsRef.current.find((t) => t.id === tabId);
     if (tab) void Promise.all(saveTabQueries(tab));
+    if (tab?.share) stopShare(tab.share.id).catch(() => {});
     if (tab?.connectionId) {
       openedConnectionIdsRef.current.delete(tab.connectionId);
       closeConnection(tab.connectionId).catch(() => {});
@@ -920,6 +928,20 @@ function App() {
           {/* Spacer */}
           <div className="w-px h-4 bg-border mx-1" />
 
+          {/* Share with AI agent */}
+          <button
+            onClick={() => setShareModalOpen(true)}
+            disabled={!activeTab?.connectionId}
+            title={activeTab?.share ? "Sharing with AI agent" : "Share with AI agent"}
+            className={`flex items-center p-1.5 rounded-md transition-colors cursor-pointer disabled:opacity-35 disabled:cursor-default disabled:hover:bg-transparent ${
+              activeTab?.share
+                ? "text-accent bg-accent/10 hover:bg-accent/20"
+                : "text-text-muted hover:text-text-secondary hover:bg-bg-hover"
+            }`}
+          >
+            <Bot size={14} />
+          </button>
+
           {/* Reload active connection */}
           <button
             onClick={reloadActiveConnection}
@@ -982,6 +1004,20 @@ function App() {
         onShowShortcuts={() => { setSettingsOpen(false); setShortcutsOpen(true); }}
       />
       <KeyboardShortcutsModal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+
+      {/* Share with AI agent */}
+      {activeTab?.connectionId && (
+        <ShareConnectionModal
+          open={shareModalOpen}
+          connectionId={activeTab.connectionId}
+          profile={activeTab.profile}
+          db={activeTab.activeDbName ?? activeTab.profile.database}
+          share={activeTab.share}
+          onStarted={(share) => setTabs((prev) => prev.map((t) => (t.id === activeTab.id ? { ...t, share } : t)))}
+          onStopped={() => setTabs((prev) => prev.map((t) => (t.id === activeTab.id ? { ...t, share: null } : t)))}
+          onClose={() => setShareModalOpen(false)}
+        />
+      )}
 
       {/* Command Palette */}
       {commandPaletteOpen && activeTab?.connectionId && (
@@ -1349,6 +1385,7 @@ function TabItem({
         </span>
       )}
       <span className="truncate font-medium">{tab.profile.name || "Untitled"}</span>
+      {tab.share && <Bot size={10} className="text-accent shrink-0" aria-label="Shared with AI agent" />}
       <button
         onClick={(e) => { e.stopPropagation(); onClose(); }}
         title="Close tab"

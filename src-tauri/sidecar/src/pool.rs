@@ -100,6 +100,7 @@ pub async fn close_connection(id: &str) -> bool {
     let Some(record) = get_record(id) else {
         return false;
     };
+    crate::share::registry::remove_for_connection(id).await;
     close_entry(&record.entry).await;
     let mut map = POOL.lock().unwrap();
     if let Some(current) = map.get(id) {

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::extract::{Request, State};
 use axum::http::header::{AUTHORIZATION, ORIGIN, SEC_WEBSOCKET_PROTOCOL};
+use axum::http::HeaderMap;
 use axum::middleware::Next;
 use axum::response::Response;
 use subtle::ConstantTimeEq;
@@ -28,9 +29,8 @@ impl AuthState {
     }
 }
 
-fn bearer_token(request: &Request) -> Option<&str> {
-    request
-        .headers()
+pub fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
         .get(AUTHORIZATION)?
         .to_str()
         .ok()?
@@ -48,7 +48,7 @@ fn websocket_token(request: &Request) -> Option<&str> {
         .find_map(|protocol| protocol.strip_prefix(WEBSOCKET_AUTH_PREFIX))
 }
 
-fn token_matches(candidate: Option<&str>, expected: &str) -> bool {
+pub fn token_matches(candidate: Option<&str>, expected: &str) -> bool {
     candidate
         .filter(|value| value.len() == expected.len())
         .is_some_and(|value| value.as_bytes().ct_eq(expected.as_bytes()).into())
@@ -67,7 +67,7 @@ pub async fn require_auth(State(auth): State<AuthState>, request: Request, next:
         return routes::error_response("origin not allowed", 403);
     }
 
-    let authorized = token_matches(bearer_token(&request), &auth.token)
+    let authorized = token_matches(bearer_token(request.headers()), &auth.token)
         || token_matches(websocket_token(&request), &auth.token);
     if !authorized {
         return routes::error_response("unauthorized", 401);
@@ -98,7 +98,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        assert!(token_matches(bearer_token(&request), TOKEN));
+        assert!(token_matches(bearer_token(request.headers()), TOKEN));
     }
 
     #[test]
@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_or_partial_tokens() {
-        assert!(!token_matches(bearer_token(&request()), TOKEN));
+        assert!(!token_matches(bearer_token(request().headers()), TOKEN));
         assert!(!token_matches(Some(&TOKEN[..TOKEN.len() - 1]), TOKEN));
     }
 

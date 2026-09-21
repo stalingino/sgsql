@@ -508,7 +508,7 @@ async fn get_schema_objects(
 // Introspection: Columns
 // ---------------------------------------------------------------------------
 
-async fn get_columns(
+pub(crate) async fn get_columns(
     client: &DbClient,
     conn_id: &str,
     trace_db: &str,
@@ -627,7 +627,7 @@ async fn get_columns(
 // Introspection: Indexes
 // ---------------------------------------------------------------------------
 
-async fn get_indexes(
+pub(crate) async fn get_indexes(
     client: &DbClient,
     conn_id: &str,
     trace_db: &str,
@@ -699,7 +699,7 @@ async fn get_indexes(
 // Introspection: Foreign Keys
 // ---------------------------------------------------------------------------
 
-async fn get_foreign_keys(
+pub(crate) async fn get_foreign_keys(
     client: &DbClient,
     conn_id: &str,
     trace_db: &str,
@@ -808,7 +808,7 @@ async fn get_table_artifacts(
     Ok(json!({ "triggers": triggers }))
 }
 
-async fn get_table_ddl(
+pub(crate) async fn get_table_ddl(
     client: &DbClient,
     conn_id: &str,
     trace_db: &str,
