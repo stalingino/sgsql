@@ -19,6 +19,8 @@ import {
   Network,
   ChevronRight,
   ChevronDown,
+  ChevronUp,
+  Check,
   Folder,
   FolderOpen,
   Pencil,
@@ -80,7 +82,8 @@ export function ConnectionManagerWindow() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [connecting, setConnecting] = useState(false);
+  /** Profile currently being opened; drives the connecting overlay + row spinner. */
+  const [connecting, setConnecting] = useState<ConnectionProfile | null>(null);
   const [statusMsg, setStatusMsg] = useState<{ type: "url" | "ok" | "error"; text: string } | null>(null);
   const [filter, setFilter] = useState("");
   const [contextMenu, setContextMenu] = useState<{ profile: ConnectionProfile; x: number; y: number } | null>(null);
@@ -784,7 +787,7 @@ export function ConnectionManagerWindow() {
   async function connectProfile(profile: ConnectionProfile) {
     if (connecting) return;
     // Open the connection here so the main window opens already connected.
-    setConnecting(true);
+    setConnecting(profile);
     setStatusMsg(null);
     let connectionId: string;
     let serverVersion = "";
@@ -794,7 +797,7 @@ export function ConnectionManagerWindow() {
       serverVersion = result.serverVersion || "";
     } catch (e: unknown) {
       setStatusMsg({ type: "error", text: e instanceof Error ? e.message : "Connection failed" });
-      setConnecting(false);
+      setConnecting(null);
       return;
     }
 
@@ -1150,6 +1153,7 @@ export function ConnectionManagerWindow() {
                       folder={folder}
                       focused={focusKey === `conn:${profile.id}`}
                       selected={selectedIds.has(profile.id)}
+                      connecting={connecting?.id === profile.id}
                       selectionMode={selectionMode}
                       isDark={isDark}
                       filter={filter}
@@ -1219,10 +1223,30 @@ export function ConnectionManagerWindow() {
           </div>
         )}
         <StatusBar status={!editorOpen ? statusMsg : null} onClose={() => setStatusMsg(null)}>
-          {connecting && <Loader2 size={11} className="animate-spin" />}
-          {connecting ? "Connecting…" : "Double-click a connection to connect"}
+          {connecting
+            ? <span className="flex items-center gap-1.5 font-medium text-accent"><Loader2 size={11} className="animate-spin" />Connecting to {connecting.name || "connection"}…</span>
+            : "Double-click a connection to connect"}
         </StatusBar>
       </div>
+
+      {connecting && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed inset-0 z-[230] flex items-center justify-center bg-black/45 p-5"
+        >
+          <div className="flex w-full max-w-xs flex-col items-center gap-3 rounded-xl border border-accent/40 bg-bg-secondary px-6 py-5 text-center shadow-2xl">
+            <Loader2 size={28} className="animate-spin text-accent" />
+            <div className="min-w-0 w-full">
+              <div className="text-sm font-semibold text-text-primary">Connecting…</div>
+              <div className="mt-1 truncate text-sm text-text-primary">{connecting.name || "Untitled"}</div>
+              <div className="mt-0.5 truncate text-[11px] text-text-muted">
+                {connecting.type}{connecting.type !== "sqlite" ? ` · ${connecting.host}` : ""}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {folderDialogOpen && (
         <div
@@ -1677,7 +1701,7 @@ export function ConnectionManagerWindow() {
               </button>
               <button
                 onClick={handleConnect}
-                disabled={(!selectedId && !isNew) || connecting}
+                disabled={(!selectedId && !isNew) || !!connecting}
                 className="flex items-center gap-1.5 px-4 py-1.5 text-sm rounded-md bg-accent hover:bg-accent-hover text-white transition-colors disabled:opacity-50 cursor-pointer"
               >
                 {connecting ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />}
@@ -1808,6 +1832,7 @@ function SortableConnection({
   folder,
   focused,
   selected,
+  connecting,
   selectionMode,
   isDark,
   filter,
@@ -1822,6 +1847,7 @@ function SortableConnection({
   folder: string;
   focused: boolean;
   selected: boolean;
+  connecting: boolean;
   selectionMode: boolean;
   isDark: boolean;
   filter: string;
@@ -1856,6 +1882,8 @@ function SortableConnection({
           ? "opacity-40"
           : isDropTarget
           ? "bg-accent/10 ring-1 ring-accent/50"
+          : connecting
+          ? "bg-accent/20 ring-1 ring-accent text-text-primary"
           : selected && focused
           ? "bg-accent/20 ring-1 ring-accent/60 text-text-primary"
           : selected
@@ -1878,7 +1906,9 @@ function SortableConnection({
       >
         {selected ? <CheckSquare size={13} /> : <Square size={13} />}
       </button>
-      <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: profileColor(profile.env) }} />
+      {connecting
+        ? <Loader2 size={12} className="shrink-0 animate-spin text-accent" />
+        : <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: profileColor(profile.env) }} />}
       <span className="max-w-[42%] shrink-0 truncate font-medium">
         {profile.name ? highlightName(profile.name, filter) : "Untitled"}
       </span>
@@ -1930,8 +1960,20 @@ function StatusBar({
   children?: React.ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
   // Collapse again whenever the message changes so a new error starts single-line.
-  useEffect(() => { setExpanded(false); }, [status?.text]);
+  useEffect(() => { setExpanded(false); setCopied(false); }, [status?.text]);
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
+
+  async function copyText() {
+    if (!status) return;
+    await navigator.clipboard.writeText(status.text);
+    setCopied(true);
+  }
 
   const tone = !status
     ? "text-text-muted"
@@ -1941,20 +1983,47 @@ function StatusBar({
     ? "text-error bg-error/5"
     : "text-text-secondary";
 
+  // Every child is top-aligned with a 20px line box inside 8px padding, so the
+  // bar is 36px single-line and the buttons stay put when the text expands.
+  const actionBtn = "flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-muted hover:bg-bg-hover hover:text-text-primary cursor-pointer";
+
   return (
-    <div className={`flex items-center gap-2 border-t border-border px-4 text-xs ${expanded ? "min-h-9 py-2" : "h-9"} ${tone}`}>
+    <div className={`flex min-h-9 items-start gap-2 border-t border-border px-4 py-2 text-xs leading-5 ${tone}`}>
       {status ? (
         <>
           <span className="shrink-0">{status.type === "url" ? "✓" : "●"}</span>
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
-            title={expanded ? "Collapse" : status.text}
-            className={`min-w-0 flex-1 text-left cursor-pointer ${expanded ? "whitespace-pre-wrap break-words" : "truncate"}`}
+            title={expanded ? "Collapse" : "Click to expand"}
+            className={`min-w-0 flex-1 text-left cursor-pointer ${
+              expanded ? "max-h-40 overflow-y-auto whitespace-pre-wrap break-words select-text" : "truncate"
+            }`}
           >
             {status.text}
           </button>
-          <button onClick={onClose} className="shrink-0 self-start leading-5 text-text-muted hover:text-text-primary cursor-pointer">×</button>
+          <button
+            type="button"
+            onClick={() => void copyText()}
+            title={copied ? "Copied" : "Copy message"}
+            aria-label="Copy message"
+            className={`${actionBtn} ${copied ? "text-success" : ""}`}
+          >
+            {copied ? <Check size={12} /> : <Copy size={12} />}
+          </button>
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            title={expanded ? "Collapse" : "Show full message"}
+            aria-label={expanded ? "Collapse message" : "Show full message"}
+            aria-expanded={expanded}
+            className={actionBtn}
+          >
+            {expanded ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+          </button>
+          <button type="button" onClick={onClose} title="Dismiss" aria-label="Dismiss message" className={actionBtn}>
+            <X size={13} />
+          </button>
         </>
       ) : (
         <span className="flex flex-1 items-center justify-center gap-1.5 text-[11px]">{children}</span>
