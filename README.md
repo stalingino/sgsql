@@ -67,9 +67,10 @@ bun run tauri dev
 ```
 
 The development application reuses the sidecar on port `45821` only after an
-authenticated health check with that token. Running `bun run tauri dev` by
-itself generates a fresh token and passes it to its managed sidecar
-automatically. Stop both processes when finished.
+authenticated health check with that token. Otherwise, it starts a managed
+sidecar on an available loopback port with its own token. Packaged applications
+also use a separate available port, so a leftover development sidecar cannot
+intercept their requests. Stop both development processes when finished.
 
 ### Create the application bundle
 

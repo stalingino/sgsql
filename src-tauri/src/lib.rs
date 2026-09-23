@@ -17,6 +17,8 @@ mod macos_icon;
 struct SidecarChild(Mutex<Option<CommandChild>>);
 struct AppExiting(Mutex<bool>);
 
+const DEV_SIDECAR_PORT: u16 = 45821;
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SidecarCredentials {
@@ -33,6 +35,28 @@ fn generate_sidecar_token() -> String {
     let mut bytes = [0_u8; 32];
     OsRng.fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn available_managed_sidecar_port() -> std::io::Result<u16> {
+    loop {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        let port = listener.local_addr()?.port();
+        if port != DEV_SIDECAR_PORT {
+            return Ok(port);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn managed_sidecar_does_not_use_the_direct_dev_port() {
+        let port = available_managed_sidecar_port().unwrap();
+        assert_ne!(port, DEV_SIDECAR_PORT);
+        assert!(port > 0);
+    }
 }
 
 fn authenticated_sidecar_running(port: u16, token: &str) -> bool {
@@ -89,7 +113,6 @@ pub fn run() {
         .setup(|app| {
             app.manage(AppExiting(Mutex::new(false)));
 
-            let sidecar_port = 45821;
             let sidecar_token = if cfg!(debug_assertions) {
                 std::env::var("SGSQL_SIDECAR_TOKEN")
                     .ok()
@@ -98,11 +121,6 @@ pub fn run() {
             } else {
                 generate_sidecar_token()
             };
-            app.manage(SidecarCredentials {
-                port: sidecar_port,
-                token: sidecar_token.clone(),
-            });
-
             #[cfg(target_os = "macos")]
             macos_icon::init(app.handle());
 
@@ -117,7 +135,7 @@ pub fn run() {
             // A directly-run development sidecar is reused only when it proves
             // possession of the token shared through SGSQL_SIDECAR_TOKEN.
             let dev_sidecar_running = if cfg!(debug_assertions) {
-                let running = authenticated_sidecar_running(sidecar_port, &sidecar_token);
+                let running = authenticated_sidecar_running(DEV_SIDECAR_PORT, &sidecar_token);
                 if running {
                     log::info!("Authenticated dev sidecar already running — skipping spawn");
                 }
@@ -125,6 +143,17 @@ pub fn run() {
             } else {
                 false
             };
+
+            let sidecar_port = if dev_sidecar_running {
+                DEV_SIDECAR_PORT
+            } else {
+                available_managed_sidecar_port()
+                    .expect("Failed to select an available sidecar port")
+            };
+            app.manage(SidecarCredentials {
+                port: sidecar_port,
+                token: sidecar_token.clone(),
+            });
 
             if dev_sidecar_running {
                 // No child to manage — store None
@@ -135,6 +164,7 @@ pub fn run() {
                     .shell()
                     .sidecar("dbsidecar")
                     .unwrap()
+                    .arg(format!("--port={sidecar_port}"))
                     .env("SGSQL_SIDECAR_TOKEN", &sidecar_token);
                 let (mut rx, child) = sidecar_command.spawn()
                     .expect("Failed to spawn sidecar");

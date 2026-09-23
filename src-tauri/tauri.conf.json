@@ -32,7 +32,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:45821 ws://127.0.0.1:45821; style-src 'self' 'unsafe-inline'; worker-src 'self'"
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*; style-src 'self' 'unsafe-inline'; worker-src 'self'"
     }
   },
   "bundle": {
