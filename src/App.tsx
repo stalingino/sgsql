@@ -39,7 +39,7 @@ import { useEditStore } from "./lib/editStore";
 import { notifySchemaChanged } from "./lib/schemaRevision";
 import { SchemaTree } from "./components/SchemaTree";
 import { DataTable } from "./components/DataTable";
-import { QueryEditor } from "./components/QueryEditor";
+import { QueryEditor, type QueryTabMemory } from "./components/QueryEditor";
 import { QueryConsole } from "./components/QueryConsole";
 import { DetailPanel } from "./components/DetailPanel";
 import { UserManager } from "./components/UserManager";
@@ -70,6 +70,8 @@ interface ContentTab {
   filters?: FilterRow[];
   appliedWhere?: string;
   filtersOpen?: boolean;
+  /** In-memory query outputs scoped to this connection workspace and query tab. */
+  queryMemory?: QueryTabMemory;
 }
 
 interface DbWorkspace {
@@ -1178,8 +1180,25 @@ function App() {
                           connectionType={activeTab.profile.type}
                           activeDb={ct.db}
                           initialSql={ct.sql || ""}
+                          initialMemory={ct.queryMemory}
                           onCellSelect={handleCellSelection}
                           revealCell={workspace.db === activeTab.activeDbName && ct.id === workspace.activeContentTabId ? cellRevealRequest : null}
+                          onMemoryChange={(queryMemory, patch) => {
+                            setTabs((prev) => prev.map((tab) => {
+                              if (tab.id !== activeTab.id) return tab;
+                              const ws = tab.workspaces[ct.db];
+                              if (!ws) return tab;
+                              const updatedWs = {
+                                ...ws,
+                                contentTabs: ws.contentTabs.map((content) =>
+                                  content.id !== ct.id
+                                    ? content
+                                    : { ...content, queryMemory: content.queryMemory ? { ...content.queryMemory, ...patch } : queryMemory }
+                                ),
+                              };
+                              return { ...tab, workspaces: { ...tab.workspaces, [ct.db]: updatedWs } };
+                            }));
+                          }}
                           onSqlChange={(sql) => {
                             setTabs((prev) => prev.map((tab) => {
                               if (tab.id !== activeTab.id) return tab;

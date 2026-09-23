@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { ctrlKey, modKey } from "../lib/platform";
 import { Loader2, Play, Sparkles, ChevronLeft, ChevronRight, ChevronDown, ListStart, RotateCw } from "lucide-react";
 import { fetchColumns, fetchSchemas, fetchTables, type ColumnInfo, type QueryResult } from "../lib/schema";
@@ -25,6 +25,8 @@ interface QueryEditorProps {
   connectionType: "postgres" | "mysql" | "sqlite";
   activeDb: string;
   initialSql?: string;
+  initialMemory?: QueryTabMemory;
+  onMemoryChange?: (memory: QueryTabMemory, patch: Partial<QueryTabMemory>) => void;
   onSqlChange?: (sql: string) => void;
   onCellSelect?: (selection: CellSelection | null) => void;
   revealCell?: CellRevealRequest | null;
@@ -49,7 +51,7 @@ interface MysqlTableSource {
   table: string;
 }
 
-interface QueryExecution {
+export interface QueryExecution {
   id: string;
   statement: SqlStatement;
   executedSql: string;
@@ -58,6 +60,13 @@ interface QueryExecution {
   editableContext: EditableTableContext | null;
   running?: boolean;
   rolledBack?: boolean;
+}
+
+/** Session-only query output owned by a connection's query tab. */
+export interface QueryTabMemory {
+  executions: QueryExecution[];
+  activeExecutionId: string | null;
+  offset: number;
 }
 
 /* ── Helpers ────────────────────────────────────────────── */
@@ -107,12 +116,14 @@ function defaultAutocompleteSchema(type: QueryEditorProps["connectionType"]): st
 
 /* ── Component ──────────────────────────────────────────── */
 
-export function QueryEditor({ connectionId, connectionType, activeDb, initialSql = "", onSqlChange, onCellSelect, revealCell }: QueryEditorProps) {
+export function QueryEditor({ connectionId, connectionType, activeDb, initialSql = "", initialMemory, onMemoryChange, onSqlChange, onCellSelect, revealCell }: QueryEditorProps) {
+  const initialMemoryRef = useRef(initialMemory);
+  const restoredMemory = initialMemoryRef.current;
   const [sql, setSql] = useState(initialSql);
-  const [executions, setExecutions] = useState<QueryExecution[]>([]);
-  const [activeExecutionId, setActiveExecutionId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [offset, setOffset] = useState(0);
+  const [executions, setExecutionsState] = useState<QueryExecution[]>(() => restoredMemory?.executions ?? []);
+  const [activeExecutionId, setActiveExecutionIdState] = useState<string | null>(() => restoredMemory?.activeExecutionId ?? null);
+  const [loading, setLoading] = useState(() => restoredMemory?.executions.some((execution) => execution.running) ?? false);
+  const [offset, setOffsetState] = useState(() => restoredMemory?.offset ?? 0);
   const [rowLimit, setRowLimit] = useState(50);
   const [showLimitMenu, setShowLimitMenu] = useState(false);
   const [atomicRunAll, setAtomicRunAll] = useState(false);
@@ -132,6 +143,36 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   const editorRef = useRef<MonacoSqlEditorHandle>(null);
   const onSqlChangeRef = useRef(onSqlChange);
   onSqlChangeRef.current = onSqlChange;
+  const onMemoryChangeRef = useRef(onMemoryChange);
+  onMemoryChangeRef.current = onMemoryChange;
+  const memoryRef = useRef<QueryTabMemory>({
+    executions: restoredMemory?.executions ?? [],
+    activeExecutionId: restoredMemory?.activeExecutionId ?? null,
+    offset: restoredMemory?.offset ?? 0,
+  });
+  const publishMemory = useCallback((patch: Partial<QueryTabMemory>) => {
+    const next = { ...memoryRef.current, ...patch };
+    memoryRef.current = next;
+    onMemoryChangeRef.current?.(next, patch);
+  }, []);
+  const setExecutions = useCallback((value: SetStateAction<QueryExecution[]>) => {
+    const current = memoryRef.current.executions;
+    const next = typeof value === "function" ? value(current) : value;
+    setExecutionsState(next);
+    publishMemory({ executions: next });
+  }, [publishMemory]);
+  const setActiveExecutionId = useCallback((value: SetStateAction<string | null>) => {
+    const current = memoryRef.current.activeExecutionId;
+    const next = typeof value === "function" ? value(current) : value;
+    setActiveExecutionIdState(next);
+    publishMemory({ activeExecutionId: next });
+  }, [publishMemory]);
+  const setOffset = useCallback((value: SetStateAction<number>) => {
+    const current = memoryRef.current.offset;
+    const next = typeof value === "function" ? value(current) : value;
+    setOffsetState(next);
+    publishMemory({ offset: next });
+  }, [publishMemory]);
   const execQueue = useExecutionQueue((s) => s.execute);
   const execBatch = useExecutionQueue((s) => s.executeBatch);
   const executionPhase = useExecutionQueue((s) => s.connections.get(connectionId)?.phase ?? "idle");
@@ -146,13 +187,28 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
       setEditorHeight(Math.round(containerRef.current.offsetHeight * 0.8));
     }
   }, []);
-  const lastExecutedRef = useRef<QueryExecution | null>(null);
+  const lastExecutedRef = useRef<QueryExecution | null>(restoredMemory?.executions.at(-1) ?? null);
   const selectedResultRef = useRef<CellSelection | null>(null);
   const lastDataRevisionRef = useRef(dataRevision);
-  const editableContextRef = useRef<EditableTableContext | null>(null);
+  const editableContextRef = useRef<EditableTableContext | null>(restoredMemory?.executions.at(-1)?.editableContext ?? null);
   const columnCacheRef = useRef<Map<string, ColumnInfo[]>>(new Map());
   const pendingColumnsRef = useRef<Set<string>>(new Set());
   const metadataGenerationRef = useRef(0);
+
+  // A query may finish after this editor was unmounted by a connection switch.
+  // Absorb that late result if the user has already switched back and remounted it.
+  useEffect(() => {
+    if (!initialMemory || initialMemory === memoryRef.current) return;
+    memoryRef.current = initialMemory;
+    setExecutionsState(initialMemory.executions);
+    setActiveExecutionIdState(initialMemory.activeExecutionId);
+    setOffsetState(initialMemory.offset);
+    setLoading(initialMemory.executions.some((execution) => execution.running));
+    const lastExecution = initialMemory.executions.at(-1) ?? null;
+    lastExecutedRef.current = lastExecution;
+    editableContextRef.current = lastExecution?.editableContext ?? null;
+  }, [initialMemory]);
+
   const activeExecution = executions.find((execution) => execution.id === activeExecutionId) ?? executions[0] ?? null;
   const result = activeExecution?.result ?? null;
   const error = activeExecution?.error ?? null;
