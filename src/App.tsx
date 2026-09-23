@@ -65,7 +65,7 @@ interface ContentTab {
   identity?: string;
   signature?: string;
   sql?: string;
-  viewMode?: "data" | "structure";
+  viewMode?: "data" | "structure" | "definition";
   sort?: SortState | null;
   filters?: FilterRow[];
   appliedWhere?: string;
@@ -199,6 +199,7 @@ function App() {
   const pendingAddQueryTabRef = useRef(false);
   const saveAllChangesRef = useRef<(() => void) | null>(null);
   const activeContentTypeRef = useRef<ContentTab["type"] | null>(null);
+  const activeContentViewModeRef = useRef<ContentTab["viewMode"]>(undefined);
   const closeContentTabRef = useRef<(id: string) => void>(() => {});
   const closeDbRef = useRef<(db: string) => void>(() => {});
   const closeTabRef = useRef<(id: string) => void>(() => {});
@@ -300,7 +301,8 @@ function App() {
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
         e.stopPropagation();
-        if (activeContentTypeRef.current === "view" || activeContentTypeRef.current === "function") {
+        if (activeContentTypeRef.current === "function" ||
+          (activeContentTypeRef.current === "view" && activeContentViewModeRef.current === "definition")) {
           window.dispatchEvent(new Event("sgsql-save-definition"));
         } else {
           saveAllChangesRef.current?.();
@@ -780,6 +782,7 @@ function App() {
     : null;
   const activeContentTab = activeWorkspace?.contentTabs.find((tab) => tab.id === activeWorkspace.activeContentTabId);
   activeContentTypeRef.current = activeContentTab?.type ?? null;
+  activeContentViewModeRef.current = activeContentTab?.viewMode;
 
   // Clear the selected cell/row whenever the visible table/query view changes —
   // otherwise the detail panel keeps showing a row from a tab/connection that's
@@ -834,7 +837,7 @@ function App() {
       window.setTimeout(() => setReconnectNotice(null), 6_000);
       const openTables = Object.values(activeTab.workspaces).flatMap((workspace) =>
         workspace.contentTabs
-          .filter((contentTab) => contentTab.type === "table")
+          .filter((contentTab) => contentTab.type === "table" || contentTab.type === "view")
           .map((contentTab) => ({
             connectionId: activeTab.connectionId!,
             db: contentTab.db,
@@ -854,8 +857,10 @@ function App() {
 
   const toggleActiveViewMode = () => {
     if (!activeTab || !activeWorkspace || !activeContentTab) return;
-    if (activeContentTab.type !== "table") return;
-    const nextMode: "data" | "structure" = (activeContentTab.viewMode ?? "data") === "data" ? "structure" : "data";
+    if (activeContentTab.type !== "table" && activeContentTab.type !== "view") return;
+    const nextMode: "data" | "structure" | "definition" = (activeContentTab.viewMode ?? "data") === "data"
+      ? activeContentTab.type === "view" ? "definition" : "structure"
+      : "data";
     setTabs((prev) => prev.map((tab) => {
       if (tab.id !== activeTab.id) return tab;
       const ws = tab.workspaces[activeWorkspace.db];
@@ -1214,7 +1219,7 @@ function App() {
                             }));
                           }}
                         />
-                      ) : ct.type === "view" || ct.type === "function" ? (
+                      ) : ct.type === "function" ? (
                         <SchemaObjectEditor
                           connectionId={activeTab.connectionId!}
                           connectionType={activeTab.profile.type}
@@ -1233,6 +1238,8 @@ function App() {
                           db={ct.db}
                           schema={ct.schema}
                           table={ct.table}
+                          objectType={ct.type === "view" ? "view" : "table"}
+                          active={workspace.db === activeTab.activeDbName && ct.id === workspace.activeContentTabId}
                           onCellSelect={handleCellSelection}
                           revealCell={workspace.db === activeTab.activeDbName && ct.id === workspace.activeContentTabId ? cellRevealRequest : null}
                           viewMode={ct.viewMode ?? "data"}
@@ -1331,7 +1338,7 @@ function App() {
             </main>
 
             {/* Right detail panel */}
-            {detailPanelVisible && activeTab.mainView !== "users" && activeContentTab?.type !== "view" && activeContentTab?.type !== "function" && activeContentTab?.viewMode !== "structure" && (
+            {detailPanelVisible && activeTab.mainView !== "users" && activeContentTab?.type !== "function" && activeContentTab?.viewMode !== "structure" && activeContentTab?.viewMode !== "definition" && (
               <ResizableDetailPanel>
                 <aside className="h-full border-l border-border bg-bg-primary">
                   <ErrorBoundary label="Detail panel">

@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Table2,
   Columns2,
+  Eye,
   KeyRound,
   Link2,
   Filter,
@@ -37,6 +38,7 @@ import {
 import { HighlightedSQL } from "../lib/highlightSQL";
 import { FilterPanel, type FilterRow, createFilter, buildWhereClause } from "./FilterPanel";
 import { SchemaEditor } from "./SchemaEditor";
+import { SchemaObjectEditor } from "./SchemaObjectEditor";
 import { ExportMenu, type ExportAction, type ExportScope } from "./ExportMenu";
 import { finishExport, serializeExportChunk, type ExportFormat } from "../lib/dataExport";
 import { chooseExportPath, writeExportFile } from "../lib/fileExport";
@@ -47,6 +49,8 @@ interface DataTableProps {
   db: string;
   schema: string;
   table: string;
+  objectType?: "table" | "view";
+  active?: boolean;
   onCellSelect?: (selection: CellSelection | null) => void;
   revealCell?: CellRevealRequest | null;
   viewMode?: ViewMode;
@@ -96,7 +100,7 @@ function buildPreviewSql({
   return `SELECT * FROM ${tableRef}${whereClause}${orderClause} LIMIT ${PAGE_SIZE} OFFSET 0`;
 }
 
-type ViewMode = "data" | "structure";
+type ViewMode = "data" | "structure" | "definition";
 
 /* ── Constants for structure view auto-sizing ───────────── */
 const MIN_COL_WIDTH = 40;
@@ -291,8 +295,9 @@ function sameSort(left: SortState | null, right: SortState | null): boolean {
 
 /* ── Main component ────────────────────────────────────── */
 
-export function DataTable({ connectionId, connectionType, db, schema, table, onCellSelect, revealCell, viewMode, onViewModeChange, onTableRenamed, sort: sortProp, onSortChange, filters: filtersProp, onFiltersChange, appliedWhere: appliedWhereProp, onAppliedWhereChange, filtersOpen: filtersOpenProp, onFiltersOpenChange }: DataTableProps) {
-  const initialSort = sortProp !== undefined ? sortProp : parseDefaultOrderBy(getConfig().settings?.defaultOrderBy);
+export function DataTable({ connectionId, connectionType, db, schema, table, objectType = "table", active = false, onCellSelect, revealCell, viewMode, onViewModeChange, onTableRenamed, sort: sortProp, onSortChange, filters: filtersProp, onFiltersChange, appliedWhere: appliedWhereProp, onAppliedWhereChange, filtersOpen: filtersOpenProp, onFiltersOpenChange }: DataTableProps) {
+  const readOnly = objectType === "view";
+  const initialSort = sortProp !== undefined ? sortProp : readOnly ? null : parseDefaultOrderBy(getConfig().settings?.defaultOrderBy);
   const refreshKey = tableRefreshKey({ connectionId, db, schema, table });
   const tableRevision = useEditStore((s) => s.tableRevisions.get(refreshKey) ?? 0);
   const [internalSort, setInternalSort] = useState<SortState | null>(initialSort);
@@ -318,11 +323,15 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   const [initialColumns] = useState(() => getCachedTableColumns({ connectionId, db, schema, table }));
   const [internalMode, setInternalMode] = useState<ViewMode>(viewMode ?? "data");
   const mode = viewMode ?? internalMode;
+  const [definitionOpened, setDefinitionOpened] = useState(readOnly && mode === "definition");
   const changeMode = (next: ViewMode) => {
     setInternalMode(next);
     onViewModeChange?.(next);
-    if (next === "structure") onCellSelect?.(null);
+    if (next !== "data") onCellSelect?.(null);
   };
+  useEffect(() => {
+    if (readOnly && mode === "definition") setDefinitionOpened(true);
+  }, [readOnly, mode]);
   const [data, setData] = useState<TableRowsResult | null>(initialData ?? null);
   const [columns, setColumns] = useState<ColumnInfo[] | null>(initialColumns ?? null);
   const [loading, setLoading] = useState(!initialData);
@@ -369,8 +378,8 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
   const containerRef = useRef<HTMLDivElement>(null);
 
   const pkColumns = useMemo(
-    () => columns?.filter((c) => c.isPk).map((c) => c.name) ?? [],
-    [columns],
+    () => readOnly ? [] : columns?.filter((c) => c.isPk).map((c) => c.name) ?? [],
+    [columns, readOnly],
   );
   const headerColumns = useMemo(
     () => (data?.columns?.length ? data.columns : null) ?? columns?.map((c) => c.name) ?? [],
@@ -389,6 +398,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
 
   // Add row handler
   const handleAddRow = useCallback(() => {
+    if (readOnly) return;
     if (!columns || columns.length === 0) return;
     const colNames = columns.map((c) => c.name);
     const insertId = useEditStore.getState().addInsert(connectionId, connectionType, db, schema, table, colNames);
@@ -406,10 +416,11 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
       tableContext: { connectionId, connectionType, db, schema, table, pkColumns, columnMeta },
       insertId,
     });
-  }, [connectionId, connectionType, db, schema, table, columns, data?.rows, pkColumns, onCellSelect]);
+  }, [connectionId, connectionType, db, schema, table, columns, data?.rows, pkColumns, onCellSelect, readOnly]);
 
   // Delete selected rows handler
   const handleDeleteRows = useCallback(() => {
+    if (readOnly) return;
     if (pkColumns.length === 0 || !data?.rows) return;
     for (const idx of selectedRows) {
       const row = data.rows[idx] as unknown[];
@@ -422,11 +433,12 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
         useEditStore.getState().addDelete(rk, row, headerColumns);
       }
     }
-  }, [connectionId, connectionType, db, schema, table, headerColumns, pkColumns, data?.rows, selectedRows]);
+  }, [connectionId, connectionType, db, schema, table, headerColumns, pkColumns, data?.rows, selectedRows, readOnly]);
 
   // Cmd+= to add row, Delete/Backspace to delete selected rows
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (mode !== "data" || readOnly || !containerRef.current || containerRef.current.offsetParent === null) return;
       if ((e.metaKey || e.ctrlKey) && e.key === "i") {
         e.preventDefault();
         handleAddRow();
@@ -441,7 +453,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleAddRow, handleDeleteRows, selectedRows.size]);
+  }, [handleAddRow, handleDeleteRows, mode, readOnly, selectedRows.size]);
 
   // Cmd+F to toggle filters (data view only; structure view handles its own
   // column search). Guard on visibility so an inactive tab doesn't react.
@@ -473,7 +485,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
     // Re-apply the configured sort (or the built-in default) for the new table,
     // unless the parent already persists a sort for this tab (sortProp defined).
     if (sortProp === undefined) {
-      const nextSort = parseDefaultOrderBy(getConfig().settings?.defaultOrderBy);
+      const nextSort = readOnly ? null : parseDefaultOrderBy(getConfig().settings?.defaultOrderBy);
       setSort((current) => sameSort(current, nextSort) ? current : nextSort);
     }
     // Likewise, only clear filters here when the parent isn't already persisting
@@ -487,7 +499,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
       setAppliedWhere("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectionId, db, schema, table]);
+  }, [connectionId, db, schema, table, readOnly]);
 
   // Fetch structure (columns) on mount / table change
   const refreshStructure = useCallback(async () => {
@@ -505,6 +517,13 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
       setStructLoading(false);
     }
   }, [connectionId, db, schema, table]);
+
+  const handleDefinitionSaved = useCallback(() => {
+    void refreshStructure().catch((cause) => {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    });
+    useEditStore.getState().requestDataRefresh([{ connectionId, db, schema, table }]);
+  }, [connectionId, db, schema, table, refreshStructure]);
 
   useEffect(() => {
     let cancelled = false;
@@ -716,8 +735,9 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
             onSelectedRowsChange={setSelectedRowData}
             pkColumns={pkColumns}
             columnMeta={columnMeta}
+            readOnly={readOnly}
           />
-        ) : (
+        ) : !readOnly ? (
           <SchemaEditor
             key={`${connectionId}:${db}:${schema}:${table}:${structureRevision}`}
             connectionId={connectionId}
@@ -732,6 +752,20 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
             ddlOpen={schemaDdlOpen}
             onDdlClose={() => setSchemaDdlOpen(false)}
           />
+        ) : null}
+        {readOnly && definitionOpened && (
+          <div className="h-full" style={{ display: mode === "definition" ? "block" : "none" }}>
+            <SchemaObjectEditor
+              connectionId={connectionId}
+              connectionType={connectionType}
+              db={db}
+              schema={schema}
+              name={table}
+              type="view"
+              active={active && mode === "definition"}
+              onSaved={handleDefinitionSaved}
+            />
+          </div>
         )}
       </div>
 
@@ -770,20 +804,23 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
             Data
           </button>
           <button
-            onClick={() => changeMode("structure")}
-            title={`Structure view (${modKey("T")})`}
+            onClick={() => changeMode(readOnly ? "definition" : "structure")}
+            title={`${readOnly ? "Definition" : "Structure"} view (${modKey("T")})`}
             className={`flex items-center gap-1 px-2 py-0.5 rounded transition-colors cursor-pointer ${
-              mode === "structure"
+              mode === (readOnly ? "definition" : "structure")
                 ? "bg-accent/15 text-accent"
                 : "hover:bg-bg-hover text-text-muted"
             }`}
           >
-            <Columns2 size={11} />
-            Structure
+            {readOnly ? <Eye size={11} /> : <Columns2 size={11} />}
+            {readOnly ? "Definition" : "Structure"}
           </button>
+          {mode === "data" && readOnly && (
+            <span className="ml-1 rounded bg-bg-hover px-1.5 py-0.5 text-[10px] text-text-muted">Read only</span>
+          )}
 
           {/* Add / Delete row buttons */}
-          {mode === "data" && (
+          {mode === "data" && !readOnly && (
             <>
               <div className="w-px h-4 bg-border mx-1" />
               <button
@@ -806,7 +843,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
               )}
             </>
           )}
-          {mode === "structure" && (
+          {mode === "structure" && !readOnly && (
             <>
               <div className="w-px h-4 bg-border mx-1" />
               <button
@@ -851,7 +888,7 @@ export function DataTable({ connectionId, connectionType, db, schema, table, onC
               </button>
             </>
           )}
-          {mode === "structure" && columns && (
+          {mode === "structure" && !readOnly && columns && (
             <span className="text-text-muted">
               {columns.length} column{columns.length !== 1 ? "s" : ""}
             </span>
@@ -1015,6 +1052,7 @@ function DataView({
   onSelectedRowsChange,
   pkColumns,
   columnMeta,
+  readOnly,
 }: {
   connectionId: string;
   connectionType: "postgres" | "mysql" | "sqlite";
@@ -1034,6 +1072,7 @@ function DataView({
   onSelectedRowsChange?: (rows: unknown[][]) => void;
   pkColumns: string[];
   columnMeta: { name: string; dataType: string; udtName: string; enumValues?: string[]; defaultValue: string | null }[];
+  readOnly: boolean;
 }) {
   const editChanges = useEditStore((s) => s.changes);
   const editDeletes = useEditStore((s) => s.deletes);
@@ -1042,10 +1081,10 @@ function DataView({
 
   // Get pending inserts for this table
   const tableInserts = useMemo(() =>
-    editInserts.filter(
+    readOnly ? [] : editInserts.filter(
       (i) => i.connectionId === connectionId && i.db === db && i.schema === schema && i.table === table,
     ),
-    [editInserts, connectionId, db, schema, table],
+    [editInserts, connectionId, db, schema, table, readOnly],
   );
 
   // Build combined rows: real data rows + virtual insert rows appended at bottom
@@ -1099,6 +1138,7 @@ function DataView({
 
   // Duplicate rows handler
   const handleDuplicateRows = useCallback((rowIndices: number[]) => {
+    if (readOnly) return;
     for (const idx of rowIndices) {
       const row = combinedRows[idx] as unknown[];
       if (!row) continue;
@@ -1112,15 +1152,15 @@ function DataView({
         }
       }
     }
-  }, [connectionId, connectionType, db, schema, table, headerColumns, pkColumns, combinedRows]);
+  }, [connectionId, connectionType, db, schema, table, headerColumns, pkColumns, combinedRows, readOnly]);
 
   // Attach table context to a grid selection (also handle insert rows)
-  const enrichSelection = useCallback((sel: CellSelection): CellSelection => ({
+  const enrichSelection = useCallback((sel: CellSelection): CellSelection => readOnly ? sel : ({
     ...sel,
     // For insert rows, still pass table context but with empty pkColumns (no PKs yet)
     tableContext: { connectionId, connectionType, db, schema, table, pkColumns, columnMeta },
     ...(sel.rowIndex >= realRowCount ? { insertId: tableInserts[sel.rowIndex - realRowCount]?.id } : {}),
-  }), [connectionId, connectionType, db, schema, table, pkColumns, columnMeta, realRowCount, tableInserts]);
+  }), [connectionId, connectionType, db, schema, table, pkColumns, columnMeta, realRowCount, tableInserts, readOnly]);
 
   // Wrap onCellSelect to inject table context
   const handleCellSelect = useCallback((sel: CellSelection | null) => {
@@ -1169,11 +1209,11 @@ function DataView({
       rowIndex,
       row: freshRows[rowIndex],
       columns: headerColumns,
-      tableContext: { connectionId, connectionType, db, schema, table, pkColumns, columnMeta },
+      ...(readOnly ? {} : { tableContext: { connectionId, connectionType, db, schema, table, pkColumns, columnMeta } }),
     };
     selectedCellRef.current = refreshedSelection;
     onCellSelect?.(refreshedSelection);
-  }, [data?.rows, headerColumns, pkColumns, connectionId, connectionType, db, schema, table, columnMeta, onCellSelect]);
+  }, [data?.rows, headerColumns, pkColumns, connectionId, connectionType, db, schema, table, columnMeta, onCellSelect, readOnly]);
 
   if (loading && !data) {
     return (
@@ -1198,7 +1238,7 @@ function DataView({
         columns={headerColumns}
         rows={combinedRows}
         offset={offset}
-        emptyMessage="No rows in this table."
+        emptyMessage={readOnly ? "No rows in this view." : "No rows in this table."}
         sort={sort}
         onSortChange={onSortChange}
         onCellSelect={handleCellSelect}
@@ -1215,7 +1255,7 @@ function DataView({
         isRowInserted={isRowInserted}
         onSelectionChange={onSelectionChange}
         onSelectedRowsChange={onSelectedRowsChange}
-        onDuplicateRows={handleDuplicateRows}
+        onDuplicateRows={readOnly ? undefined : handleDuplicateRows}
       />
       {editorSelection && (
         <CellEditorModal selection={editorSelection} onClose={() => setEditorSelection(null)} />

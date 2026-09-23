@@ -21,6 +21,7 @@ interface SchemaObjectEditorProps {
   identity?: string;
   signature?: string;
   active: boolean;
+  onSaved?: () => void;
 }
 
 export function SchemaObjectEditor({
@@ -33,6 +34,7 @@ export function SchemaObjectEditor({
   identity = "",
   signature = "",
   active,
+  onSaved,
 }: SchemaObjectEditorProps) {
   const editorRef = useRef<MonacoSqlEditorHandle>(null);
   const [sql, setSql] = useState("");
@@ -90,12 +92,13 @@ export function SchemaObjectEditor({
       setSavedSql(sql);
       setNotice(`${type === "view" ? "View" : "Function"} definition saved.`);
       notifySchemaChanged(connectionId);
+      onSaved?.();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setSaving(false);
     }
-  }, [connectionId, connectionType, db, dirty, loading, name, saving, schema, sql, type]);
+  }, [connectionId, connectionType, db, dirty, loading, name, onSaved, saving, schema, sql, type]);
 
   useEffect(() => {
     if (!active) return;

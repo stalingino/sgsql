@@ -10,16 +10,7 @@ import {
 } from "../lib/commandPaletteCache";
 import { useSchemaRevision } from "../lib/schemaRevision";
 import type { CatalogInfo } from "../lib/schema";
-
-/* ── Types ─────────────────────────────────────────────── */
-
-interface PaletteItem {
-  kind: "db" | "table" | "view";
-  db: string;
-  schema: string;
-  name: string;
-  score: number;
-}
+import { isManagementDatabase, paletteItems, type PaletteItem } from "../lib/commandPaletteItems";
 
 interface CommandPaletteProps {
   connectionId: string;
@@ -33,16 +24,6 @@ interface CommandPaletteProps {
   onClose: () => void;
 }
 
-function defaultSchema(type: "postgres" | "mysql" | "sqlite"): string {
-  if (type === "postgres") return "public";
-  if (type === "sqlite") return "main";
-  return "";
-}
-
-// MySQL system schemas clutter search results with internal tables (grants,
-// variables, etc). Hide them unless the user is currently browsing that db.
-const MYSQL_SYSTEM_SCHEMAS = new Set(["information_schema", "mysql", "performance_schema", "sys"]);
-
 function highlightName(name: string, indices: readonly number[]): React.ReactNode {
   if (indices.length === 0) return name;
   return matchSegments(name, indices).map((segment, i) =>
@@ -52,35 +33,6 @@ function highlightName(name: string, indices: readonly number[]): React.ReactNod
       <span key={i}>{segment.text}</span>
     ),
   );
-}
-
-function paletteItems(
-  catalog: CatalogInfo,
-  connectionType: "postgres" | "mysql" | "sqlite",
-  preferredDb: string,
-): PaletteItem[] {
-  const isHiddenMysqlSystemSchema = (db: string) =>
-    connectionType === "mysql" && MYSQL_SYSTEM_SCHEMAS.has(db) && db !== preferredDb;
-
-  const items: PaletteItem[] = catalog.databases
-    .filter((db) => !isHiddenMysqlSystemSchema(db))
-    .map((db) => ({ kind: "db", db, schema: "", name: db, score: 0 }));
-  const orderedTables = [...catalog.tables]
-    .filter((table) => !isHiddenMysqlSystemSchema(table.db))
-    .sort((a, b) => {
-      if ((a.db === preferredDb) !== (b.db === preferredDb)) return a.db === preferredDb ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-  for (const table of orderedTables) {
-    items.push({
-      kind: table.type === "view" ? "view" : "table",
-      db: table.db,
-      schema: table.schema || defaultSchema(connectionType),
-      name: table.name,
-      score: 0,
-    });
-  }
-  return items;
 }
 
 /* ── Component ─────────────────────────────────────────── */
@@ -172,6 +124,12 @@ export function CommandPalette({
         const bIsCurrentTable = b.item.item.kind !== "db" && b.item.item.db === currentDatabase;
         if (aIsCurrentTable !== bIsCurrentTable) return aIsCurrentTable ? -1 : 1;
 
+        if (!search && a.item.item.kind === "db" && b.item.item.kind === "db") {
+          const aIsManagement = isManagementDatabase(connectionType, a.item.item.db);
+          const bIsManagement = isManagementDatabase(connectionType, b.item.item.db);
+          if (aIsManagement !== bIsManagement) return aIsManagement ? 1 : -1;
+        }
+
         const aRecent = recency.get(itemKey(a.item.item)) ?? Number.MAX_SAFE_INTEGER;
         const bRecent = recency.get(itemKey(b.item.item)) ?? Number.MAX_SAFE_INTEGER;
         if (aRecent !== bRecent) return aRecent - bRecent;
@@ -181,7 +139,7 @@ export function CommandPalette({
         return a.refIndex - b.refIndex;
       })
       .map((result) => ({ ...result.item.item, indices: result.indices }));
-  }, [currentDatabase, items, itemKey, query, recentItems]);
+  }, [connectionType, currentDatabase, items, itemKey, query, recentItems]);
 
   // Scroll selected into view
   useEffect(() => {
