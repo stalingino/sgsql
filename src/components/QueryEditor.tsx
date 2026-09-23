@@ -33,6 +33,7 @@ interface QueryEditorProps {
 }
 
 const PAGE_SIZE = 100;
+const DEFAULT_EDITOR_HEIGHT_RATIO = 0.6;
 
 const ROW_LIMITS = [
   { value: 5, label: "5 rows" },
@@ -184,7 +185,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   // the browser paints — otherwise the fallback 120px height flashes first.
   useLayoutEffect(() => {
     if (containerRef.current) {
-      setEditorHeight(Math.round(containerRef.current.offsetHeight * 0.8));
+      setEditorHeight(Math.round(containerRef.current.offsetHeight * DEFAULT_EDITOR_HEIGHT_RATIO));
     }
   }, []);
   const lastExecutedRef = useRef<QueryExecution | null>(restoredMemory?.executions.at(-1) ?? null);
