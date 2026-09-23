@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Code2, Eye, Loader2, RefreshCw, Save } from "lucide-react";
+import { Code2, Eye, Loader2, RefreshCw, Save, Sparkles } from "lucide-react";
 import type { MonacoSqlEditorHandle } from "./MonacoSqlEditor";
 import {
   applySchemaChanges,
@@ -8,6 +8,7 @@ import {
 import type { EditorCompletionContext } from "../lib/monacoSetup";
 import { buildSchemaObjectReplacement, type DefinitionObjectType } from "../lib/schemaObjectDdl";
 import { notifySchemaChanged } from "../lib/schemaRevision";
+import { dialectToFormatterLanguage, formatSql } from "../lib/sqlFormat";
 
 const MonacoSqlEditor = lazy(() => import("./MonacoSqlEditor"));
 
@@ -107,6 +108,24 @@ export function SchemaObjectEditor({
     return () => window.removeEventListener("sgsql-save-definition", save);
   }, [active, saveDefinition]);
 
+  const formatDefinition = useCallback(() => {
+    const value = editorRef.current?.getValue() ?? sql;
+    if (!value.trim()) return;
+    try {
+      const formatted = formatSql(value, {
+        language: dialectToFormatterLanguage(connectionType),
+        keywordCase: "upper",
+      });
+      editorRef.current?.setValue(formatted);
+      setSql(formatted);
+      setError(null);
+      setNotice(null);
+      editorRef.current?.focus();
+    } catch (cause) {
+      setError(`Could not format definition: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  }, [connectionType, sql]);
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-bg-primary">
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border bg-bg-secondary px-3">
@@ -121,6 +140,16 @@ export function SchemaObjectEditor({
         </span>
         {dirty && <span className="text-[10px] text-warning">Modified</span>}
         <div className="flex-1" />
+        {type === "view" && (
+          <button
+            onClick={formatDefinition}
+            disabled={loading || saving || !sql.trim()}
+            className="flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[10px] text-text-secondary hover:bg-bg-hover disabled:opacity-40"
+            title="Format view SQL"
+          >
+            <Sparkles size={10} /> Format
+          </button>
+        )}
         <button
           onClick={() => void loadDefinition()}
           disabled={loading || saving}
