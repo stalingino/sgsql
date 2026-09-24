@@ -5,6 +5,9 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { loadConfig } from "./lib/config";
 import { startQueryLog } from "./lib/queryLog";
 import "./index.css";
+import { disableTextAssist } from "./lib/disableTextAssist";
+
+disableTextAssist();
 
 // Settings must be available before a table can mount and issue its first query.
 loadConfig().then(() => {
