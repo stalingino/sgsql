@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { executeQuery as rawExecuteQuery, executeQueryBatch as rawExecuteQueryBatch, cancelQuery, ensureConnection, type QueryBatchResult, type QueryResult } from "./schema";
+import { executeQuery as rawExecuteQuery, executeQueryBatch as rawExecuteQueryBatch, importSqlDump as rawImportSqlDump, cancelQuery, ensureConnection, type QueryBatchResult, type QueryResult } from "./schema";
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -24,6 +24,14 @@ interface ExecutionQueueState {
   execute: (connectionId: string, sql: string, db: string) => Promise<QueryResult>;
   /** Execute several statements on one pinned connection, optionally in one transaction. */
   executeBatch: (connectionId: string, statements: string[], db: string, atomic: boolean) => Promise<QueryBatchResult>;
+  /** Import an uncapped SQL dump on one connection, with streamed statement progress. */
+  importDump: (
+    connectionId: string,
+    statements: string[],
+    db: string,
+    disableForeignKeys: boolean,
+    onProgress: (completed: number, total: number) => void,
+  ) => Promise<{ ok: boolean; applied: number; atomic: boolean; duration: number }>;
   /** Cancel the currently running query and clear the queue. */
   cancel: (connectionId: string) => Promise<void>;
   /** Check if a query is currently running for this connection. */
@@ -84,7 +92,7 @@ export const useExecutionQueue = create<ExecutionQueueState>((set, get) => {
         if (!q.running) {
           // Execute immediately
           const controller = new AbortController();
-          updateQueue(connectionId, { running: true, phase: "checking", abortController: controller, queue: [] });
+          updateQueue(connectionId, { running: true, phase: "checking", abortController: controller, queue: [], lastCancelDetail: null });
 
           ensureConnection(connectionId)
             .then(() => {
@@ -112,11 +120,25 @@ export const useExecutionQueue = create<ExecutionQueueState>((set, get) => {
       const q = getQueue(connectionId);
       if (q.running) throw new Error("Another query is already running on this connection");
       const controller = new AbortController();
-      updateQueue(connectionId, { running: true, phase: "checking", abortController: controller, queue: [] });
+      updateQueue(connectionId, { running: true, phase: "checking", abortController: controller, queue: [], lastCancelDetail: null });
       try {
         await ensureConnection(connectionId);
         updateQueue(connectionId, { phase: "executing" });
         return await rawExecuteQueryBatch(connectionId, statements, db, atomic, controller.signal);
+      } finally {
+        drainNext(connectionId);
+      }
+    },
+
+    async importDump(connectionId, statements, db, disableForeignKeys, onProgress) {
+      const q = getQueue(connectionId);
+      if (q.running) throw new Error("Another query is already running on this connection");
+      const controller = new AbortController();
+      updateQueue(connectionId, { running: true, phase: "checking", abortController: controller, queue: [], lastCancelDetail: null });
+      try {
+        await ensureConnection(connectionId);
+        updateQueue(connectionId, { phase: "executing" });
+        return await rawImportSqlDump(connectionId, db, statements, disableForeignKeys, onProgress, controller.signal);
       } finally {
         drainNext(connectionId);
       }

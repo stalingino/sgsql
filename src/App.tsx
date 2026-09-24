@@ -21,6 +21,7 @@ import {
   FilePenLine,
   RefreshCw,
   Code2,
+  Upload,
 } from "lucide-react";
 import { DragDropProvider, type DragEndEvent } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
@@ -48,6 +49,7 @@ import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { CommandPalette } from "./components/CommandPalette";
 import { ChangeHistoryPanel } from "./components/ChangeHistoryPopup";
 import { SchemaObjectEditor } from "./components/SchemaObjectEditor";
+import { SqlImportTab } from "./components/SqlImportTab";
 import type { CellSelection, CellRevealRequest, SortState } from "./components/ResultGrid";
 import type { FilterRow } from "./components/FilterPanel";
 import type { ConnectionProfile } from "./lib/types";
@@ -61,7 +63,7 @@ interface ContentTab {
   db: string;
   schema: string;
   table: string;
-  type: "table" | "view" | "function" | "query";
+  type: "table" | "view" | "function" | "query" | "import";
   identity?: string;
   signature?: string;
   sql?: string;
@@ -116,7 +118,7 @@ function moveTab<T extends { id: string }>(items: T[], sourceId: string, targetI
 }
 
 function contentTabTitle(tab: ContentTab): string {
-  return tab.type === "query"
+  return tab.type === "query" || tab.type === "import"
     ? tab.table
     : [tab.db, tab.schema, tab.type === "function" && tab.signature ? `${tab.table}(${tab.signature})` : tab.table].filter(Boolean).join(".");
 }
@@ -597,6 +599,45 @@ function App() {
     }));
   }, [activeTabId]);
 
+  const openImportTab = useCallback((db: string, schema: string) => {
+    setTabs((prev) => prev.map((tab) => {
+      if (tab.id !== activeTabId) return tab;
+      const workspace = tab.workspaces[db];
+      if (!workspace) return tab;
+      const existing = workspace.contentTabs.find((contentTab) => contentTab.type === "import");
+      if (existing) {
+        return {
+          ...tab,
+          activeDbName: db,
+          mainView: "workspace",
+          workspaces: { ...tab.workspaces, [db]: { ...workspace, activeContentTabId: existing.id } },
+        };
+      }
+
+      const contentTab: ContentTab = {
+        id: nextContentTabId(),
+        db,
+        schema,
+        table: "Import SQL",
+        type: "import",
+      };
+      return {
+        ...tab,
+        activeDbName: db,
+        mainView: "workspace",
+        workspaces: {
+          ...tab.workspaces,
+          [db]: {
+            ...workspace,
+            contentTabs: [...workspace.contentTabs, contentTab],
+            activeContentTabId: contentTab.id,
+          },
+        },
+      };
+    }));
+    setCellSelection(null);
+  }, [activeTabId]);
+
   const closeContentTab = useCallback((contentTabId: string) => {
     const tabToUpdate = tabsRef.current.find((tab) => tab.id === activeTabId);
     const workspace = tabToUpdate?.activeDbName
@@ -631,7 +672,7 @@ function App() {
       if (!ws) return tab;
 
       const droppedIdx = ws.contentTabs.findIndex((contentTab) =>
-        contentTab.type !== "query"
+        (contentTab.type === "table" || contentTab.type === "view" || contentTab.type === "function")
         && contentTab.db === db
         && contentTab.schema === schema
         && contentTab.table === table,
@@ -920,11 +961,11 @@ function App() {
 
         {/* Right toolbar */}
         <div className="flex items-center gap-0.5 mx-1 shrink-0 relative">
-          {/* Kill running query */}
+          {/* Kill running query or import */}
           {isRunning && activeTab?.connectionId && (
             <button
               onClick={() => execCancel(activeTab.connectionId!)}
-              title="Kill running query"
+              title="Kill running query or import"
               className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-error hover:bg-error/10 transition-colors cursor-pointer border border-error/30"
             >
               <StopCircle size={12} />
@@ -1091,6 +1132,7 @@ function App() {
                 onCloseDb={closeDb}
                 onDbReorder={reorderDbs}
                 onAddDb={() => setCommandPaletteOpen("db-only")}
+                onImport={openImportTab}
                 usersActive={activeTab.mainView === "users"}
                 onOpenUsers={openUsersView}
                 onTableSelect={handleTableSelect}
@@ -1219,6 +1261,25 @@ function App() {
                             }));
                           }}
                         />
+                      ) : ct.type === "import" ? (
+                        <SqlImportTab
+                          connectionId={activeTab.connectionId!}
+                          db={ct.db}
+                          dialect={activeTab.profile.type}
+                          onImported={() => {
+                            if (!activeTab.connectionId) return;
+                            notifySchemaChanged(activeTab.connectionId);
+                            const openTables = workspace.contentTabs
+                              .filter((content) => content.type === "table" || content.type === "view")
+                              .map((content) => ({
+                                connectionId: activeTab.connectionId!,
+                                db: content.db,
+                                schema: content.schema,
+                                table: content.table,
+                              }));
+                            if (openTables.length > 0) useEditStore.getState().requestDataRefresh(openTables);
+                          }}
+                        />
                       ) : ct.type === "function" ? (
                         <SchemaObjectEditor
                           connectionId={activeTab.connectionId!}
@@ -1338,7 +1399,7 @@ function App() {
             </main>
 
             {/* Right detail panel */}
-            {detailPanelVisible && activeTab.mainView !== "users" && activeContentTab?.type !== "function" && activeContentTab?.viewMode !== "structure" && activeContentTab?.viewMode !== "definition" && (
+            {detailPanelVisible && activeTab.mainView !== "users" && activeContentTab?.type !== "function" && activeContentTab?.type !== "import" && activeContentTab?.viewMode !== "structure" && activeContentTab?.viewMode !== "definition" && (
               <ResizableDetailPanel>
                 <aside className="h-full border-l border-border bg-bg-primary">
                   <ErrorBoundary label="Detail panel">
@@ -1476,6 +1537,8 @@ function ContentTabItem({
     >
       {ct.type === "query"
         ? <span className="shrink-0 text-[9px] font-bold text-accent leading-none">SQL</span>
+        : ct.type === "import"
+          ? <Upload size={12} className="shrink-0 text-accent" />
         : ct.type === "view"
           ? <Eye size={12} className="shrink-0 text-purple-400" />
           : ct.type === "function"

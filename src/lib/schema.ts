@@ -1,4 +1,4 @@
-import { SidecarHttpError, sidecarFetch } from "./sidecar";
+import { SidecarHttpError, sidecarFetch, sidecarFetchNdjson } from "./sidecar";
 import type { ConnectionProfile } from "./types";
 
 /* ── Response / domain types ─────────────────────────────── */
@@ -454,4 +454,31 @@ export async function applySchemaChanges(connId: string, db: string, statements:
     method: "POST",
     body: JSON.stringify({ statements, db, disableForeignKeys }),
   });
+}
+
+type SqlImportEvent =
+  | { type: "progress"; completed: number; total: number }
+  | { type: "complete"; ok: true; applied: number; total: number; atomic: boolean; duration: number; _connection?: { connectionId: string; reconnected: true } }
+  | { type: "error"; error: string; applied: number; total: number };
+
+export async function importSqlDump(
+  connId: string,
+  db: string,
+  statements: string[],
+  disableForeignKeys = false,
+  onProgress?: (completed: number, total: number) => void,
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; applied: number; atomic: boolean; duration: number }> {
+  let result: { ok: boolean; applied: number; atomic: boolean; duration: number } | null = null;
+  await sidecarFetchNdjson<SqlImportEvent>(`/import/${connId}`, {
+    method: "POST",
+    body: JSON.stringify({ statements, db, disableForeignKeys }),
+    signal,
+  }, (event) => {
+    if (event.type === "progress") onProgress?.(event.completed, event.total);
+    else if (event.type === "error") throw new Error(event.error);
+    else result = { ok: event.ok, applied: event.applied, atomic: event.atomic, duration: event.duration };
+  });
+  if (!result) throw new Error("The import ended before completion was confirmed");
+  return result;
 }

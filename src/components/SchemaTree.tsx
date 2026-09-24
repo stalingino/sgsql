@@ -11,6 +11,11 @@ import {
   Plus,
   Users,
   X,
+  Download,
+  Upload,
+  CheckSquare,
+  Square,
+  SquareMinus,
 } from "lucide-react";
 import {
   applySchemaChanges,
@@ -27,6 +32,7 @@ import { CreateTableModal } from "./CreateTableModal";
 import { HighlightedSQL } from "../lib/highlightSQL";
 import { fuzzySearchResults, matchSegments } from "../lib/fuzzySearch";
 import { ConnectionSchemaCache, type SchemaCache } from "../lib/schemaCache";
+import { TableExportModal } from "./TableExportModal";
 
 /* ── Props ──────────────────────────────────────────────── */
 
@@ -39,6 +45,7 @@ interface SchemaTreeProps {
   onCloseDb: (db: string) => void;
   onDbReorder: (sourceDb: string, targetDb: string) => void;
   onAddDb: () => void;
+  onImport: (db: string, schema: string) => void;
   /** Server-level user management view is showing instead of a db workspace. */
   usersActive?: boolean;
   onOpenUsers?: () => void;
@@ -64,6 +71,7 @@ export function SchemaTree({
   onCloseDb,
   onDbReorder,
   onAddDb,
+  onImport,
   usersActive = false,
   onOpenUsers,
   onTableSelect,
@@ -166,6 +174,7 @@ export function SchemaTree({
             schemas={schemas}
             onSchemaChange={(nextSchema) => activeDb && setSelectedSchemas((current) => ({ ...current, [schemaSelectionKey]: nextSchema }))}
             onCreate={() => setCreateOpen(true)}
+            onImport={() => onImport(activeDb, schema)}
           />
         </ResizableTableList>
       )}
@@ -276,6 +285,7 @@ function TableList({
   schemas,
   onSchemaChange,
   onCreate,
+  onImport,
 }: {
   db: string;
   schema: string;
@@ -288,12 +298,15 @@ function TableList({
   schemas: string[];
   onSchemaChange: (schema: string) => void;
   onCreate: () => void;
+  onImport: () => void;
 }) {
   const [objects, setObjects] = useState<SchemaObjectInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [selectedTableKey, setSelectedTableKey] = useState<string | null>(null);
+  const [selectedTableKeys, setSelectedTableKeys] = useState<Set<string>>(() => new Set());
+  const [exportOpen, setExportOpen] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<SchemaObjectInfo["type"]>>(
     () => new Set<SchemaObjectInfo["type"]>(["view", "function"]),
   );
@@ -305,7 +318,12 @@ function TableList({
   const contextMenuRef = useRef<HTMLDivElement>(null);
 
   // Clear search when db changes
-  useEffect(() => { setQuery(""); setSelectedTableKey(null); }, [db, schema]);
+  useEffect(() => {
+    setQuery("");
+    setSelectedTableKey(null);
+    setSelectedTableKeys(new Set());
+    setExportOpen(false);
+  }, [db, schema]);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -372,6 +390,9 @@ function TableList({
   );
 
   const objectKey = (object: SchemaObjectInfo) => `${object.type}:${object.identity || object.name}`;
+  const selectedTables = objects
+    .filter((object) => object.type === "table" && selectedTableKeys.has(objectKey(object)))
+    .map((object) => object.name);
   const selectedIdx = navigable.findIndex((object) => objectKey(object) === selectedTableKey);
   const selectTable = (object: SchemaObjectInfo, open = true) => {
     setSelectedTableKey(objectKey(object));
@@ -382,6 +403,28 @@ function TableList({
     if (connectionType === "mysql") return `${quoteIdent(connectionType, db)}.${quoteIdent(connectionType, table)}`;
     if (connectionType === "postgres") return `${quoteIdent(connectionType, schema || "public")}.${quoteIdent(connectionType, table)}`;
     return quoteIdent(connectionType, table);
+  };
+
+  const toggleTableSelection = (object: SchemaObjectInfo) => {
+    if (object.type !== "table") return;
+    const key = objectKey(object);
+    setSelectedTableKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleAllVisibleTables = () => {
+    const visibleKeys = grouped.table.map(objectKey);
+    const allSelected = visibleKeys.length > 0 && visibleKeys.every((key) => selectedTableKeys.has(key));
+    setSelectedTableKeys((current) => {
+      const next = new Set(current);
+      for (const key of visibleKeys) {
+        if (allSelected) next.delete(key); else next.add(key);
+      }
+      return next;
+    });
   };
 
   const beginAction = (kind: "truncate" | "drop") => {
@@ -409,6 +452,11 @@ function TableList({
       }
       if (pendingAction.kind === "drop") {
         setSelectedTableKey(null);
+        setSelectedTableKeys((current) => {
+          const next = new Set(current);
+          next.delete(`table:${pendingAction.table.name}`);
+          return next;
+        });
         onTableDrop?.(db, schema, pendingAction.table.name);
       }
       setPendingAction(null);
@@ -444,6 +492,7 @@ function TableList({
         <div className="flex items-center gap-1 mb-1.5">
           {connectionType === "postgres" && <select value={schema} onChange={(event) => onSchemaChange(event.target.value)} className="min-w-0 flex-1 bg-bg-hover text-text-primary text-[11px] px-1.5 py-1 rounded border border-border outline-none" title="Schema">{schemas.map((item) => <option key={item}>{item}</option>)}</select>}
           <button onClick={onCreate} className="flex items-center gap-1 px-2 py-1 rounded border border-border text-[10px] hover:bg-bg-hover whitespace-nowrap" title="Create table"><Plus size={10} />Table</button>
+          <button onClick={onImport} className="flex items-center gap-1 px-2 py-1 rounded border border-border text-[10px] hover:bg-bg-hover whitespace-nowrap" title="Import SQL dump"><Upload size={10} />Import</button>
         </div>
         <input
           ref={filterInputRef}
@@ -454,6 +503,14 @@ function TableList({
           placeholder="Filter schema objects..."
           className="w-full bg-bg-hover text-text-primary text-[12px] font-mono placeholder-text-muted px-2 py-1 rounded outline-none focus:ring-1 focus:ring-accent/50"
         />
+        {selectedTableKeys.size > 0 && (
+          <div className="mt-1.5 flex items-center gap-1 border-t border-border/70 pt-1.5 text-[10px]">
+            <CheckSquare size={11} className="shrink-0 text-accent" />
+            <span className="min-w-0 flex-1 truncate text-text-secondary">{selectedTableKeys.size} selected</span>
+            <button onClick={() => setExportOpen(true)} className="flex items-center gap-1 rounded bg-accent px-2 py-0.5 text-white hover:bg-accent-hover"><Download size={10} />Export</button>
+            <button onClick={() => setSelectedTableKeys(new Set())} className="rounded px-1.5 py-0.5 text-text-muted hover:bg-bg-hover hover:text-text-primary">Clear</button>
+          </div>
+        )}
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -481,6 +538,8 @@ function TableList({
             objects={grouped[type]}
             collapsed={!query && collapsedGroups.has(type)}
             selectedKey={selectedTableKey}
+            selectedKeys={selectedTableKeys}
+            selectionMode={selectedTableKeys.size > 0}
             objectKey={objectKey}
             onToggle={() => setCollapsedGroups((current) => {
               const next = new Set(current);
@@ -488,6 +547,8 @@ function TableList({
               return next;
             })}
             onSelect={selectTable}
+            onToggleSelection={toggleTableSelection}
+            onToggleAll={toggleAllVisibleTables}
             onContextMenu={(object, event) => {
               event.preventDefault();
               selectTable(object, false);
@@ -522,6 +583,16 @@ function TableList({
           onConfirm={() => void runAction()}
         />
       )}
+      {exportOpen && selectedTables.length > 0 && (
+        <TableExportModal
+          connectionId={connectionId}
+          db={db}
+          schema={schema}
+          dialect={connectionType}
+          tables={selectedTables}
+          onClose={() => setExportOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -544,18 +615,26 @@ function ObjectGroup({
   objects,
   collapsed,
   selectedKey,
+  selectedKeys,
+  selectionMode,
   objectKey,
   onToggle,
   onSelect,
+  onToggleSelection,
+  onToggleAll,
   onContextMenu,
 }: {
   type: SchemaObjectInfo["type"];
   objects: Array<SchemaObjectInfo & { indices: readonly number[] }>;
   collapsed: boolean;
   selectedKey: string | null;
+  selectedKeys: Set<string>;
+  selectionMode: boolean;
   objectKey: (object: SchemaObjectInfo) => string;
   onToggle: () => void;
   onSelect: (object: SchemaObjectInfo) => void;
+  onToggleSelection: (object: SchemaObjectInfo) => void;
+  onToggleAll: () => void;
   onContextMenu: (object: SchemaObjectInfo, event: React.MouseEvent) => void;
 }) {
   const label = type === "table" ? "Tables" : type === "view" ? "Views" : "Functions";
@@ -566,6 +645,7 @@ function ObjectGroup({
       : <Code2 size={11} className="text-emerald-400" />;
 
   const expanded = !collapsed && objects.length > 0;
+  const selectedCount = type === "table" ? objects.filter((object) => selectedKeys.has(objectKey(object))).length : 0;
   const panelClassName = !expanded
     ? "shrink-0"
     : type === "table"
@@ -573,16 +653,26 @@ function ObjectGroup({
       : "flex max-h-[40%] shrink-0 flex-col";
 
   return <section className={panelClassName}>
-    <button
-      onClick={onToggle}
-      aria-expanded={!collapsed}
-      className="flex w-full shrink-0 items-center gap-1.5 border-y border-border/70 bg-bg-secondary px-2 py-1 text-left text-[9px] font-semibold uppercase tracking-wider text-text-muted hover:bg-bg-hover"
-    >
-      {collapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
-      {icon}
-      <span>{label}</span>
-      <span className="ml-auto rounded-full bg-bg-hover px-1.5 py-px text-[8px] tabular-nums">{objects.length}</span>
-    </button>
+    <div className="flex w-full shrink-0 items-center border-y border-border/70 bg-bg-secondary text-[9px] font-semibold uppercase tracking-wider text-text-muted hover:bg-bg-hover">
+      {type === "table" && objects.length > 0 && (
+        <button
+          type="button"
+          role="checkbox"
+          aria-checked={selectedCount === 0 ? false : selectedCount === objects.length ? true : "mixed"}
+          aria-label={selectedCount === objects.length ? "Deselect all visible tables" : "Select all visible tables"}
+          onClick={onToggleAll}
+          className={`ml-1.5 rounded p-0.5 transition hover:text-text-primary ${selectedCount > 0 ? "text-accent" : "text-text-muted"}`}
+        >
+          {selectedCount === objects.length ? <CheckSquare size={11} /> : selectedCount > 0 ? <SquareMinus size={11} /> : <Square size={11} />}
+        </button>
+      )}
+      <button onClick={onToggle} aria-expanded={!collapsed} className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left">
+        {collapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
+        {icon}
+        <span>{label}</span>
+        <span className="ml-auto rounded-full bg-bg-hover px-1.5 py-px text-[8px] tabular-nums">{objects.length}</span>
+      </button>
+    </div>
     {expanded && (
       <div className={`min-h-0 overflow-y-auto py-0.5 ${type === "table" ? "flex-1" : ""}`}>
         {objects.map((object) => (
@@ -591,7 +681,13 @@ function ObjectGroup({
             object={object}
             indices={object.indices}
             selected={selectedKey === objectKey(object)}
-            onSelect={() => onSelect(object)}
+            checked={selectedKeys.has(objectKey(object))}
+            selectionMode={selectionMode}
+            onSelect={(event) => {
+              if (object.type === "table" && (event.metaKey || event.ctrlKey)) onToggleSelection(object);
+              else onSelect(object);
+            }}
+            onToggleSelection={() => onToggleSelection(object)}
             onContextMenu={(event) => onContextMenu(object, event)}
           />
         ))}
@@ -604,13 +700,19 @@ function SchemaObjectNode({
   object,
   indices = [],
   selected,
+  checked,
+  selectionMode,
   onSelect,
+  onToggleSelection,
   onContextMenu,
 }: {
   object: SchemaObjectInfo;
   indices?: readonly number[];
   selected?: boolean;
-  onSelect: () => void;
+  checked: boolean;
+  selectionMode: boolean;
+  onSelect: (event: React.MouseEvent) => void;
+  onToggleSelection: () => void;
   onContextMenu: (event: React.MouseEvent) => void;
 }) {
   const nodeRef = useRef<HTMLDivElement>(null);
@@ -624,12 +726,27 @@ function SchemaObjectNode({
   return (
     <div
       ref={nodeRef}
-      className={`flex items-center gap-1.5 py-[3px] pr-2 pl-3 cursor-pointer transition-colors ${
-        selected ? "bg-accent/20" : "hover:bg-bg-hover"
+      role="treeitem"
+      aria-selected={selected}
+      className={`group flex items-center gap-1.5 py-[3px] pr-2 pl-3 cursor-pointer transition-colors ${
+        selected ? "bg-accent/20" : checked ? "bg-accent/10" : "hover:bg-bg-hover"
       }`}
       onClick={onSelect}
       onContextMenu={onContextMenu}
     >
+      {object.type === "table" && (
+        <button
+          type="button"
+          role="checkbox"
+          aria-checked={checked}
+          aria-label={`${checked ? "Deselect" : "Select"} ${object.name}`}
+          onClick={(event) => { event.stopPropagation(); onToggleSelection(); }}
+          onDoubleClick={(event) => event.stopPropagation()}
+          className={`-ml-1 shrink-0 rounded p-0.5 transition hover:text-text-primary ${checked ? "text-accent" : selectionMode ? "text-text-muted" : "text-text-muted opacity-0 group-hover:opacity-100 focus:opacity-100"}`}
+        >
+          {checked ? <CheckSquare size={12} /> : <Square size={12} />}
+        </button>
+      )}
       {object.type === "view"
         ? <Eye size={14} className="shrink-0 text-purple-400" />
         : object.type === "function"

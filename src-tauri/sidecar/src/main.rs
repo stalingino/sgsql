@@ -9,6 +9,7 @@ mod trace;
 mod types;
 mod value;
 
+use axum::extract::DefaultBodyLimit;
 use axum::http::{header, HeaderValue, Method};
 use axum::middleware;
 use axum::routing::{any, get, post};
@@ -45,6 +46,10 @@ fn assert_handlers_send() {
         axum::extract::Path(String::new()),
         axum::body::Bytes::new(),
     ));
+    assert_send(routes::apply::handle_sql_import(
+        axum::extract::Path(String::new()),
+        axum::body::Bytes::new(),
+    ));
 }
 
 #[tokio::main]
@@ -74,6 +79,11 @@ async fn main() {
         .route("/cancel", post(routes::cancel::handle_cancel))
         .route("/query-log", any(routes::ws::handle_query_log))
         .route("/schema/{connId}/apply", post(routes::apply::handle_schema_apply))
+        .route(
+            "/import/{connId}",
+            post(routes::apply::handle_sql_import)
+                .layer(DefaultBodyLimit::max(256 * 1024 * 1024)),
+        )
         .route("/schema/{connId}/{action}", get(routes::schema::handle_schema_request))
         .route("/shares", post(routes::shares::handle_create).get(routes::shares::handle_list))
         .route("/shares/{id}", get(routes::shares::handle_get).delete(routes::shares::handle_delete))
