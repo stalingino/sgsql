@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api.js";
-import { Braces, X } from "lucide-react";
+import { Braces, Check, Clipboard, X } from "lucide-react";
 import { registerSqlLanguageSupport } from "../lib/monacoSetup";
 import { useThemeStore } from "../lib/theme";
 import { modKey } from "../lib/platform";
@@ -39,6 +39,7 @@ export function ValueEditorModal({ title, dataType, value, language, size, readO
   const resolvedTheme = useThemeStore((s) => s.resolved);
   const [dirty, setDirty] = useState(false);
   const [jsonError, setJsonError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const onApplyRef = useRef(onApply);
   onApplyRef.current = onApply;
@@ -134,6 +135,16 @@ export function ValueEditorModal({ title, dataType, value, language, size, readO
     }
   };
 
+  // Copies the editor's current text, including edits that haven't been applied.
+  const copy = async () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    await navigator.clipboard.writeText(editor.getValue());
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+    editor.focus();
+  };
+
   // Portal to body: the detail panel / grid create their own stacking contexts, which would paint over a nested modal.
   return createPortal(
     <div
@@ -152,6 +163,15 @@ export function ValueEditorModal({ title, dataType, value, language, size, readO
           {dataType && <span className="text-[11px] font-mono text-text-secondary truncate">{dataType}</span>}
           {dirty && <span className="text-[10px] text-warning">modified</span>}
           <div className="flex-1" />
+          <button
+            type="button"
+            onClick={copy}
+            title="Copy value"
+            className="flex items-center gap-1 px-2 py-1 text-[11px] rounded border border-border text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+          >
+            {copied ? <Check size={12} /> : <Clipboard size={12} />}
+            {copied ? "Copied" : "Copy"}
+          </button>
           {language === "json" && !readOnly && (
             <button
               type="button"
