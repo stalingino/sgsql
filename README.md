@@ -1,5 +1,20 @@
 # SGSql
 
+**Stupidly Good SQL** — a fast desktop SQL client for MySQL, PostgreSQL and
+SQLite, with a built-in way to share a connection with AI agents over MCP.
+
+![SGSql welcome screen](docs/screenshots/welcome.png)
+
+## Screenshots
+
+| Connected to a database | Query log and pending changes |
+|---|---|
+| ![Connected to a MySQL database](docs/screenshots/connected.png) | ![Query log and pending changes panel](docs/screenshots/query-log.png) |
+
+| Share with an AI agent | Keyboard shortcuts |
+|---|---|
+| ![Share with AI agent dialog](docs/screenshots/share-with-ai-agent.png) | ![Keyboard shortcuts](docs/screenshots/keyboard-shortcuts.png) |
+
 ## Build the macOS app
 
 SGSql is bundled as a macOS application using Tauri. The database sidecar is a Rust binary (`src-tauri/sidecar`, built on axum + sqlx) compiled with Cargo and included in the application bundle.
@@ -142,7 +157,11 @@ Click the MCP icon in the top-right toolbar, choose **Selected tables** or
 **All server databases** for every database the account can access. Choose
 **Read-only** (default) or read-write, and start sharing. Neither full-database
 nor all-server access enumerates tables when the share starts; both cover tables
-added later. The dialog shows a ready-to-paste config, for example:
+added later.
+
+![Share with AI agent dialog](docs/screenshots/share-with-ai-agent.png)
+
+The dialog shows a ready-to-paste config, for example:
 
 ```bash
 claude mcp add --transport http sgsql-my-db http://127.0.0.1:45822/mcp/<share id> \
