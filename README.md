@@ -5,6 +5,52 @@ SQLite, with a built-in way to share a connection with AI agents over MCP.
 
 ![SGSql welcome screen](docs/screenshots/welcome.png)
 
+Most SQL clients are either slow and bloated or missing the one thing you
+need. SGSql opens fast, runs your query and gets out of the way.
+
+## Features
+
+- **MySQL, PostgreSQL and SQLite**, including connections over SSH tunnels
+- **Monaco editor** (the editor behind VS Code) with schema-aware autocomplete
+- **Fast data grid** with inline row editing, filters, sorting and a
+  pending-changes panel to review, save or revert edits
+- **Keyboard-first**: command palette (⌘P), switch database (⌘K), new query
+  tab (⌘E), fuzzy search across tables, views and functions
+- **Import and export**: export several tables at once; SQL import runs in a
+  single transaction
+- **Query history and log**, with query output remembered per connection
+- **Share with AI agents**: expose an open connection to Claude Code, Cursor,
+  Codex and other agents as a local MCP server
+
+### Share a connection with AI, safely
+
+Instead of pasting schemas into a chat or handing an agent your real
+credentials, click the MCP icon and share the connection:
+
+- Choose the scope: selected tables, the whole database, or (MySQL) every
+  database the account can reach
+- **Read-only by default**; read-write is opt-in
+- The agent never sees your credentials. Every statement is parsed and
+  checked first, and DDL and side-effect functions like `pg_sleep` are blocked
+- Row caps and per-statement timeouts
+- The agent's queries appear in your query log, so you can see exactly what it ran
+- Shares end when the tab closes, with a fresh token every time
+
+Then ask things like *"why is this report query slow?"* or *"find orders with
+no matching invoice"* and the agent works against the real schema. See
+[Share a connection with an AI agent](#share-a-connection-with-an-ai-agent)
+for the full details.
+
+## Download
+
+Get the latest `.dmg` from
+[Releases](https://github.com/stalingino/sgsql/releases/latest). The app
+updates itself after that.
+
+- macOS on Apple Silicon only, for now
+- Builds are not notarized yet, so the first launch needs a right-click →
+  **Open** (or approval in System Settings → Privacy & Security)
+
 ## Screenshots
 
 | Connected to a database | Query log and pending changes |
@@ -237,3 +283,8 @@ existing users.
 In the app, users can check for updates manually from Settings → Updates, or
 you can wire `checkForUpdate()` from `src/lib/updater.ts` into a startup
 check.
+
+## License
+
+Free for personal and other non-commercial use under the
+[PolyForm Noncommercial License 1.0.0](LICENSE).
