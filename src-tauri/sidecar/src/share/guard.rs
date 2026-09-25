@@ -19,7 +19,7 @@ use std::fmt;
 use std::ops::ControlFlow;
 
 use sqlparser::ast::{
-    visit_relations, Expr, ObjectName, ObjectNamePart, Query, Select, Statement, Visit, Visitor,
+    visit_relations, Expr, ObjectName, ObjectNamePart, Query, Select, ShowCreateObject, Statement, Visit, Visitor,
 };
 use sqlparser::dialect::{Dialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect};
 use sqlparser::parser::Parser;
@@ -80,6 +80,10 @@ impl std::error::Error for GuardError {}
 #[derive(Debug)]
 pub struct Verdict {
     pub kind: Kind,
+    /// The statement produces a result set (reads, `RETURNING`, `FOR UPDATE`).
+    pub returns_rows: bool,
+    /// The statement is an INSERT, so a generated id is worth reporting.
+    pub is_insert: bool,
 }
 
 /// Functions with side effects that a read-only transaction does not block.
@@ -254,7 +258,24 @@ pub fn classify(statement: &Statement) -> Result<Kind, GuardError> {
         Statement::Call(_) | Statement::Execute { .. } | Statement::Prepare { .. } => {
             Err(GuardError::Forbidden("Procedure/prepared"))
         }
+        // Table metadata (MySQL); `check` limits these to MySQL shares.
+        Statement::ShowColumns { .. }
+        | Statement::ExplainTable { .. }
+        | Statement::ShowCreate { obj_type: ShowCreateObject::Table | ShowCreateObject::View, .. } => Ok(Kind::Read),
         _ => Err(GuardError::Forbidden("Utility and DDL")),
+    }
+}
+
+fn is_table_metadata(statement: &Statement) -> bool {
+    matches!(statement, Statement::ShowColumns { .. } | Statement::ExplainTable { .. } | Statement::ShowCreate { .. })
+}
+
+fn returns_rows(statement: &Statement, kind: Kind) -> bool {
+    match statement {
+        Statement::Insert(insert) => insert.returning.is_some(),
+        Statement::Update(update) => update.returning.is_some(),
+        Statement::Delete(delete) => delete.returning.is_some(),
+        _ => kind == Kind::Read || matches!(statement, Statement::Query(_)),
     }
 }
 
@@ -271,6 +292,10 @@ pub fn referenced_tables(statement: &Statement) -> Vec<ObjectName> {
     // are not marked as relations by the parser.
     if let Statement::Delete(delete) = statement {
         names.extend(delete.tables.iter().cloned());
+    }
+    // `SHOW CREATE TABLE t` is not marked as a relation either.
+    if let Statement::ShowCreate { obj_name, .. } = statement {
+        names.push(obj_name.clone());
     }
     names.retain(|name| {
         !(name.0.len() == 1
@@ -346,6 +371,9 @@ fn ensure_allowed(share: &Share, key: TableKey, display: &str) -> Result<TableKe
 pub fn check(share: &Share, sql: &str) -> Result<Verdict, GuardError> {
     let statement = parse_single(sql, share.db_type)?;
     let kind = classify(&statement)?;
+    if is_table_metadata(&statement) && share.db_type != DbType::MySql {
+        return Err(GuardError::Forbidden("SHOW / DESCRIBE"));
+    }
     if share.read_only && kind == Kind::Write {
         return Err(GuardError::WriteInReadOnly);
     }
@@ -356,7 +384,11 @@ pub fn check(share: &Share, sql: &str) -> Result<Verdict, GuardError> {
         let key = resolve(share, &name)?;
         ensure_allowed(share, key, &name.to_string())?;
     }
-    Ok(Verdict { kind })
+    Ok(Verdict {
+        kind,
+        returns_rows: returns_rows(&statement, kind),
+        is_insert: matches!(statement, Statement::Insert(_)),
+    })
 }
 
 #[cfg(test)]
@@ -605,6 +637,39 @@ mod tests {
         let mysql = share(DbType::MySql, true, &[("", "users")]);
         assert!(check(&mysql, "SELECT * FROM `app`.`users`").is_ok());
         assert!(matches!(check(&mysql, "SELECT * FROM otherdb.users"), Err(GuardError::TableNotAllowed { .. })));
+    }
+
+    #[test]
+    fn mysql_table_metadata_statements_respect_the_allowlist() {
+        let mysql = share(DbType::MySql, true, &[("", "users")]);
+        for sql in [
+            "SHOW COLUMNS FROM users",
+            "SHOW FULL COLUMNS FROM users LIKE 'a%'",
+            "SHOW COLUMNS IN app.users",
+            "DESCRIBE users",
+            "DESC `app`.`users`",
+            "SHOW CREATE TABLE users",
+            "EXPLAIN SELECT MAX(id) FROM users",
+        ] {
+            assert_eq!(check(&mysql, sql).unwrap().kind, Kind::Read, "{sql}");
+        }
+        for sql in ["SHOW COLUMNS FROM secrets", "SHOW COLUMNS FROM users FROM other", "DESCRIBE other.users", "SHOW CREATE TABLE secrets"] {
+            assert!(matches!(check(&mysql, sql), Err(GuardError::TableNotAllowed { .. })), "{sql}");
+        }
+        assert!(matches!(check(&mysql, "SHOW CREATE PROCEDURE p"), Err(GuardError::Forbidden(_))));
+        assert!(matches!(check(&pg_ro(), "DESCRIBE users"), Err(GuardError::Forbidden(_))));
+    }
+
+    #[test]
+    fn verdict_reports_result_sets_and_inserts() {
+        let insert = check(&pg_rw(), "INSERT INTO users (id) VALUES (1)").unwrap();
+        assert!(insert.is_insert && !insert.returns_rows);
+        let returning = check(&pg_rw(), "INSERT INTO users (id) VALUES (1) RETURNING id").unwrap();
+        assert!(returning.is_insert && returning.returns_rows);
+        assert!(check(&pg_rw(), "UPDATE users SET id = 2 RETURNING id").unwrap().returns_rows);
+        assert!(check(&pg_rw(), "SELECT * FROM users FOR UPDATE").unwrap().returns_rows);
+        assert!(!check(&pg_rw(), "DELETE FROM users").unwrap().returns_rows);
+        assert!(check(&pg_ro(), "SELECT 1").unwrap().returns_rows);
     }
 
     #[test]

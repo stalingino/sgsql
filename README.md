@@ -149,8 +149,13 @@ claude mcp add --transport http sgsql-my-db http://127.0.0.1:45822/mcp/<share id
   --header "Authorization: Bearer <token>"
 ```
 
-The agent gets `list_tables`, `describe_table`, `get_table_ddl` and `query`;
-all-server MySQL shares also get `list_databases`. It never sees your database
+The agent gets `list_tables` (names only, with an optional `pattern` filter),
+`describe_table`, `get_table_ddl` and `query`; read-write shares also get
+`transaction`, which runs up to 100 statements all-or-nothing, and all-server
+MySQL shares also get `list_databases`. Writes return `affectedRows` plus
+`lastInsertId` (MySQL/SQLite) or `RETURNING` rows (Postgres/SQLite), and
+`query` accepts `maxValueLength` to cut long text values short. On MySQL,
+`SHOW COLUMNS`, `SHOW CREATE TABLE` and `DESCRIBE` work for accessible tables. It never sees your database
 credentials: the sidecar executes statements on its own dedicated connection
 and enforces the rules before anything reaches the database.
 
@@ -161,7 +166,8 @@ and enforces the rules before anything reaches the database.
   DDL / `SET` / `COPY` / transaction control and
   side-effect functions (`pg_sleep`, `pg_terminate_backend`, `sleep`, …) are
   rejected. Read-only shares also run in a database-level read-only session.
-- Results are capped (500 rows by default) and each statement has a timeout.
+- Results are capped (500 rows by default) and each statement has a timeout
+  (15 s by default); both limits are stated in the tool descriptions.
   The 500-table limit applies only to selected-table shares; full database
   and all-server shares have no table-count limit. `list_databases` discovers
   database names and `list_tables` discovers tables in one database on demand.

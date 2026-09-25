@@ -8,8 +8,8 @@ use std::sync::atomic::Ordering;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::exec::{QueryResult, ToolError};
-use super::types::{AllowedTable, Share};
+use super::exec::{QueryResult, ToolError, MAX_BATCH_STATEMENTS};
+use super::types::{AllowedTable, DbType, Share};
 
 pub const SERVER_PROTOCOL_VERSION: &str = "2025-03-26";
 const SUPPORTED_PROTOCOL_VERSIONS: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"];
@@ -18,6 +18,10 @@ pub const PARSE_ERROR: i64 = -32700;
 pub const INVALID_REQUEST: i64 = -32600;
 pub const METHOD_NOT_FOUND: i64 = -32601;
 pub const INVALID_PARAMS: i64 = -32602;
+
+const DEFAULT_TABLE_LIMIT: usize = 500;
+const MAX_TABLE_LIMIT: usize = 5_000;
+const MIN_VALUE_LENGTH: usize = 20;
 
 #[derive(Deserialize, Debug)]
 pub struct RpcRequest {
@@ -45,6 +49,7 @@ pub trait ToolBackend: Send + Sync {
     fn describe_table(&self, table: &str) -> impl Future<Output = Result<Value, ToolError>> + Send;
     fn table_ddl(&self, table: &str) -> impl Future<Output = Result<String, ToolError>> + Send;
     fn query(&self, sql: &str) -> impl Future<Output = Result<QueryResult, ToolError>> + Send;
+    fn transaction(&self, statements: &[String]) -> impl Future<Output = Result<Vec<QueryResult>, ToolError>> + Send;
 }
 
 pub struct LiveBackend<'a>(pub &'a Share);
@@ -68,6 +73,10 @@ impl ToolBackend for LiveBackend<'_> {
 
     async fn query(&self, sql: &str) -> Result<QueryResult, ToolError> {
         super::exec::run(self.0, sql).await
+    }
+
+    async fn transaction(&self, statements: &[String]) -> Result<Vec<QueryResult>, ToolError> {
+        super::exec::run_batch(self.0, statements).await
     }
 }
 
@@ -101,6 +110,27 @@ fn table_arg_schema() -> Value {
     })
 }
 
+fn max_value_length_schema() -> Value {
+    json!({
+        "type": "integer",
+        "minimum": MIN_VALUE_LENGTH,
+        "description": "Cut text values longer than this many characters and mark them as truncated. Use it when reading wide text/HTML/JSON columns you do not need in full; omit it to get values unchanged (required before writing a value back)."
+    })
+}
+
+fn timeout_seconds(share: &Share) -> String {
+    let seconds = share.timeout_ms as f64 / 1000.0;
+    format!("{seconds}s")
+}
+
+fn write_results(share: &Share) -> &'static str {
+    match share.db_type {
+        DbType::MySql => "Writes return affectedRows; an INSERT into a table with an AUTO_INCREMENT key also returns lastInsertId (the first generated id of a multi-row INSERT).",
+        DbType::Sqlite => "Writes return affectedRows; an INSERT also returns lastInsertId (the rowid). RETURNING clauses return rows.",
+        DbType::Postgres => "Writes return affectedRows; add RETURNING (e.g. RETURNING id) to get generated keys or changed rows back.",
+    }
+}
+
 pub fn tool_definitions(share: &Share) -> Vec<Value> {
     let query_mode = if share.read_only {
         "This share is read-only: only SELECT / WITH / VALUES / EXPLAIN queries are allowed."
@@ -118,6 +148,11 @@ pub fn tool_definitions(share: &Share) -> Vec<Value> {
     } else {
         "Only the shared tables may be referenced."
     };
+    let metadata = if share.db_type == DbType::MySql {
+        " SHOW COLUMNS FROM t, SHOW CREATE TABLE t and DESCRIBE t also work; information_schema is not available."
+    } else {
+        ""
+    };
     let mut tools = vec![];
     if share.all_databases {
         tools.push(json!({
@@ -126,27 +161,39 @@ pub fn tool_definitions(share: &Share) -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }));
     }
+    let mut list_properties = json!({
+        "pattern": {
+            "type": "string",
+            "description": "Case-insensitive name filter in SQL LIKE syntax (% = any run of characters, _ = any one character), e.g. \"fe_%\". Without a %, matches names containing the text."
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": MAX_TABLE_LIMIT,
+            "description": format!("Most names to return (default {DEFAULT_TABLE_LIMIT}).")
+        }
+    });
+    if share.all_databases {
+        list_properties["database"] = json!({ "type": "string", "description": "MySQL database to list; defaults to the connection's current database." });
+    }
+    let list_scope = if share.all_databases {
+        "List table and view names in one MySQL database (omit database for the connection's default database)."
+    } else if share.full_database {
+        "List table and view names in the shared database."
+    } else {
+        "List the tables shared with this agent. Only these tables can be queried."
+    };
     tools.extend([
         json!({
             "name": "list_tables",
-            "description": if share.all_databases {
-                "List tables in one MySQL database on demand. Omit database to use the connection's default database."
-            } else if share.full_database {
-                "List tables in the shared database on demand (name, schema, type). No table list is required to create the share."
-            } else {
-                "List the tables shared with this agent (name, schema, type). Only these tables can be queried."
-            },
-            "inputSchema": if share.all_databases {
-                json!({ "type": "object", "properties": {
-                    "database": { "type": "string", "description": "MySQL database to list; defaults to the connection's current database." }
-                }, "additionalProperties": false })
-            } else {
-                json!({ "type": "object", "properties": {}, "additionalProperties": false })
-            }
+            "description": format!(
+                "{list_scope} Returns names only, grouped into tables and views; filter with pattern on large databases. Use describe_table for columns."
+            ),
+            "inputSchema": { "type": "object", "properties": list_properties, "additionalProperties": false }
         }),
         json!({
             "name": "describe_table",
-            "description": "Columns, primary key, foreign keys and indexes of an accessible table.",
+            "description": "Columns (name, type, nullable, default, comment), primary key, foreign keys and indexes of an accessible table. Call this before writing queries against an unfamiliar table.",
             "inputSchema": table_arg_schema()
         }),
         json!({
@@ -157,42 +204,86 @@ pub fn tool_definitions(share: &Share) -> Vec<Value> {
         json!({
             "name": "query",
             "description": format!(
-                "Run exactly one SQL statement ({}). {} Results are capped at {} rows; use LIMIT and WHERE to stay under the cap. {}",
-                share.db_type.as_str(), query_mode, share.max_rows, scope
+                "Run exactly one SQL statement ({}). {} Results are capped at {} rows; use LIMIT and WHERE to stay under the cap. Each statement is cancelled after {}; use EXPLAIN to check the plan of a slow query. {}{} {}",
+                share.db_type.as_str(),
+                query_mode,
+                share.max_rows,
+                timeout_seconds(share),
+                if share.read_only { "" } else { write_results(share) },
+                if share.read_only { String::new() } else { " For changes that span several statements, use transaction instead.".to_string() },
+                format!("{scope}{metadata}")
             ),
             "inputSchema": {
                 "type": "object",
-                "properties": { "sql": { "type": "string", "description": "One SQL statement." } },
+                "properties": {
+                    "sql": { "type": "string", "description": "One SQL statement." },
+                    "maxValueLength": max_value_length_schema()
+                },
                 "required": ["sql"],
                 "additionalProperties": false
             }
         }),
     ]);
+    if !share.read_only {
+        let chain_ids = match share.db_type {
+            DbType::MySql => "Later statements can use LAST_INSERT_ID() to reference the key generated by the previous INSERT.",
+            DbType::Sqlite => "Later statements can use last_insert_rowid() to reference the row inserted by the previous INSERT.",
+            DbType::Postgres => "Use a data-modifying CTE (WITH new_row AS (INSERT ... RETURNING id) ...) to reuse generated keys within one statement.",
+        };
+        tools.push(json!({
+            "name": "transaction",
+            "description": format!(
+                "Run up to {MAX_BATCH_STATEMENTS} SQL statements in order inside one database transaction: either all of them are committed or, if any statement is rejected or fails, none are. Every statement is checked before anything runs, and follows the same rules as query. Use this for any change that touches more than one row set or table (e.g. renaming something referenced from several tables) so the database is never left half-changed. Returns one result per statement (affectedRows, lastInsertId, or rows for SELECTs). {chain_ids} Each statement is cancelled after {}.",
+                timeout_seconds(share)
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "statements": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "minItems": 1,
+                        "maxItems": MAX_BATCH_STATEMENTS,
+                        "description": "SQL statements, one per item, run in this order."
+                    },
+                    "maxValueLength": max_value_length_schema()
+                },
+                "required": ["statements"],
+                "additionalProperties": false
+            }
+        }));
+    }
     tools
 }
 
 fn instructions(share: &Share) -> String {
+    let limits = format!(
+        "Results are capped at {} rows and each statement is cancelled after {}.{}",
+        share.max_rows,
+        timeout_seconds(share),
+        if share.read_only { "" } else { " Use the transaction tool for multi-statement changes so they apply all-or-nothing." }
+    );
     if share.all_databases {
         return format!(
-            "SGSql shares all MySQL databases visible to this connection ({}) with you. The default database is \"{}\"; qualify tables in other databases as database.table. Database account permissions still apply. {} Results are capped at {} rows. Use list_databases and list_tables only when discovery is needed; describe_table and get_table_ddl accept qualified table names directly.",
+            "SGSql shares all MySQL databases visible to this connection ({}) with you. The default database is \"{}\"; qualify tables in other databases as database.table. Database account permissions still apply. {} {} Use list_databases and list_tables (with a pattern) only when discovery is needed; describe_table and get_table_ddl accept qualified table names directly.",
             share.connection_name,
             share.database,
             if share.read_only { "Access is read-only." } else { "Reads and writes (INSERT/UPDATE/DELETE) are allowed." },
-            share.max_rows,
+            limits,
         );
     }
     if share.full_database {
         return format!(
-            "SGSql shares the {} database \"{}\" ({}) with you. All tables in this database are accessible, including tables added later. {} Results are capped at {} rows. Use list_tables only when you need to discover table names; describe_table and get_table_ddl accept a table name directly.",
+            "SGSql shares the {} database \"{}\" ({}) with you. All tables in this database are accessible, including tables added later. {} {} Use list_tables (with a pattern) only when you need to discover table names; describe_table and get_table_ddl accept a table name directly.",
             share.db_type.as_str(),
             share.database,
             share.connection_name,
             if share.read_only { "Access is read-only." } else { "Reads and writes (INSERT/UPDATE/DELETE) are allowed." },
-            share.max_rows,
+            limits,
         );
     }
     format!(
-        "SGSql shares the {} database \"{}\" ({}) with you. Shared tables: {}. {} Results are capped at {} rows. Use list_tables and describe_table to explore, then query.",
+        "SGSql shares the {} database \"{}\" ({}) with you. Shared tables: {}. {} {} Use list_tables and describe_table to explore, then query.",
         share.db_type.as_str(),
         share.database,
         share.connection_name,
@@ -202,7 +293,7 @@ fn instructions(share: &Share) -> String {
         } else {
             "Reads and writes (INSERT/UPDATE/DELETE) are allowed on the shared tables."
         },
-        share.max_rows,
+        limits,
     )
 }
 
@@ -234,6 +325,108 @@ fn string_arg<'a>(params: &'a Value, name: &str) -> Option<&'a str> {
         .filter(|value| !value.is_empty())
 }
 
+fn usize_arg(params: &Value, name: &str) -> Result<Option<usize>, String> {
+    match params.get("arguments").and_then(|args| args.get(name)) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .filter(|n| *n > 0)
+            .map(|n| Some(n as usize))
+            .ok_or_else(|| format!("Argument {name} must be a positive integer")),
+    }
+}
+
+fn max_value_length_arg(params: &Value) -> Result<Option<usize>, String> {
+    Ok(usize_arg(params, "maxValueLength")?.map(|n| n.max(MIN_VALUE_LENGTH)))
+}
+
+/// Case-insensitive SQL LIKE match (`%` and `_`); a pattern without `%`
+/// matches names that contain it.
+fn like_match(pattern: &str, name: &str) -> bool {
+    let pattern: Vec<char> = if pattern.contains('%') {
+        pattern.to_lowercase().chars().collect()
+    } else {
+        format!("%{}%", pattern.to_lowercase()).chars().collect()
+    };
+    let name: Vec<char> = name.to_lowercase().chars().collect();
+    let (mut p, mut n) = (0, 0);
+    let mut backtrack: Option<(usize, usize)> = None;
+    while n < name.len() {
+        if p < pattern.len() && (pattern[p] == '_' || pattern[p] == name[n]) {
+            p += 1;
+            n += 1;
+        } else if p < pattern.len() && pattern[p] == '%' {
+            backtrack = Some((p, n));
+            p += 1;
+        } else if let Some((star, matched)) = backtrack {
+            p = star + 1;
+            n = matched + 1;
+            backtrack = Some((star, matched + 1));
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|c| *c == '%')
+}
+
+/// Names-only table listing, qualified only outside the listed database/schema.
+fn table_listing(share: &Share, tables: Vec<AllowedTable>, database: Option<&str>, pattern: Option<&str>, limit: usize) -> Value {
+    let home = database.unwrap_or(&share.default_schema);
+    let total = tables.len();
+    let matched: Vec<AllowedTable> = tables.into_iter().filter(|t| pattern.is_none_or(|p| like_match(p, &t.name))).collect();
+    let mut names = Vec::new();
+    let mut views = Vec::new();
+    for table in matched.iter().take(limit) {
+        let name = if table.schema.is_empty() || table.schema.eq_ignore_ascii_case(home) {
+            table.name.clone()
+        } else {
+            format!("{}.{}", table.schema, table.name)
+        };
+        if table.kind == "view" { views.push(name) } else { names.push(name) }
+    }
+    let mut listing = json!({ "tables": names });
+    if !views.is_empty() {
+        listing["views"] = json!(views);
+    }
+    if share.db_type == DbType::MySql {
+        listing["database"] = json!(matched.first().map_or(home, |t| t.schema.as_str()));
+    }
+    if pattern.is_some() {
+        listing["matched"] = json!(matched.len());
+    }
+    listing["total"] = json!(total);
+    if matched.len() > limit {
+        listing["truncated"] = json!(true);
+        listing["hint"] = json!(format!("Only the first {limit} names are shown; narrow with pattern or raise limit."));
+    }
+    listing
+}
+
+/// Cut long text values; returns how many were shortened.
+fn shorten_values(result: &mut QueryResult, max_len: usize) -> usize {
+    let mut shortened = 0;
+    for value in result.rows.iter_mut().flatten() {
+        if let Value::String(text) = value {
+            let length = text.chars().count();
+            if length > max_len {
+                let kept: String = text.chars().take(max_len).collect();
+                *text = format!("{kept}…[truncated, {length} chars]");
+                shortened += 1;
+            }
+        }
+    }
+    shortened
+}
+
+fn result_json(share: &Share, mut result: QueryResult, max_value_length: Option<usize>) -> Value {
+    let shortened = max_value_length.map_or(0, |max_len| shorten_values(&mut result, max_len));
+    let mut value = result.to_json(share.max_rows);
+    if shortened > 0 {
+        value["shortenedValues"] = json!(shortened);
+    }
+    value
+}
+
 fn compact(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())
 }
@@ -254,9 +447,23 @@ async fn call_tool<B: ToolBackend>(share: &Share, id: Value, params: &Value, bac
     };
     share.stats.touch();
 
+    let max_value_length = match max_value_length_arg(params) {
+        Ok(value) => value,
+        Err(message) => return rpc_error(id, INVALID_PARAMS, &message),
+    };
     let result: Result<Value, ToolError> = match name {
         "list_databases" if share.all_databases => backend.list_databases().await.map(|databases| json!({ "databases": databases })),
-        "list_tables" => backend.list_tables(string_arg(params, "database")).await.map(|tables| json!({ "tables": tables })),
+        "list_tables" => {
+            let limit = match usize_arg(params, "limit") {
+                Ok(limit) => limit.unwrap_or(DEFAULT_TABLE_LIMIT).min(MAX_TABLE_LIMIT),
+                Err(message) => return rpc_error(id, INVALID_PARAMS, &message),
+            };
+            let database = string_arg(params, "database");
+            backend
+                .list_tables(database)
+                .await
+                .map(|tables| table_listing(share, tables, database, string_arg(params, "pattern"), limit))
+        }
         "describe_table" => match string_arg(params, "table") {
             Some(table) => backend.describe_table(table).await,
             None => return rpc_error(id, INVALID_PARAMS, "Missing required argument: table"),
@@ -266,9 +473,23 @@ async fn call_tool<B: ToolBackend>(share: &Share, id: Value, params: &Value, bac
             None => return rpc_error(id, INVALID_PARAMS, "Missing required argument: table"),
         },
         "query" => match string_arg(params, "sql") {
-            Some(sql) => backend.query(sql).await.map(|result| result.to_json(share.max_rows)),
+            Some(sql) => backend.query(sql).await.map(|result| result_json(share, result, max_value_length)),
             None => return rpc_error(id, INVALID_PARAMS, "Missing required argument: sql"),
         },
+        "transaction" if !share.read_only => {
+            let statements: Option<Vec<String>> = params
+                .get("arguments")
+                .and_then(|args| args.get("statements"))
+                .and_then(Value::as_array)
+                .and_then(|items| items.iter().map(|item| item.as_str().map(|sql| sql.trim().to_string())).collect());
+            match statements {
+                Some(statements) => backend.transaction(&statements).await.map(|results| {
+                    let results: Vec<Value> = results.into_iter().map(|result| result_json(share, result, max_value_length)).collect();
+                    json!({ "committed": true, "statements": results.len(), "results": results })
+                }),
+                None => return rpc_error(id, INVALID_PARAMS, "Argument statements must be an array of SQL strings"),
+            }
+        }
         other => return rpc_error(id, INVALID_PARAMS, &format!("Unknown tool: {other}")),
     };
     record_outcome(share, &result);
@@ -309,7 +530,7 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::Mutex;
 
-    fn share(read_only: bool) -> Share {
+    pub(super) fn share(read_only: bool) -> Share {
         let tables = vec![
             AllowedTable { schema: "public".into(), name: "users".into(), kind: "table".into() },
             AllowedTable { schema: "public".into(), name: "orders".into(), kind: "table".into() },
@@ -367,13 +588,37 @@ mod tests {
                 return Err(fail());
             }
             Ok(QueryResult {
-                columns: vec!["id".into()],
-                rows: vec![vec![json!(1)]],
+                columns: vec!["id".into(), "body".into()],
+                rows: vec![vec![json!(1), json!("x".repeat(100))]],
                 truncated: false,
                 affected_rows: None,
+                last_insert_id: None,
                 duration_ms: 1.5,
             })
         }
+
+        async fn transaction(&self, statements: &[String]) -> Result<Vec<QueryResult>, ToolError> {
+            self.queries.lock().unwrap().extend(statements.iter().cloned());
+            Ok(statements
+                .iter()
+                .map(|_| QueryResult {
+                    columns: vec![],
+                    rows: vec![],
+                    truncated: false,
+                    affected_rows: Some(1),
+                    last_insert_id: Some(585),
+                    duration_ms: 1.0,
+                })
+                .collect())
+        }
+    }
+
+    fn text(v: &Value) -> Value {
+        serde_json::from_str(v["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    fn call(name: &str, arguments: Value) -> RpcRequest {
+        request("tools/call", json!({ "name": name, "arguments": arguments }))
     }
 
     fn request(method: &str, params: Value) -> RpcRequest {
@@ -426,9 +671,80 @@ mod tests {
         let query = tools.iter().find(|t| t["name"] == "query").unwrap();
         assert!(query["description"].as_str().unwrap().contains("read-only"));
 
+        assert!(query["description"].as_str().unwrap().contains("cancelled after 5s"));
+        assert!(!tools.iter().any(|t| t["name"] == "transaction"));
+
         let v = response(&share(false), request("tools/list", Value::Null), &backend).await;
-        let query = v["result"]["tools"].as_array().unwrap().iter().find(|t| t["name"] == "query").unwrap();
+        let tools = v["result"]["tools"].as_array().unwrap();
+        let query = tools.iter().find(|t| t["name"] == "query").unwrap();
         assert!(query["description"].as_str().unwrap().contains("INSERT, UPDATE and DELETE"));
+        assert!(query["description"].as_str().unwrap().contains("RETURNING"));
+        assert!(tools.iter().any(|t| t["name"] == "transaction"));
+    }
+
+    #[test]
+    fn like_patterns() {
+        assert!(like_match("fe_%", "fe_form"));
+        assert!(like_match("FE_%", "fe_template"));
+        assert!(!like_match("fe_%", "loan_fe"));
+        assert!(like_match("form", "fe_form_query"));
+        assert!(like_match("%_query", "fe_form_query"));
+        assert!(!like_match("%_query", "fe_form"));
+        assert!(like_match("f%m", "fe_form"));
+        assert!(like_match("%", ""));
+    }
+
+    #[tokio::test]
+    async fn list_tables_returns_filtered_names() {
+        let share = share(true);
+        let v = response(&share, call("list_tables", json!({ "pattern": "us%" })), &FakeBackend::default()).await;
+        let listing = text(&v);
+        assert_eq!(listing["tables"], json!(["users"]));
+        assert_eq!(listing["matched"], 1);
+        assert!(listing.get("truncated").is_none());
+
+        let tables = vec![
+            AllowedTable { schema: "app".into(), name: "a".into(), kind: "table".into() },
+            AllowedTable { schema: "app".into(), name: "b".into(), kind: "view".into() },
+            AllowedTable { schema: "app".into(), name: "c".into(), kind: "table".into() },
+        ];
+        let mut mysql = super::tests::share(true);
+        mysql.db_type = DbType::MySql;
+        mysql.default_schema = "app".into();
+        let listing = table_listing(&mysql, tables, None, None, 2);
+        assert_eq!(listing, json!({
+            "tables": ["a"], "views": ["b"], "database": "app", "total": 3, "truncated": true,
+            "hint": "Only the first 2 names are shown; narrow with pattern or raise limit."
+        }));
+    }
+
+    #[tokio::test]
+    async fn query_can_shorten_long_values() {
+        let share = share(true);
+        let backend = FakeBackend::default();
+        let full = text(&response(&share, call("query", json!({ "sql": "SELECT 1" })), &backend).await);
+        assert_eq!(full["rows"][0][1].as_str().unwrap().len(), 100);
+        let short = text(&response(&share, call("query", json!({ "sql": "SELECT 1", "maxValueLength": 30 })), &backend).await);
+        assert_eq!(short["rows"][0][1], format!("{}…[truncated, 100 chars]", "x".repeat(30)));
+        assert_eq!(short["shortenedValues"], 1);
+        let bad = response(&share, call("query", json!({ "sql": "SELECT 1", "maxValueLength": "big" })), &backend).await;
+        assert_eq!(bad["error"]["code"], INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn transaction_tool_only_on_writable_shares() {
+        let backend = FakeBackend::default();
+        let statements = json!({ "statements": ["UPDATE users SET id = 1", "DELETE FROM orders"] });
+        let hidden = response(&share(true), call("transaction", statements.clone()), &backend).await;
+        assert_eq!(hidden["error"]["code"], INVALID_PARAMS);
+
+        let v = response(&share(false), call("transaction", statements), &backend).await;
+        let result = text(&v);
+        assert_eq!(result["committed"], true);
+        assert_eq!(result["statements"], 2);
+        assert_eq!(result["results"][0], json!({ "affectedRows": 1, "lastInsertId": 585, "durationMs": 1.0 }));
+        let bad = response(&share(false), call("transaction", json!({ "statements": "SELECT 1" })), &backend).await;
+        assert_eq!(bad["error"]["code"], INVALID_PARAMS);
     }
 
     #[tokio::test]
@@ -484,7 +800,7 @@ mod tests {
         assert!(v["result"].get("isError").is_none());
         let text = v["result"]["content"][0]["text"].as_str().unwrap();
         let parsed: Value = serde_json::from_str(text).unwrap();
-        assert_eq!(parsed["columns"], json!(["id"]));
+        assert_eq!(parsed["columns"], json!(["id", "body"]));
         assert_eq!(parsed["maxRows"], 50);
         assert_eq!(backend.queries.lock().unwrap().as_slice(), ["SELECT 1"]);
         assert_eq!(share.stats.calls.load(Ordering::Relaxed), 1);
