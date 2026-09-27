@@ -22,12 +22,15 @@ import {
   RefreshCw,
   Code2,
   Upload,
+  Link2,
+  Link2Off,
 } from "lucide-react";
 import { DragDropProvider, type DragEndEvent } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
 import { waitForSidecar, CONNECTION_RESTORED_EVENT } from "./lib/sidecar";
 import { openConnectionManager } from "./lib/openConnectionManager";
 import { closeConnection, reloadConnection } from "./lib/schema";
+import { useFkChecks } from "./lib/fkChecks";
 import { stopShare, type ShareInfo } from "./lib/shares";
 import { ShareConnectionModal } from "./components/ShareConnectionModal";
 import { McpIcon } from "./components/McpIcon";
@@ -168,6 +171,8 @@ function App() {
   // Execution queue — subscribe to the connections map for reactivity
   const execConnections = useExecutionQueue((s) => s.connections);
   const execCancel = useExecutionQueue((s) => s.cancel);
+  const fkChecksOffConnections = useFkChecks((s) => s.disabled);
+  const setFkChecksDisabled = useFkChecks((s) => s.setDisabled);
 
   // Edit store — subscribe for change count reactivity
   const editChanges = useEditStore((s) => s.changes);
@@ -975,6 +980,32 @@ function App() {
 
           {/* Spacer */}
           <div className="w-px h-4 bg-border mx-1" />
+
+          {/* Foreign key checks. SQLite connections already run with them off. */}
+          {activeTab?.connectionId && activeTab.profile.type !== "sqlite" && (() => {
+            const connectionId = activeTab.connectionId;
+            const off = fkChecksOffConnections.has(connectionId);
+            const how = activeTab.profile.type === "postgres"
+              ? "Postgres uses session_replication_role = replica, which needs superuser rights and also skips triggers."
+              : "Runs with FOREIGN_KEY_CHECKS = 0.";
+            return (
+              <button
+                onClick={() => setFkChecksDisabled(connectionId, !off)}
+                title={off
+                  ? "Foreign key checks are OFF for queries, saves, schema changes and imports on this connection. Click to turn them back on."
+                  : `Turn off foreign key checks for queries, saves, schema changes and imports on this connection. ${how}`}
+                aria-pressed={off}
+                className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors cursor-pointer ${
+                  off
+                    ? "text-warning bg-warning/10 border border-warning/40 hover:bg-warning/20"
+                    : "text-text-muted hover:text-text-secondary hover:bg-bg-hover"
+                }`}
+              >
+                {off ? <Link2Off size={13} /> : <Link2 size={13} />}
+                {off && "FK checks off"}
+              </button>
+            );
+          })()}
 
           {/* Share with AI agent */}
           <button

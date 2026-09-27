@@ -45,11 +45,25 @@ async fn apply_postgres(
     connection_id: String,
     trace_db: String,
     statements: Vec<String>,
+    disable_fk: bool,
     applied: &mut usize,
     progress: Option<&UnboundedSender<String>>,
     total: usize,
 ) -> Result<(), SidecarError> {
     let mut tx = pool.begin().await.map_err(SidecarError::from)?;
+    if disable_fk {
+        // SET LOCAL ends with the transaction, so nothing to restore.
+        let sql = "SET LOCAL session_replication_role = replica";
+        let t = trace::start(&connection_id, &trace_db, sql);
+        match db::exec_pg_conn(&mut tx, sql).await {
+            Ok(affected) => t.success(Some(affected)),
+            Err(cause) => {
+                let err = SidecarError::from(cause);
+                t.failure(&err.to_string());
+                return Err(err);
+            }
+        }
+    }
     for statement in &statements {
         let t = trace::start(&connection_id, &trace_db, statement);
         match db::exec_pg_conn(&mut tx, statement).await {
@@ -150,18 +164,44 @@ async fn apply_mysql(
     connection_id: String,
     trace_db: String,
     statements: Vec<String>,
+    disable_fk: bool,
     applied: &mut usize,
     progress: Option<&UnboundedSender<String>>,
     total: usize,
 ) -> Result<(), SidecarError> {
+    // The MySQL pool holds a single connection, so the session setting
+    // covers every statement below.
+    let restore_fk = if disable_fk {
+        let current = db::fetch_raw(client, &connection_id, &trace_db, "SELECT @@SESSION.foreign_key_checks")
+            .await?
+            .first_text();
+        let previous = current.filter(|value| value == "0" || value == "1").unwrap_or_else(|| "1".to_string());
+        db::execute_raw(client, &connection_id, &trace_db, "SET FOREIGN_KEY_CHECKS = 0").await?;
+        Some(previous)
+    } else {
+        None
+    };
+
     // MySQL implicitly commits most DDL. Execute in order and report exactly
     // how many statements committed if a later statement fails.
-    for statement in &statements {
-        db::execute_raw(client, &connection_id, &trace_db, statement).await?;
-        *applied += 1;
-        report_progress(progress, *applied, total)?;
+    let batch: Result<(), SidecarError> = async {
+        for statement in &statements {
+            db::execute_raw(client, &connection_id, &trace_db, statement).await?;
+            *applied += 1;
+            report_progress(progress, *applied, total)?;
+        }
+        Ok(())
     }
-    Ok(())
+    .await;
+
+    if let Some(previous) = restore_fk {
+        let sql = format!("SET FOREIGN_KEY_CHECKS = {previous}");
+        let restore = db::execute_raw(client, &connection_id, &trace_db, &sql).await;
+        if batch.is_ok() {
+            restore?;
+        }
+    }
+    batch
 }
 
 struct ApplySuccess {
@@ -223,6 +263,7 @@ async fn run_apply(
                             connection_id.clone(),
                             trace_db.clone(),
                             statements.clone(),
+                            body.disable_foreign_keys,
                             &mut applied,
                             progress.as_ref(),
                             total,
@@ -248,6 +289,7 @@ async fn run_apply(
                             connection_id.clone(),
                             trace_db.clone(),
                             statements.clone(),
+                            body.disable_foreign_keys,
                             &mut applied,
                             progress.as_ref(),
                             total,

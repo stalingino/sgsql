@@ -48,6 +48,17 @@ impl QueryOutput {
     pub fn into_objects(self) -> Vec<Value> {
         objects(&self.columns, self.rows)
     }
+
+    /// First column of the first row as text, for single-value setting reads
+    /// (SHOW x, SELECT @@x, PRAGMA x).
+    pub fn first_text(&self) -> Option<String> {
+        match self.rows.first()?.first()? {
+            Value::String(text) => Some(text.clone()),
+            Value::Number(number) => Some(number.to_string()),
+            Value::Bool(flag) => Some(if *flag { "1" } else { "0" }.to_string()),
+            _ => None,
+        }
+    }
 }
 
 fn pg_output(rows: &[PgRow]) -> QueryOutput {

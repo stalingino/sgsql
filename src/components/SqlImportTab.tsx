@@ -1,6 +1,7 @@
 import { lazy, Suspense, useMemo, useRef, useState } from "react";
 import { FileUp, Loader2, StopCircle, Upload } from "lucide-react";
 import { useExecutionQueue } from "../lib/executionQueue";
+import { useFkChecks } from "../lib/fkChecks";
 import { prepareSqlImport } from "../lib/sqlImport";
 import type { MonacoSqlEditorHandle } from "./MonacoSqlEditor";
 
@@ -18,6 +19,7 @@ export function SqlImportTab({ connectionId, db, dialect, onImported }: SqlImpor
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importDump = useExecutionQueue((state) => state.importDump);
   const cancel = useExecutionQueue((state) => state.cancel);
+  const fkChecksOff = useFkChecks((state) => state.disabled.has(connectionId));
   const [sql, setSql] = useState("");
   const [fileName, setFileName] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
@@ -151,6 +153,7 @@ export function SqlImportTab({ connectionId, db, dialect, onImported }: SqlImpor
       <div className="flex items-center justify-between gap-3 border-t border-border bg-bg-secondary px-4 py-3">
         <div className="text-[10px] text-text-muted">
           {dialect === "mysql" ? "Statements run in order on one connection." : "Existing BEGIN/COMMIT wrappers are removed so the whole import uses one outer transaction."}
+          {fkChecksOff && dialect !== "sqlite" && <span className="ml-1 text-warning">Foreign key checks are off.</span>}
         </div>
         <div className="flex shrink-0 gap-2">
           {working && (

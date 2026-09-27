@@ -1,4 +1,5 @@
 import { SidecarHttpError, sidecarFetch, sidecarFetchNdjson } from "./sidecar";
+import { fkChecksDisabled, useFkChecks } from "./fkChecks";
 import type { ConnectionProfile } from "./types";
 
 /* ── Response / domain types ─────────────────────────────── */
@@ -76,6 +77,7 @@ export async function openConnection(
 }
 
 export async function closeConnection(connectionId: string): Promise<void> {
+  useFkChecks.getState().setDisabled(connectionId, false);
   await sidecarFetch("/connections/close", {
     method: "POST",
     body: JSON.stringify({ connectionId }),
@@ -296,7 +298,7 @@ export async function executeQuery(
 ): Promise<QueryResult> {
   return sidecarFetch<QueryResult>("/query", {
     method: "POST",
-    body: JSON.stringify({ connectionId: connId, sql, db: db || undefined }),
+    body: JSON.stringify({ connectionId: connId, sql, db: db || undefined, disableForeignKeys: fkChecksDisabled(connId) }),
     signal,
   });
 }
@@ -310,7 +312,7 @@ export async function executeQueryBatch(
 ): Promise<QueryBatchResult> {
   return sidecarFetch<QueryBatchResult>("/query/batch", {
     method: "POST",
-    body: JSON.stringify({ connectionId: connId, statements, db, atomic }),
+    body: JSON.stringify({ connectionId: connId, statements, db, atomic, disableForeignKeys: fkChecksDisabled(connId) }),
     signal,
   });
 }
@@ -452,7 +454,7 @@ export async function fetchTableArtifacts(connId: string, db: string, schema: st
 export async function applySchemaChanges(connId: string, db: string, statements: string[], disableForeignKeys = false): Promise<{ ok: boolean; applied: number; atomic: boolean; duration: number }> {
   return sidecarFetch(`/schema/${connId}/apply`, {
     method: "POST",
-    body: JSON.stringify({ statements, db, disableForeignKeys }),
+    body: JSON.stringify({ statements, db, disableForeignKeys: disableForeignKeys || fkChecksDisabled(connId) }),
   });
 }
 
@@ -472,7 +474,7 @@ export async function importSqlDump(
   let result: { ok: boolean; applied: number; atomic: boolean; duration: number } | null = null;
   await sidecarFetchNdjson<SqlImportEvent>(`/import/${connId}`, {
     method: "POST",
-    body: JSON.stringify({ statements, db, disableForeignKeys }),
+    body: JSON.stringify({ statements, db, disableForeignKeys: disableForeignKeys || fkChecksDisabled(connId) }),
     signal,
   }, (event) => {
     if (event.type === "progress") onProgress?.(event.completed, event.total);

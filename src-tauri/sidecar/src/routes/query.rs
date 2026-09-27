@@ -18,6 +18,8 @@ struct QueryBody {
     connection_id: Option<String>,
     sql: Option<String>,
     db: Option<String>,
+    #[serde(rename = "disableForeignKeys", default)]
+    disable_foreign_keys: bool,
 }
 
 #[derive(Deserialize)]
@@ -28,6 +30,8 @@ struct QueryBatchBody {
     db: Option<String>,
     #[serde(default)]
     atomic: bool,
+    #[serde(rename = "disableForeignKeys", default)]
+    disable_foreign_keys: bool,
 }
 
 enum BatchConnection {
@@ -65,6 +69,24 @@ fn dollar_quote_end(chars: &[char], start: usize) -> Option<usize> {
 }
 
 impl BatchConnection {
+    async fn acquire(client: &DbClient) -> Result<Self, SidecarError> {
+        Ok(match client {
+            DbClient::Postgres { pool, .. } => Self::Postgres(pool.acquire().await.map_err(SidecarError::from)?),
+            DbClient::MySql { pool, .. } => Self::MySql(pool.acquire().await.map_err(SidecarError::from)?),
+            DbClient::Sqlite { pool } => Self::Sqlite(pool.acquire().await.map_err(SidecarError::from)?),
+        })
+    }
+
+    /// Take the connection out of the pool for good; the pool opens a fresh
+    /// one in its place.
+    fn detach(self) {
+        match self {
+            Self::Postgres(conn) => drop(conn.detach()),
+            Self::MySql(conn) => drop(conn.detach()),
+            Self::Sqlite(conn) => drop(conn.detach()),
+        }
+    }
+
     async fn execute(
         &mut self,
         conn_id: &str,
@@ -99,6 +121,91 @@ impl BatchConnection {
             }
             Self::Sqlite(conn) => {
                 db::fetch_sqlite_conn_traced(&mut *conn, conn_id, db_name, sql).await
+            }
+        }
+    }
+}
+
+/// A pooled connection pinned for one request. While foreign-key checks are
+/// switched off it holds the previous setting; if it is dropped before that is
+/// restored (request aborted, restore failed) the connection is detached so the
+/// pool never hands it out again with checks still disabled.
+struct PinnedConnection {
+    connection: Option<BatchConnection>,
+    fk_restore: Option<String>,
+}
+
+impl PinnedConnection {
+    async fn acquire(client: &DbClient) -> Result<Self, SidecarError> {
+        Ok(Self { connection: Some(BatchConnection::acquire(client).await?), fk_restore: None })
+    }
+
+    fn inner(&mut self) -> &mut BatchConnection {
+        self.connection.as_mut().expect("pinned connection is held until drop")
+    }
+
+    async fn execute(&mut self, conn_id: &str, db_name: &str, sql: &str) -> Result<u64, SidecarError> {
+        self.inner().execute(conn_id, db_name, sql).await
+    }
+
+    async fn fetch(&mut self, conn_id: &str, db_name: &str, sql: &str) -> Result<db::QueryOutput, SidecarError> {
+        self.inner().fetch(conn_id, db_name, sql).await
+    }
+
+    async fn use_db(&mut self, conn_id: &str, trace_db: &str, db_name: &str) -> Result<(), SidecarError> {
+        if matches!(self.inner(), BatchConnection::MySql(_)) && !db_name.is_empty() {
+            let sql = format!("USE `{}`", db_name.replace('`', "``"));
+            self.execute(conn_id, trace_db, &sql).await?;
+        }
+        Ok(())
+    }
+
+    /// Turn foreign-key enforcement off for this session. Postgres has no
+    /// dedicated switch: `session_replication_role = replica` skips the FK
+    /// triggers (and ordinary user triggers) and needs superuser rights.
+    async fn disable_foreign_keys(&mut self, conn_id: &str, trace_db: &str) -> Result<(), SidecarError> {
+        let (read_sql, fallback, off) = match self.inner() {
+            BatchConnection::Postgres(_) => ("SHOW session_replication_role", "origin", "replica"),
+            BatchConnection::MySql(_) => ("SELECT @@SESSION.foreign_key_checks", "1", "0"),
+            BatchConnection::Sqlite(_) => ("PRAGMA foreign_keys", "0", "0"),
+        };
+        let current = self.fetch(conn_id, trace_db, read_sql).await?.first_text();
+        let previous = current
+            .filter(|value| matches!(value.as_str(), "origin" | "replica" | "local" | "0" | "1"))
+            .unwrap_or_else(|| fallback.to_string());
+        self.fk_restore = Some(previous);
+        if let Err(error) = self.set_foreign_keys(conn_id, trace_db, off).await {
+            // A plain SQL error (e.g. permission denied) leaves the setting as it was.
+            self.fk_restore = None;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn restore_foreign_keys(&mut self, conn_id: &str, trace_db: &str) -> Result<(), SidecarError> {
+        let Some(previous) = self.fk_restore.clone() else {
+            return Ok(());
+        };
+        self.set_foreign_keys(conn_id, trace_db, &previous).await?;
+        self.fk_restore = None;
+        Ok(())
+    }
+
+    async fn set_foreign_keys(&mut self, conn_id: &str, trace_db: &str, value: &str) -> Result<(), SidecarError> {
+        let sql = match self.inner() {
+            BatchConnection::Postgres(_) => format!("SET session_replication_role = {value}"),
+            BatchConnection::MySql(_) => format!("SET FOREIGN_KEY_CHECKS = {value}"),
+            BatchConnection::Sqlite(_) => format!("PRAGMA foreign_keys = {value}"),
+        };
+        self.execute(conn_id, trace_db, &sql).await.map(|_| ())
+    }
+}
+
+impl Drop for PinnedConnection {
+    fn drop(&mut self) {
+        if self.fk_restore.is_some() {
+            if let Some(connection) = self.connection.take() {
+                connection.detach();
             }
         }
     }
@@ -269,7 +376,9 @@ async fn execute_sql(
     }
 }
 
-async fn run_query(
+/// Run one statement on a pinned connection with foreign-key checks off,
+/// restoring the previous setting afterwards whether or not it succeeded.
+async fn run_query_without_foreign_keys(
     entry: &Arc<PoolEntry>,
     conn_id: &str,
     trace_db: &str,
@@ -277,6 +386,48 @@ async fn run_query(
     sql: &str,
     select: bool,
 ) -> Result<Value, SidecarError> {
+    let mut connection = PinnedConnection::acquire(&entry.client).await?;
+    connection.use_db(conn_id, trace_db, db).await?;
+    connection.disable_foreign_keys(conn_id, trace_db).await?;
+    let t0 = Instant::now();
+    let outcome = if select {
+        connection.fetch(conn_id, trace_db, sql).await.map(|output| {
+            let row_count = output.rows.len();
+            json!({
+                "columns": output.columns,
+                "rows": output.rows,
+                "rowCount": row_count,
+                "query": sql,
+            })
+        })
+    } else {
+        connection
+            .execute(conn_id, trace_db, sql)
+            .await
+            .map(|affected| json!({ "affectedRows": affected, "query": sql }))
+    };
+    let duration = t0.elapsed().as_secs_f64() * 1_000.0;
+    let restored = connection.restore_foreign_keys(conn_id, trace_db).await;
+    let mut result = outcome?;
+    restored?;
+    if let Some(map) = result.as_object_mut() {
+        map.insert("duration".into(), json!(duration));
+    }
+    Ok(result)
+}
+
+async fn run_query(
+    entry: &Arc<PoolEntry>,
+    conn_id: &str,
+    trace_db: &str,
+    db: &str,
+    sql: &str,
+    select: bool,
+    disable_fk: bool,
+) -> Result<Value, SidecarError> {
+    if disable_fk {
+        return run_query_without_foreign_keys(entry, conn_id, trace_db, db, sql, select).await;
+    }
     switch_db(&entry.client, conn_id, trace_db, db).await?;
     let t0 = Instant::now();
     let mut result = execute_sql(&entry.client, conn_id, trace_db, sql, select).await?;
@@ -302,6 +453,7 @@ pub async fn handle_query(bytes: Bytes) -> Response {
         return error_response("Missing connectionId or sql", 400);
     };
     let db = body.db.unwrap_or_default();
+    let disable_fk = body.disable_foreign_keys;
 
     let Some(record) = pool::get_record(&connection_id) else {
         return error_response("Connection not found. Call /connections/open first.", 404);
@@ -311,7 +463,8 @@ pub async fn handle_query(bytes: Bytes) -> Response {
 
     let attempt: Result<Value, SidecarError> = async {
         let (entry, reconnected) = pool::ensure_connection_alive(&connection_id, false).await?;
-        let result = run_query(&entry, &connection_id, &trace_db, &db, &sql, select).await?;
+        let result =
+            run_query(&entry, &connection_id, &trace_db, &db, &sql, select, disable_fk).await?;
         pool::mark_connection_used(&connection_id);
         Ok(with_connection_status(result, &connection_id, reconnected))
     }
@@ -325,8 +478,16 @@ pub async fn handle_query(bytes: Bytes) -> Response {
             );
             let retry: Result<Value, SidecarError> = async {
                 let entry = pool::reconnect(&connection_id).await?;
-                let result =
-                    run_query(&entry, &connection_id, &trace_db, &db, &sql, select).await?;
+                let result = run_query(
+                    &entry,
+                    &connection_id,
+                    &trace_db,
+                    &db,
+                    &sql,
+                    select,
+                    disable_fk,
+                )
+                .await?;
                 pool::mark_connection_used(&connection_id);
                 Ok(with_connection_status(result, &connection_id, true))
             }
@@ -373,55 +534,59 @@ pub async fn handle_query_batch(bytes: Bytes) -> Response {
 
     let attempt: Result<Value, SidecarError> = async {
         let (entry, reconnected) = pool::ensure_connection_alive(&connection_id, false).await?;
-        let mut connection = match &entry.client {
-            DbClient::Postgres { pool, .. } => BatchConnection::Postgres(pool.acquire().await.map_err(SidecarError::from)?),
-            DbClient::MySql { pool, .. } => BatchConnection::MySql(pool.acquire().await.map_err(SidecarError::from)?),
-            DbClient::Sqlite { pool } => BatchConnection::Sqlite(pool.acquire().await.map_err(SidecarError::from)?),
-        };
-        if matches!(connection, BatchConnection::MySql(_)) && !requested_db.is_empty() {
-            let use_sql = format!("USE `{}`", requested_db.replace('`', "``"));
-            connection.execute(&connection_id, &trace_db, &use_sql).await?;
+        let mut connection = PinnedConnection::acquire(&entry.client).await?;
+        connection.use_db(&connection_id, &trace_db, &requested_db).await?;
+        // Before BEGIN: SQLite ignores PRAGMA foreign_keys inside a transaction.
+        if body.disable_foreign_keys {
+            connection.disable_foreign_keys(&connection_id, &trace_db).await?;
         }
-        if body.atomic {
-            connection.execute(&connection_id, &trace_db, "BEGIN").await?;
-        }
+        let batch: Result<(Vec<Value>, bool), SidecarError> = async {
+            if body.atomic {
+                connection.execute(&connection_id, &trace_db, "BEGIN").await?;
+            }
 
-        let mut results = Vec::with_capacity(statements.len());
-        let mut failed = false;
-        for sql in &statements {
-            let started = Instant::now();
-            let outcome = if is_select(sql) {
-                connection.fetch(&connection_id, &trace_db, sql).await.map(|output| {
-                    let row_count = output.rows.len();
-                    json!({
-                        "columns": output.columns,
-                        "rows": output.rows,
-                        "rowCount": row_count,
+            let mut results = Vec::with_capacity(statements.len());
+            let mut failed = false;
+            for sql in &statements {
+                let started = Instant::now();
+                let outcome = if is_select(sql) {
+                    connection.fetch(&connection_id, &trace_db, sql).await.map(|output| {
+                        let row_count = output.rows.len();
+                        json!({
+                            "columns": output.columns,
+                            "rows": output.rows,
+                            "rowCount": row_count,
+                            "query": sql,
+                            "duration": started.elapsed().as_secs_f64() * 1_000.0,
+                        })
+                    })
+                } else {
+                    connection.execute(&connection_id, &trace_db, sql).await.map(|affected| json!({
+                        "affectedRows": affected,
                         "query": sql,
                         "duration": started.elapsed().as_secs_f64() * 1_000.0,
-                    })
-                })
-            } else {
-                connection.execute(&connection_id, &trace_db, sql).await.map(|affected| json!({
-                    "affectedRows": affected,
-                    "query": sql,
-                    "duration": started.elapsed().as_secs_f64() * 1_000.0,
-                }))
-            };
-            match outcome {
-                Ok(result) => results.push(result),
-                Err(error) => {
-                    results.push(json!({ "query": sql, "error": error.friendly(), "duration": started.elapsed().as_secs_f64() * 1_000.0 }));
-                    failed = true;
-                    if body.atomic { break; }
+                    }))
+                };
+                match outcome {
+                    Ok(result) => results.push(result),
+                    Err(error) => {
+                        results.push(json!({ "query": sql, "error": error.friendly(), "duration": started.elapsed().as_secs_f64() * 1_000.0 }));
+                        failed = true;
+                        if body.atomic { break; }
+                    }
                 }
             }
-        }
 
-        let rolled_back = body.atomic && failed;
-        if body.atomic {
-            connection.execute(&connection_id, &trace_db, if rolled_back { "ROLLBACK" } else { "COMMIT" }).await?;
+            let rolled_back = body.atomic && failed;
+            if body.atomic {
+                connection.execute(&connection_id, &trace_db, if rolled_back { "ROLLBACK" } else { "COMMIT" }).await?;
+            }
+            Ok((results, rolled_back))
         }
+        .await;
+        let restored = connection.restore_foreign_keys(&connection_id, &trace_db).await;
+        let (results, rolled_back) = batch?;
+        restored?;
         pool::mark_connection_used(&connection_id);
         Ok(with_connection_status(json!({ "results": results, "rolledBack": rolled_back }), &connection_id, reconnected))
     }.await;
@@ -434,7 +599,39 @@ pub async fn handle_query_batch(bytes: Bytes) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::is_select;
+    use super::{is_select, PinnedConnection};
+    use crate::db::DbClient;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    async fn sqlite_client() -> DbClient {
+        let options = SqliteConnectOptions::new().in_memory(true).foreign_keys(true);
+        let pool = SqlitePoolOptions::new().max_connections(1).connect_with(options).await.unwrap();
+        DbClient::Sqlite { pool }
+    }
+
+    async fn foreign_keys(connection: &mut PinnedConnection) -> String {
+        connection.fetch("test", "", "PRAGMA foreign_keys").await.unwrap().first_text().unwrap()
+    }
+
+    #[tokio::test]
+    async fn foreign_key_checks_are_disabled_then_restored() {
+        let client = sqlite_client().await;
+        let mut connection = PinnedConnection::acquire(&client).await.unwrap();
+        connection.disable_foreign_keys("test", "").await.unwrap();
+        assert_eq!(foreign_keys(&mut connection).await, "0");
+        connection.restore_foreign_keys("test", "").await.unwrap();
+        assert_eq!(foreign_keys(&mut connection).await, "1");
+    }
+
+    #[tokio::test]
+    async fn unrestored_connection_is_not_returned_to_the_pool() {
+        let client = sqlite_client().await;
+        let DbClient::Sqlite { pool } = &client else { unreachable!() };
+        let mut connection = PinnedConnection::acquire(&client).await.unwrap();
+        connection.disable_foreign_keys("test", "").await.unwrap();
+        drop(connection);
+        assert_eq!(pool.size(), 0);
+    }
 
     #[test]
     fn select_detection_handles_result_producing_statements() {
