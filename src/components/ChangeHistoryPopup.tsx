@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Save, Undo2, Loader2, Plus, Trash2 } from "lucide-react";
+import { useCallback } from "react";
+import { Save, Undo2, Loader2, Plus, Trash2, X } from "lucide-react";
 import { useEditStore, SqlExpression, type CellChange, type RowKey, type PendingInsert, type PendingDelete } from "../lib/editStore";
 import { useExecutionQueue } from "../lib/executionQueue";
 
@@ -8,14 +8,8 @@ export function ChangeHistoryPanel() {
   const inserts = useEditStore((s) => s.inserts);
   const deletes = useEditStore((s) => s.deletes);
   const allChanges = useEditStore.getState().getAllChanges();
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Global saves run outside this component. Once the pending set changes,
-  // the failure no longer describes the current edits.
-  useEffect(() => {
-    if (error) setError(null);
-  }, [changes, inserts, deletes]);
+  const saving = useEditStore((s) => s.saving);
+  const error = useEditStore((s) => s.saveError);
 
   // Group cell changes by row
   const groupedByRow = groupChangesByRow(allChanges);
@@ -23,51 +17,12 @@ export function ChangeHistoryPanel() {
   const execQueue = useExecutionQueue((s) => s.execute);
   const store = useEditStore.getState();
 
-  const handleSaveRow = useCallback(async (rowKey: RowKey) => {
-    const sql = store.buildRowUpdate(rowKey);
-    if (!sql) return;
-    setSaving(true);
-    setError(null);
-    try {
-      await execQueue(rowKey.connectionId, sql, rowKey.db);
-      store.removeRow(rowKey);
-      store.requestDataRefresh([rowKey]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
-  }, [execQueue, store]);
+  const handleSaveRow = useCallback((rowKey: RowKey) => {
+    void useEditStore.getState().saveRow(rowKey, execQueue);
+  }, [execQueue]);
 
-  const handleSaveAll = useCallback(async () => {
-    const statements = useEditStore.getState().buildAllSql();
-    if (statements.length === 0) return;
-    setSaving(true);
-    setError(null);
-    const refreshedTables = [];
-    try {
-      for (const { sql, type, id, connectionId, db, schema, table, rowKey } of statements) {
-        const s = useEditStore.getState();
-        await execQueue(connectionId, sql, db);
-
-        // Remove from store
-        if (type === "update") {
-          if (rowKey) s.removeRow(rowKey);
-        } else if (type === "insert") {
-          s.removeInsert(id);
-        } else if (type === "delete") {
-          if (rowKey) s.removeDelete(rowKey);
-        }
-        refreshedTables.push({ connectionId, db, schema, table });
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (refreshedTables.length > 0) {
-        useEditStore.getState().requestDataRefresh(refreshedTables);
-      }
-      setSaving(false);
-    }
+  const handleSaveAll = useCallback(() => {
+    void useEditStore.getState().saveAll(execQueue);
   }, [execQueue]);
 
   const handleRevertAll = useCallback(() => {
@@ -110,8 +65,15 @@ export function ChangeHistoryPanel() {
 
       {/* Error */}
       {error && (
-        <div className="px-3 py-2 text-[11px] text-error bg-error/5 border-b border-border">
-          {error}
+        <div className="flex items-start gap-2 px-3 py-2 text-[11px] text-error bg-error/5 border-b border-border">
+          <span className="flex-1 min-w-0 break-words">{error}</span>
+          <button
+            onClick={() => useEditStore.getState().clearSaveError()}
+            title="Dismiss"
+            className="p-0.5 rounded text-error/70 hover:text-error hover:bg-error/10 transition-colors cursor-pointer shrink-0"
+          >
+            <X size={10} />
+          </button>
         </div>
       )}
 

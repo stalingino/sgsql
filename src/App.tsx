@@ -24,6 +24,7 @@ import {
   Upload,
   Link2,
   Link2Off,
+  AlertTriangle,
 } from "lucide-react";
 import { DragDropProvider, type DragEndEvent } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
@@ -179,6 +180,7 @@ function App() {
   const editInserts = useEditStore((s) => s.inserts);
   const editDeletes = useEditStore((s) => s.deletes);
   const editChangeCount = editChanges.size + editInserts.length + editDeletes.size;
+  const editSaveError = useEditStore((s) => s.saveError);
 
   // Track whether detail panel was already open (for focus vs scroll-only behavior)
   const detailPanelWasOpenRef = useRef(detailPanelVisible);
@@ -760,29 +762,7 @@ function App() {
 
   const execQueue = useExecutionQueue((s) => s.execute);
   const saveAllChanges = useCallback(async () => {
-    const store = useEditStore.getState();
-    const statements = store.buildAllSql();
-    if (statements.length === 0) return;
-
-    const refreshedTables = [];
-    for (const { sql, type, id, connectionId, db, schema, table, rowKey } of statements) {
-      try {
-        await execQueue(connectionId, sql, db);
-        // Remove from store on success
-        if (type === "update") {
-          if (rowKey) store.removeRow(rowKey);
-        } else if (type === "insert") {
-          store.removeInsert(id);
-        } else if (type === "delete") {
-          if (rowKey) store.removeDelete(rowKey);
-        }
-        refreshedTables.push({ connectionId, db, schema, table });
-      } catch (err) {
-        console.error("Failed to save:", err);
-        break; // Stop on first error
-      }
-    }
-    if (refreshedTables.length > 0) store.requestDataRefresh(refreshedTables);
+    await useEditStore.getState().saveAll(execQueue);
   }, [execQueue]);
   saveAllChangesRef.current = saveAllChanges;
 
@@ -1452,6 +1432,7 @@ function App() {
         activeTab={activeTab}
         bottomPanelVisible={consoleVisible}
         editChangeCount={editChangeCount}
+        saveError={editSaveError}
         onToggleBottomPanel={() => setConsoleVisible((visible) => {
           const next = !visible;
           saveConfig({ console: { ...getConfig().console, visible: next, height: getConfig().console?.height ?? 180 } });
@@ -1808,11 +1789,13 @@ function StatusBar({
   activeTab,
   bottomPanelVisible,
   editChangeCount,
+  saveError,
   onToggleBottomPanel,
 }: {
   activeTab: Tab | null;
   bottomPanelVisible: boolean;
   editChangeCount: number;
+  saveError: string | null;
   onToggleBottomPanel: () => void;
 }) {
   const { mode, setMode } = useThemeStore();
@@ -1855,12 +1838,23 @@ function StatusBar({
         >
           <PanelBottom size={12} />
           <span className={`flex items-center gap-1 text-[10px] font-medium tabular-nums ${
-            editChangeCount > 0 ? "text-warning" : "text-text-muted"
+            saveError ? "text-error" : editChangeCount > 0 ? "text-warning" : "text-text-muted"
           }`}>
             <FilePenLine size={11} />
             <span>{editChangeCount}</span>
           </span>
         </button>
+        {/* The panel shows save failures itself; surface them here while it is hidden. */}
+        {saveError && !bottomPanelVisible && (
+          <button
+            onClick={onToggleBottomPanel}
+            title={`${saveError}\n\nClick to show pending changes`}
+            className="flex items-center gap-1 ml-1 px-2 py-1 rounded text-[10px] font-medium text-error bg-error/10 hover:bg-error/20 transition-colors cursor-pointer max-w-[420px]"
+          >
+            <AlertTriangle size={11} className="shrink-0" />
+            <span className="truncate">Save failed: {saveError}</span>
+          </button>
+        )}
       </div>
       <div className="flex items-center gap-0.5">
         <ThemeButton current={mode} value="light" setMode={setMode} icon={<Sun size={11} />} label="Light" />

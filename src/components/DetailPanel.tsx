@@ -197,21 +197,11 @@ export function DetailPanel({ selection, wasAlreadyOpen, onFieldActivate }: Deta
 
 function SaveRowButton({ rowKey }: { rowKey: RowKey }) {
   const execQueue = useExecutionQueue((s) => s.execute);
-  const buildRowUpdate = useEditStore((s) => s.buildRowUpdate);
-  const removeRow = useEditStore((s) => s.removeRow);
-  const requestDataRefresh = useEditStore((s) => s.requestDataRefresh);
+  const saveRow = useEditStore((s) => s.saveRow);
 
-  const handleSave = useCallback(async () => {
-    const sql = buildRowUpdate(rowKey);
-    if (!sql) return;
-    try {
-      await execQueue(rowKey.connectionId, sql, rowKey.db);
-      removeRow(rowKey);
-      requestDataRefresh([rowKey]);
-    } catch (err) {
-      console.error("Failed to save row:", err);
-    }
-  }, [rowKey, execQueue, buildRowUpdate, removeRow, requestDataRefresh]);
+  const handleSave = useCallback(() => {
+    void saveRow(rowKey, execQueue);
+  }, [rowKey, execQueue, saveRow]);
 
   return (
     <button

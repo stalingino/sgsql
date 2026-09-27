@@ -81,6 +81,9 @@ export interface PendingSqlStatement {
   rowKey?: RowKey;
 }
 
+/** Runs one statement; the execution queue's `execute` fits this shape. */
+export type ExecuteSql = (connectionId: string, sql: string, db: string) => Promise<unknown>;
+
 /* ── Store ─────────────────────────────────────────────── */
 
 interface EditStoreState {
@@ -182,6 +185,22 @@ interface EditStoreState {
 
   /** Build all SQL statements (updates + inserts + deletes) */
   buildAllSql: () => PendingSqlStatement[];
+
+  /* ── Saving ─────────────────────────────────────────── */
+
+  /** True while a save is running. */
+  saving: boolean;
+
+  /** Failure from the last save. Kept here so it is visible even when the pending changes panel is hidden. */
+  saveError: string | null;
+
+  clearSaveError: () => void;
+
+  /** Execute every pending statement in order, stopping at the first failure. Resolves true on success. */
+  saveAll: (execute: ExecuteSql) => Promise<boolean>;
+
+  /** Execute the pending UPDATE for one row. Resolves true on success. */
+  saveRow: (rowKey: RowKey, execute: ExecuteSql) => Promise<boolean>;
 }
 
 /** Sentinel for raw SQL expressions (DEFAULT, NOW(), etc.) */
@@ -548,7 +567,80 @@ export const useEditStore = create<EditStoreState>((set, get) => ({
 
     return result;
   },
+
+  saving: false,
+  saveError: null,
+
+  clearSaveError() {
+    set({ saveError: null });
+  },
+
+  async saveAll(execute) {
+    if (get().saving) return false;
+    const statements = get().buildAllSql();
+    if (statements.length === 0) return true;
+
+    set({ saving: true, saveError: null });
+    const refreshedTables: TableRefreshTarget[] = [];
+    try {
+      for (const { sql, type, id, connectionId, db, schema, table, rowKey } of statements) {
+        try {
+          await execute(connectionId, sql, db);
+        } catch (err) {
+          set({ saveError: `${type.toUpperCase()} ${table}: ${errorMessage(err)}` });
+          return false; // Stop on first error
+        }
+        if (type === "update") {
+          if (rowKey) get().removeRow(rowKey);
+        } else if (type === "insert") {
+          get().removeInsert(id);
+        } else if (type === "delete") {
+          if (rowKey) get().removeDelete(rowKey);
+        }
+        refreshedTables.push({ connectionId, db, schema, table });
+      }
+      return true;
+    } finally {
+      if (refreshedTables.length > 0) get().requestDataRefresh(refreshedTables);
+      set({ saving: false });
+    }
+  },
+
+  async saveRow(rowKey, execute) {
+    if (get().saving) return false;
+    const sql = get().buildRowUpdate(rowKey);
+    if (!sql) return true;
+
+    set({ saving: true, saveError: null });
+    try {
+      await execute(rowKey.connectionId, sql, rowKey.db);
+      get().removeRow(rowKey);
+      get().requestDataRefresh([rowKey]);
+      return true;
+    } catch (err) {
+      set({ saveError: `UPDATE ${rowKey.table}: ${errorMessage(err)}` });
+      return false;
+    } finally {
+      set({ saving: false });
+    }
+  },
 }));
+
+// A save failure describes the pending set it was run against; once the user
+// edits or reverts, it no longer applies.
+useEditStore.subscribe((state, prev) => {
+  if (
+    state.saveError &&
+    !state.saving &&
+    (state.changes !== prev.changes || state.inserts !== prev.inserts || state.deletes !== prev.deletes)
+  ) {
+    useEditStore.setState({ saveError: null });
+  }
+});
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 /* ── Helpers ───────────────────────────────────────────── */
 
