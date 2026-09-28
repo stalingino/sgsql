@@ -118,6 +118,41 @@ export async function cancelQuery(connectionId: string): Promise<{ ok: boolean; 
   });
 }
 
+export interface ServerProcess {
+  id: number;
+  user: string | null;
+  host: string | null;
+  db: string | null;
+  /** MySQL COMMAND (Query, Sleep, ...) or Postgres state (active, idle, ...). */
+  command: string | null;
+  /** MySQL STATE or Postgres wait event. */
+  state: string | null;
+  /** Seconds in the current state. */
+  time: number | null;
+  info: string | null;
+  /** One of this app's own pooled connections. */
+  own: boolean;
+  idle: boolean;
+}
+
+export async function fetchProcesses(connectionId: string): Promise<{ supported: boolean; processes: ServerProcess[] }> {
+  return sidecarFetch("/processes", {
+    method: "POST",
+    body: JSON.stringify({ connectionId }),
+  });
+}
+
+export async function killProcess(
+  connectionId: string,
+  id: number,
+  mode: "query" | "connection",
+): Promise<{ ok: boolean; detail?: string }> {
+  return sidecarFetch("/processes/kill", {
+    method: "POST",
+    body: JSON.stringify({ connectionId, id, mode }),
+  });
+}
+
 export async function fetchDatabases(connId: string): Promise<string[]> {
   const res = await sidecarFetch<{ databases: string[] }>(
     `/schema/${connId}/databases`,

@@ -42,6 +42,8 @@ async fn not_found() -> axum::response::Response {
 fn assert_handlers_send() {
     fn assert_send<F: std::future::Future + Send>(_: F) {}
     assert_send(routes::cancel::handle_cancel(axum::body::Bytes::new()));
+    assert_send(routes::processes::handle_processes(axum::body::Bytes::new()));
+    assert_send(routes::processes::handle_kill_process(axum::body::Bytes::new()));
     assert_send(routes::apply::handle_schema_apply(
         axum::extract::Path(String::new()),
         axum::body::Bytes::new(),
@@ -77,6 +79,8 @@ async fn main() {
         .route("/query", post(routes::query::handle_query))
         .route("/query/batch", post(routes::query::handle_query_batch))
         .route("/cancel", post(routes::cancel::handle_cancel))
+        .route("/processes", post(routes::processes::handle_processes))
+        .route("/processes/kill", post(routes::processes::handle_kill_process))
         .route("/query-log", any(routes::ws::handle_query_log))
         .route("/schema/{connId}/apply", post(routes::apply::handle_schema_apply))
         .route(

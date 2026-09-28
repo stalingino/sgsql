@@ -18,7 +18,7 @@ export interface AppConfig {
   theme?: "dark" | "light" | "system";
   windows?: Record<string, WindowState>;
   sidebar?: { visible: boolean; width: number };
-  console?: { visible: boolean; height: number; tab?: "log" | "changes" };
+  console?: { visible: boolean; height: number; tab?: "log" | "changes" | "processes" };
   detailPanel?: { visible: boolean; width: number };
   /** @deprecated Unscoped history from older releases; deliberately not restored. */
   queryStack?: string[];

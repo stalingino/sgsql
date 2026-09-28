@@ -1,16 +1,20 @@
 import { AlertTriangle } from "lucide-react";
 import { QueryConsole, QueryLogActions } from "./QueryConsole";
 import { ChangeHistoryPanel, PendingChangesActions } from "./ChangeHistoryPopup";
+import { ProcessList, ProcessListActions } from "./ProcessList";
 import { useEditStore } from "../lib/editStore";
 
-export type BottomPanelTab = "log" | "changes";
+export type BottomPanelTab = "log" | "changes" | "processes";
 
 export function BottomPanel({
   tab,
   onTabChange,
+  connectionId,
 }: {
   tab: BottomPanelTab;
   onTabChange: (tab: BottomPanelTab) => void;
+  /** Connection of the active window tab, for the process list. */
+  connectionId: string | null;
 }) {
   const changeCount = useEditStore((s) => s.changes.size + s.inserts.length + s.deletes.size);
   const saveError = useEditStore((s) => s.saveError);
@@ -35,14 +39,21 @@ export function BottomPanel({
               </span>
             )}
           </TabButton>
+          <TabButton active={tab === "processes"} onClick={() => onTabChange("processes")}>
+            Processes
+          </TabButton>
         </div>
         <div className="flex items-center">
-          {tab === "log" ? <QueryLogActions /> : <PendingChangesActions />}
+          {tab === "log" && <QueryLogActions />}
+          {tab === "changes" && <PendingChangesActions />}
+          {tab === "processes" && <ProcessListActions connectionId={connectionId} />}
         </div>
       </div>
 
       <div className="flex-1 min-h-0">
-        {tab === "log" ? <QueryConsole /> : <ChangeHistoryPanel />}
+        {tab === "log" && <QueryConsole />}
+        {tab === "changes" && <ChangeHistoryPanel />}
+        {tab === "processes" && <ProcessList connectionId={connectionId} />}
       </div>
     </div>
   );
@@ -58,10 +69,19 @@ function TabButton({
   children: React.ReactNode;
 }) {
   return (
-    <button
+    // A div, like the content tabs: index.css brightens muted text on every
+    // enabled <button>, which would make inactive tabs look active.
+    <div
       role="tab"
+      tabIndex={0}
       aria-selected={active}
       onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
+      }}
       className={`relative flex items-center gap-1.5 h-full px-3 text-[11px] font-medium cursor-pointer select-none border-r border-border shrink-0 transition-colors ${
         active
           ? "bg-bg-primary text-text-primary"
@@ -70,6 +90,6 @@ function TabButton({
     >
       {children}
       {active && <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-accent" />}
-    </button>
+    </div>
   );
 }

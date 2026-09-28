@@ -276,6 +276,18 @@ pub async fn exec_sqlite_conn_traced(conn: &mut sqlx::SqliteConnection, conn_id:
     traced(conn_id, db, sql, |rows: &u64| Some(*rows), async { exec_sqlite_conn(conn, sql).await }).await
 }
 
+/// Untraced fetches, for background polling that should stay out of the
+/// query log (e.g. the process list).
+pub async fn fetch_pg_conn(conn: &mut sqlx::PgConnection, sql: &str) -> Result<QueryOutput, sqlx::Error> {
+    use sqlx::Executor;
+    Ok(pg_output(&conn.fetch_all(sql).await?))
+}
+
+pub async fn fetch_mysql_conn(conn: &mut sqlx::MySqlConnection, sql: &str) -> Result<QueryOutput, sqlx::Error> {
+    use sqlx::Executor;
+    Ok(mysql_output(&conn.fetch_all(sql).await?))
+}
+
 pub async fn exec_mysql_conn(conn: &mut sqlx::MySqlConnection, sql: &str) -> Result<u64, sqlx::Error> {
     use sqlx::Executor;
     Ok(conn.execute(sql).await?.rows_affected())
@@ -294,6 +306,14 @@ pub async fn fetch_sqlite_conn(conn: &mut sqlx::SqliteConnection, sql: &str) -> 
 pub async fn pg_cancel_backend(conn: &mut sqlx::PgConnection, pid: i32) -> Result<(), sqlx::Error> {
     use sqlx::Executor;
     conn.execute(sqlx::query("SELECT pg_cancel_backend($1)").bind(pid)).await.map(|_| ())
+}
+
+/// pg_cancel_backend / pg_terminate_backend; false when the pid is gone.
+pub async fn pg_signal_backend(conn: &mut sqlx::PgConnection, function: &'static str, pid: i32) -> Result<bool, sqlx::Error> {
+    use sqlx::{Executor, Row};
+    let sql = format!("SELECT {function}($1)");
+    let row = conn.fetch_one(sqlx::query(&sql).bind(pid)).await?;
+    row.try_get::<Option<bool>, _>(0).map(|signalled| signalled.unwrap_or(false))
 }
 
 /// Raw-SQL variant of the object fetches, for statements that cannot be

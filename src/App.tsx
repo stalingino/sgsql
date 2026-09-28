@@ -1413,7 +1413,7 @@ function App() {
               {/* Bottom console panel */}
               {consoleVisible && (
                 <ResizableConsole>
-                  <BottomPanel tab={bottomTab} onTabChange={changeBottomTab} />
+                  <BottomPanel tab={bottomTab} onTabChange={changeBottomTab} connectionId={activeTab.connectionId ?? null} />
                 </ResizableConsole>
               )}
             </main>
