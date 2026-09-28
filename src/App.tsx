@@ -45,13 +45,12 @@ import { notifySchemaChanged } from "./lib/schemaRevision";
 import { SchemaTree } from "./components/SchemaTree";
 import { DataTable } from "./components/DataTable";
 import { QueryEditor, type QueryTabMemory } from "./components/QueryEditor";
-import { QueryConsole } from "./components/QueryConsole";
+import { BottomPanel, type BottomPanelTab } from "./components/BottomPanel";
 import { DetailPanel } from "./components/DetailPanel";
 import { UserManager } from "./components/UserManager";
 import { SettingsModal } from "./components/SettingsModal";
 import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { CommandPalette } from "./components/CommandPalette";
-import { ChangeHistoryPanel } from "./components/ChangeHistoryPopup";
 import { SchemaObjectEditor } from "./components/SchemaObjectEditor";
 import { SqlImportTab } from "./components/SqlImportTab";
 import type { CellSelection, CellRevealRequest, SortState } from "./components/ResultGrid";
@@ -158,6 +157,7 @@ function App() {
   // Panel visibility — initialized from config after load
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [consoleVisible, setConsoleVisible] = useState(false);
+  const [bottomTab, setBottomTab] = useState<BottomPanelTab>("log");
   const [detailPanelVisible, setDetailPanelVisible] = useState(false);
   const [cellSelection, setCellSelection] = useState<CellSelection | null>(null);
   const [cellRevealRequest, setCellRevealRequest] = useState<CellRevealRequest | null>(null);
@@ -182,6 +182,17 @@ function App() {
   const editChangeCount = editChanges.size + editInserts.length + editDeletes.size;
   const editSaveError = useEditStore((s) => s.saveError);
 
+  const changeBottomTab = (tab: BottomPanelTab) => {
+    setBottomTab(tab);
+    saveConfig({ console: { ...getConfig().console, visible: getConfig().console?.visible ?? true, height: getConfig().console?.height ?? 180, tab } });
+  };
+
+  const showPendingChanges = () => {
+    setConsoleVisible(true);
+    setBottomTab("changes");
+    saveConfig({ console: { ...getConfig().console, visible: true, height: getConfig().console?.height ?? 180, tab: "changes" } });
+  };
+
   // Track whether detail panel was already open (for focus vs scroll-only behavior)
   const detailPanelWasOpenRef = useRef(detailPanelVisible);
 
@@ -193,6 +204,7 @@ function App() {
       setThemeMode(cfg.theme || mode);
       if (cfg.sidebar?.visible !== undefined) setSidebarVisible(cfg.sidebar.visible);
       if (cfg.console?.visible !== undefined) setConsoleVisible(cfg.console.visible);
+      if (cfg.console?.tab) setBottomTab(cfg.console.tab);
       if (cfg.detailPanel?.visible !== undefined) setDetailPanelVisible(cfg.detailPanel.visible);
       setConfigReady(true);
     });
@@ -1401,10 +1413,7 @@ function App() {
               {/* Bottom console panel */}
               {consoleVisible && (
                 <ResizableConsole>
-                  <ResizableBottomSplit
-                    left={<QueryConsole />}
-                    right={<ChangeHistoryPanel />}
-                  />
+                  <BottomPanel tab={bottomTab} onTabChange={changeBottomTab} />
                 </ResizableConsole>
               )}
             </main>
@@ -1438,6 +1447,7 @@ function App() {
           saveConfig({ console: { ...getConfig().console, visible: next, height: getConfig().console?.height ?? 180 } });
           return next;
         })}
+        onShowPendingChanges={showPendingChanges}
       />
     </div>
   );
@@ -1623,7 +1633,7 @@ function ResizableConsole({ children }: { children: React.ReactNode }) {
       const finalHeight = Math.min(500, Math.max(80, startH.current + delta));
       clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
-        saveConfig({ console: { visible: getConfig().console?.visible ?? false, height: finalHeight } });
+        saveConfig({ console: { ...getConfig().console, visible: getConfig().console?.visible ?? false, height: finalHeight } });
       }, 100);
     };
     window.addEventListener("mousemove", onMouseMove);
@@ -1642,84 +1652,6 @@ function ResizableConsole({ children }: { children: React.ReactNode }) {
         className="h-[3px] shrink-0 cursor-row-resize hover:bg-accent/50 active:bg-accent transition-colors w-full"
       />
       <div className="flex-1 min-h-0">{children}</div>
-    </div>
-  );
-}
-
-/* ── Resizable split inside the bottom panel ───────────── */
-
-function ResizableBottomSplit({
-  left,
-  right,
-}: {
-  left: React.ReactNode;
-  right: React.ReactNode;
-}) {
-  const [leftPercent, setLeftPercent] = useState(() => {
-    const saved = getConfig().console?.split;
-    return saved === undefined ? 50 : Math.min(70, Math.max(30, saved));
-  });
-  const containerRef = useRef<HTMLDivElement>(null);
-  const dragging = useRef(false);
-  const startX = useRef(0);
-  const startPercent = useRef(50);
-  const currentPercent = useRef(leftPercent);
-
-  const onMouseDown = (e: React.MouseEvent) => {
-    e.preventDefault();
-    dragging.current = true;
-    startX.current = e.clientX;
-    startPercent.current = leftPercent;
-    currentPercent.current = leftPercent;
-    beginResize("col-resize");
-  };
-
-  useEffect(() => {
-    const onMouseMove = (e: MouseEvent) => {
-      if (!dragging.current || !containerRef.current) return;
-      e.preventDefault();
-      const width = containerRef.current.clientWidth;
-      if (width === 0) return;
-      const next = Math.min(70, Math.max(30, startPercent.current + ((e.clientX - startX.current) / width) * 100));
-      currentPercent.current = next;
-      setLeftPercent(next);
-    };
-    const onMouseUp = () => {
-      if (!dragging.current) return;
-      dragging.current = false;
-      endResize();
-      saveConfig({
-        console: {
-          visible: getConfig().console?.visible ?? true,
-          height: getConfig().console?.height ?? 180,
-          split: currentPercent.current,
-        },
-      });
-    };
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-    return () => {
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-      if (dragging.current) endResize();
-    };
-  }, []);
-
-  return (
-    <div ref={containerRef} className="flex h-full min-h-0">
-      <div className="min-w-0" style={{ width: `${leftPercent}%` }}>
-        {left}
-      </div>
-      <div
-        onMouseDown={onMouseDown}
-        title="Resize query log and pending changes"
-        className="group w-[5px] shrink-0 cursor-col-resize flex justify-center bg-border/30 hover:bg-accent/15 transition-colors"
-      >
-        <div className="w-px h-full bg-border group-hover:bg-accent/70 transition-colors" />
-      </div>
-      <div className="flex-1 min-w-0">
-        {right}
-      </div>
     </div>
   );
 }
@@ -1791,12 +1723,14 @@ function StatusBar({
   editChangeCount,
   saveError,
   onToggleBottomPanel,
+  onShowPendingChanges,
 }: {
   activeTab: Tab | null;
   bottomPanelVisible: boolean;
   editChangeCount: number;
   saveError: string | null;
   onToggleBottomPanel: () => void;
+  onShowPendingChanges: () => void;
 }) {
   const { mode, setMode } = useThemeStore();
 
@@ -1847,7 +1781,7 @@ function StatusBar({
         {/* The panel shows save failures itself; surface them here while it is hidden. */}
         {saveError && !bottomPanelVisible && (
           <button
-            onClick={onToggleBottomPanel}
+            onClick={onShowPendingChanges}
             title={`${saveError}\n\nClick to show pending changes`}
             className="flex items-center gap-1 ml-1 px-2 py-1 rounded text-[10px] font-medium text-error bg-error/10 hover:bg-error/20 transition-colors cursor-pointer max-w-[420px]"
           >

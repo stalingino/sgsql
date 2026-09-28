@@ -4,51 +4,51 @@ import { useQueryLog, type QueryLogEntry } from "../lib/queryLog";
 import { HighlightedSQL } from "../lib/highlightSQL";
 import { formatLocalDateTime } from "../lib/formatDateTime";
 
+export function QueryLogActions() {
+  const count = useQueryLog((s) => s.entries.length);
+  const clear = useQueryLog((s) => s.clear);
+
+  return (
+    <div className="flex items-center gap-1">
+      <span className="text-[10px] text-text-secondary tabular-nums mr-1">
+        {count} {count === 1 ? "query" : "queries"}
+      </span>
+      {count > 0 && (
+        <button
+          onClick={clear}
+          title="Clear log"
+          className="p-0.5 rounded text-text-secondary hover:text-error hover:bg-error/10 transition-colors cursor-pointer"
+        >
+          <Trash2 size={12} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function QueryConsole() {
   const entries = useQueryLog((s) => s.entries);
-  const clear = useQueryLog((s) => s.clear);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const mounted = useRef(false);
 
-  // Auto-scroll to bottom on new entries
+  // Auto-scroll to bottom on new entries. Jump straight there on mount
+  // (e.g. switching back to this tab) instead of animating from the top.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    bottomRef.current?.scrollIntoView({ behavior: mounted.current ? "smooth" : "auto" });
+    mounted.current = true;
   }, [entries.length]);
 
   return (
-    <div className="flex flex-col h-full min-h-0 selectable">
-      {/* Header */}
-      <div className="flex items-center justify-between h-8 px-3 border-b border-border bg-bg-secondary shrink-0">
-        <span className="text-[11px] font-semibold text-text-secondary uppercase tracking-wider">
-          Query Log
-        </span>
-        <div className="flex items-center gap-1">
-          <span className="text-[10px] text-text-secondary tabular-nums mr-1">
-            {entries.length} {entries.length === 1 ? "query" : "queries"}
-          </span>
-          {entries.length > 0 && (
-            <button
-              onClick={clear}
-              title="Clear log"
-              className="p-0.5 rounded text-text-secondary hover:text-error hover:bg-error/10 transition-colors cursor-pointer"
-            >
-              <Trash2 size={12} />
-            </button>
-          )}
+    <div className="h-full overflow-y-auto min-h-0 font-mono text-[11px] leading-relaxed selectable">
+      {entries.length === 0 && (
+        <div className="flex items-center justify-center h-full text-text-muted text-[11px]">
+          Queries will appear here...
         </div>
-      </div>
-
-      {/* Log entries */}
-      <div className="flex-1 overflow-y-auto min-h-0 font-mono text-[11px] leading-relaxed">
-        {entries.length === 0 && (
-          <div className="flex items-center justify-center h-full text-text-muted text-[11px]">
-            Queries will appear here...
-          </div>
-        )}
-        {entries.map((entry) => (
-          <LogEntry key={entry.id} entry={entry} />
-        ))}
-        <div ref={bottomRef} />
-      </div>
+      )}
+      {entries.map((entry) => (
+        <LogEntry key={entry.id} entry={entry} />
+      ))}
+      <div ref={bottomRef} />
     </div>
   );
 }

@@ -3,6 +3,41 @@ import { Save, Undo2, Loader2, Plus, Trash2, X } from "lucide-react";
 import { useEditStore, SqlExpression, type CellChange, type RowKey, type PendingInsert, type PendingDelete } from "../lib/editStore";
 import { useExecutionQueue } from "../lib/executionQueue";
 
+export function PendingChangesActions() {
+  const totalCount = useEditStore((s) => s.changes.size + s.inserts.length + s.deletes.size);
+  const saving = useEditStore((s) => s.saving);
+  const execQueue = useExecutionQueue((s) => s.execute);
+
+  const handleSaveAll = useCallback(() => {
+    void useEditStore.getState().saveAll(execQueue);
+  }, [execQueue]);
+
+  const handleRevertAll = useCallback(() => {
+    useEditStore.getState().revertAll();
+  }, []);
+
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        onClick={handleRevertAll}
+        disabled={saving || totalCount === 0}
+        className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer disabled:opacity-40"
+      >
+        <Undo2 size={10} />
+        Revert All
+      </button>
+      <button
+        onClick={handleSaveAll}
+        disabled={saving || totalCount === 0}
+        className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium text-success hover:bg-success/10 transition-colors cursor-pointer disabled:opacity-40"
+      >
+        {saving ? <Loader2 size={10} className="animate-spin" /> : <Save size={10} />}
+        Save All
+      </button>
+    </div>
+  );
+}
+
 export function ChangeHistoryPanel() {
   const changes = useEditStore((s) => s.changes);
   const inserts = useEditStore((s) => s.inserts);
@@ -21,48 +56,10 @@ export function ChangeHistoryPanel() {
     void useEditStore.getState().saveRow(rowKey, execQueue);
   }, [execQueue]);
 
-  const handleSaveAll = useCallback(() => {
-    void useEditStore.getState().saveAll(execQueue);
-  }, [execQueue]);
-
-  const handleRevertAll = useCallback(() => {
-    useEditStore.getState().revertAll();
-  }, []);
-
   const totalCount = changes.size + inserts.length + deletes.size;
 
   return (
     <div className="flex flex-col h-full min-h-0 selectable bg-bg-primary">
-      {/* Header */}
-      <div className="flex items-center justify-between h-8 px-3 border-b border-border bg-bg-secondary shrink-0">
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] font-semibold text-text-secondary uppercase tracking-wider">
-            Pending Changes
-          </span>
-          <span className="text-[10px] text-text-muted px-1.5 py-0.5 rounded-full bg-warning/15 text-warning font-semibold">
-            {totalCount}
-          </span>
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={handleRevertAll}
-            disabled={saving || totalCount === 0}
-            className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer disabled:opacity-40"
-          >
-            <Undo2 size={10} />
-            Revert All
-          </button>
-          <button
-            onClick={handleSaveAll}
-            disabled={saving || totalCount === 0}
-            className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium text-success hover:bg-success/10 transition-colors cursor-pointer disabled:opacity-40"
-          >
-            {saving ? <Loader2 size={10} className="animate-spin" /> : <Save size={10} />}
-            Save All
-          </button>
-        </div>
-      </div>
-
       {/* Error */}
       {error && (
         <div className="flex items-start gap-2 px-3 py-2 text-[11px] text-error bg-error/5 border-b border-border">
