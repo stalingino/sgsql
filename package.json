@@ -11,7 +11,8 @@
     "tauri": "tauri",
     "icons:mac": "node scripts/build-macos-icons.mjs",
     "sidecar:build": "cargo build --release --manifest-path src-tauri/Cargo.toml -p dbsidecar --target aarch64-apple-darwin && mkdir -p src-tauri/binaries && cp src-tauri/target/aarch64-apple-darwin/release/dbsidecar src-tauri/binaries/dbsidecar-aarch64-apple-darwin && codesign --force --sign \"SGSql Developer\" src-tauri/binaries/dbsidecar-aarch64-apple-darwin",
-    "sidecar:dev": "cargo run --manifest-path src-tauri/Cargo.toml -p dbsidecar"
+    "sidecar:build:linux-arm64": "cargo build --release --manifest-path src-tauri/Cargo.toml -p dbsidecar --target aarch64-unknown-linux-gnu && mkdir -p src-tauri/binaries && cp src-tauri/target/aarch64-unknown-linux-gnu/release/dbsidecar src-tauri/binaries/dbsidecar-aarch64-unknown-linux-gnu",
+    "sidecar:dev":"cargo run --manifest-path src-tauri/Cargo.toml -p dbsidecar"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
