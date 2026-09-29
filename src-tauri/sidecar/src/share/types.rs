@@ -13,6 +13,7 @@ pub enum DbType {
     Postgres,
     MySql,
     Sqlite,
+    Oracle,
 }
 
 impl DbType {
@@ -21,6 +22,7 @@ impl DbType {
             "postgres" => Some(DbType::Postgres),
             "mysql" => Some(DbType::MySql),
             "sqlite" => Some(DbType::Sqlite),
+            "oracle" => Some(DbType::Oracle),
             _ => None,
         }
     }
@@ -30,6 +32,7 @@ impl DbType {
             DbType::Postgres => "postgres",
             DbType::MySql => "mysql",
             DbType::Sqlite => "sqlite",
+            DbType::Oracle => "oracle",
         }
     }
 }
@@ -172,7 +175,7 @@ impl Share {
             return self.allowed.contains(key);
         }
         match self.db_type {
-            DbType::Postgres => true,
+            DbType::Postgres | DbType::Oracle => true,
             DbType::MySql => key.schema.eq_ignore_ascii_case(&self.database),
             DbType::Sqlite => key.schema.eq_ignore_ascii_case("main"),
         }

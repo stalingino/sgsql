@@ -46,4 +46,19 @@ describe("schema object definition replacement", () => {
       name: "total",
     })).toEqual([ddl]);
   });
+
+  test("splits Oracle package spec and body at SQL*Plus terminators", () => {
+    const ddl = 'CREATE OR REPLACE EDITIONABLE PACKAGE "APP"."PKG" AS FUNCTION f RETURN NUMBER; END;\n/\n  CREATE OR REPLACE EDITIONABLE PACKAGE BODY "APP"."PKG" AS FUNCTION f RETURN NUMBER IS BEGIN RETURN 1; END; END;\n/';
+    expect(buildSchemaObjectReplacement({ ddl, type: "function", dialect: "oracle", db: "FREEPDB1", schema: "APP", name: "PKG" })).toEqual([
+      'CREATE OR REPLACE EDITIONABLE PACKAGE "APP"."PKG" AS FUNCTION f RETURN NUMBER; END;',
+      'CREATE OR REPLACE EDITIONABLE PACKAGE BODY "APP"."PKG" AS FUNCTION f RETURN NUMBER IS BEGIN RETURN 1; END; END;',
+    ]);
+  });
+
+  test("keeps Oracle views as CREATE OR REPLACE and recreates materialized views", () => {
+    expect(buildSchemaObjectReplacement({ ddl: 'CREATE VIEW "APP"."V" AS SELECT 1 FROM dual', type: "view", dialect: "oracle", db: "FREEPDB1", schema: "APP", name: "V" }))
+      .toEqual(['CREATE OR REPLACE VIEW "APP"."V" AS SELECT 1 FROM dual']);
+    expect(buildSchemaObjectReplacement({ ddl: 'CREATE MATERIALIZED VIEW "APP"."MV" AS SELECT 1 FROM dual', type: "view", dialect: "oracle", db: "FREEPDB1", schema: "APP", name: "MV" }))
+      .toEqual(['DROP MATERIALIZED VIEW "APP"."MV"', 'CREATE MATERIALIZED VIEW "APP"."MV" AS SELECT 1 FROM dual']);
+  });
 });

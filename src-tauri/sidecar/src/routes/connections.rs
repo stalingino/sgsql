@@ -54,7 +54,7 @@ pub async fn handle_test_connection(bytes: Bytes) -> Response {
 
     let result: Result<(), SidecarError> = async {
         let entry = pool::connect(&profile).await?;
-        let probe = crate::db::fetch_raw(&entry.client, &profile.id, &profile.database, "SELECT 1").await;
+        let probe = crate::db::fetch_raw(&entry.client, &profile.id, &profile.database, entry.client.probe_sql()).await;
         pool::close_entry(&entry).await;
         probe.map(|_| ())
     }
@@ -94,7 +94,7 @@ pub async fn handle_open_connection(bytes: Bytes) -> Response {
     if profile.id.is_empty() || profile.db_type.is_empty() {
         return error_response("Missing id or type in profile", 400);
     }
-    if !matches!(profile.db_type.as_str(), "postgres" | "mysql" | "sqlite") {
+    if !matches!(profile.db_type.as_str(), "postgres" | "mysql" | "sqlite" | "oracle") {
         return error_response(&format!("Unsupported connection type: {}", profile.db_type), 400);
     }
 

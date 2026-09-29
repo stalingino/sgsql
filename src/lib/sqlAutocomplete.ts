@@ -77,8 +77,15 @@ const RELATION_LIST_TAIL = new RegExp(
 
 export function quoteCompletionIdentifier(
   value: string,
-  dialect: "postgres" | "mysql" | "sqlite",
+  dialect: "postgres" | "mysql" | "sqlite" | "oracle",
 ): string {
+  // Oracle folds unquoted names to upper case: `my_table` would not find a
+  // table created as "my_table".
+  if (dialect === "oracle") {
+    return /^[A-Z][A-Z0-9_$#]*$/.test(value) && !RESERVED_IDENTIFIERS.has(value.toLowerCase())
+      ? value
+      : `"${value.replace(/"/g, '""')}"`;
+  }
   if (/^[A-Za-z_][A-Za-z0-9_$]*$/.test(value) && !RESERVED_IDENTIFIERS.has(value.toLowerCase())) return value;
   if (dialect === "mysql") return `\`${value.replace(/`/g, "``")}\``;
   return `"${value.replace(/"/g, '""')}"`;
@@ -240,7 +247,7 @@ export function buildSqlCompletions({
   references: TableReference[];
   columnsByTable: Map<string, ColumnInfo[]>;
   defaultSchema: string;
-  dialect: "postgres" | "mysql" | "sqlite";
+  dialect: "postgres" | "mysql" | "sqlite" | "oracle";
 }): SqlCompletion[] {
   if (!target.shouldOpen) return [];
 

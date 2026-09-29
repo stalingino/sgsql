@@ -25,6 +25,17 @@ pub enum DbClient {
     Sqlite {
         pool: SqlitePool,
     },
+    Oracle(crate::oracle::OracleSession),
+}
+
+impl DbClient {
+    /// Cheapest statement that proves the session works.
+    pub fn probe_sql(&self) -> &'static str {
+        match self {
+            DbClient::Oracle(_) => "SELECT 1 FROM DUAL",
+            _ => "SELECT 1",
+        }
+    }
 }
 
 pub struct QueryOutput {
@@ -111,6 +122,30 @@ where
     }
 }
 
+/// `traced` for operations that already produce a SidecarError (Oracle).
+pub async fn traced_result<T, F>(
+    conn_id: &str,
+    db: &str,
+    sql: &str,
+    row_count: impl FnOnce(&T) -> Option<u64>,
+    op: F,
+) -> Result<T, SidecarError>
+where
+    F: std::future::Future<Output = Result<T, SidecarError>>,
+{
+    let t = trace::start(conn_id, db, sql);
+    match op.await {
+        Ok(value) => {
+            t.success(row_count(&value));
+            Ok(value)
+        }
+        Err(err) => {
+            t.failure(&err.to_string());
+            Err(err)
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Raw (unprepared, text/simple protocol) execution — used for user SQL,
 // SHOW/PRAGMA statements, and DDL. Matches how the JS drivers ran these.
@@ -129,6 +164,13 @@ pub async fn fetch_raw(client: &DbClient, conn_id: &str, db: &str, sql: &str) ->
         DbClient::Sqlite { pool } => {
             let rows = traced(conn_id, db, sql, |r: &Vec<SqliteRow>| Some(r.len() as u64), sqlx::raw_sql(sql).fetch_all(pool)).await?;
             Ok(sqlite_output(&rows))
+        }
+        DbClient::Oracle(session) => {
+            let owned = sql.to_string();
+            traced_result(conn_id, db, sql, |o: &QueryOutput| Some(o.rows.len() as u64), async {
+                session.run(move |conn| crate::oracle::fetch(conn, &owned, &[])).await
+            })
+            .await
         }
     }
 }
@@ -150,6 +192,13 @@ pub async fn execute_raw(client: &DbClient, conn_id: &str, db: &str, sql: &str) 
         DbClient::Sqlite { pool } => {
             traced(conn_id, db, sql, |n: &u64| Some(*n), async {
                 Ok(sqlx::raw_sql(sql).execute(pool).await?.rows_affected())
+            })
+            .await
+        }
+        DbClient::Oracle(session) => {
+            let owned = sql.to_string();
+            traced_result(conn_id, db, sql, |n: &u64| Some(*n), async {
+                session.run(move |conn| crate::oracle::execute(conn, &owned, true)).await
             })
             .await
         }
@@ -222,6 +271,25 @@ pub async fn sqlite_fetch(
     }
     let rows = traced(conn_id, db, sql, |r: &Vec<SqliteRow>| Some(r.len() as u64), query.fetch_all(pool)).await?;
     let output = sqlite_output(&rows);
+    Ok(output.into_objects())
+}
+
+pub async fn oracle_fetch(
+    client: &DbClient,
+    conn_id: &str,
+    db: &str,
+    sql: &str,
+    binds: &[&str],
+) -> Result<Vec<Value>, SidecarError> {
+    let DbClient::Oracle(session) = client else {
+        return Err(SidecarError::msg("Unexpected connection type"));
+    };
+    let owned = sql.to_string();
+    let binds: Vec<String> = binds.iter().map(|b| b.to_string()).collect();
+    let output = traced_result(conn_id, db, sql, |o: &QueryOutput| Some(o.rows.len() as u64), async {
+        session.run(move |conn| crate::oracle::fetch(conn, &owned, &binds)).await
+    })
+    .await?;
     Ok(output.into_objects())
 }
 

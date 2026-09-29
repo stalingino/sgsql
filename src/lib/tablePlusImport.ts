@@ -37,6 +37,7 @@ const DRIVER_MAP: Record<string, ConnectionProfile["type"]> = {
   cockroachdb: "postgres",
   redshift: "postgres",
   sqlite: "sqlite",
+  oracle: "oracle",
 };
 
 const VALID_ENVS: ConnectionEnv[] = ["production", "staging", "testing", "development", "local"];

@@ -38,7 +38,7 @@ import { TableExportModal } from "./TableExportModal";
 
 interface SchemaTreeProps {
   connectionId: string;
-  connectionType: "postgres" | "mysql" | "sqlite";
+  connectionType: "postgres" | "mysql" | "sqlite" | "oracle";
   openDbs: string[];
   activeDb: string | null;
   onActiveDbChange: (db: string) => void;
@@ -54,7 +54,7 @@ interface SchemaTreeProps {
   tableListVisible?: boolean;
 }
 
-function defaultSchema(type: "postgres" | "mysql" | "sqlite"): string {
+function defaultSchema(type: "postgres" | "mysql" | "sqlite" | "oracle"): string {
   if (type === "postgres") return "public";
   if (type === "sqlite") return "main";
   return "";
@@ -89,10 +89,12 @@ export function SchemaTree({
   const schema = activeDb ? selectedSchemas[schemaSelectionKey] ?? defaultSchema(connectionType) : defaultSchema(connectionType);
 
   useEffect(() => {
-    if (!activeDb || connectionType !== "postgres") { setSchemas([defaultSchema(connectionType)]); return; }
+    // Oracle lists the session's own schema first, so it is the default pick.
+    if (!activeDb || (connectionType !== "postgres" && connectionType !== "oracle")) { setSchemas([defaultSchema(connectionType)]); return; }
     let cancelled = false;
     const selectionKey = `${connectionId}\u0000${activeDb}`;
-    fetchSchemas(connectionId, activeDb).then((items) => { if (!cancelled) { const next = items.length ? items : ["public"]; setSchemas(next); setSelectedSchemas((current) => next.includes(current[selectionKey]) ? current : { ...current, [selectionKey]: next[0] }); } }).catch(() => { if (!cancelled) setSchemas(["public"]); });
+    const fallback = [defaultSchema(connectionType)];
+    fetchSchemas(connectionId, activeDb).then((items) => { if (!cancelled) { const next = items.length ? items : fallback; setSchemas(next); setSelectedSchemas((current) => next.includes(current[selectionKey]) ? current : { ...current, [selectionKey]: next[0] }); } }).catch(() => { if (!cancelled) setSchemas(fallback); });
     return () => { cancelled = true; };
   }, [connectionId, connectionType, activeDb, schemaRevision]);
 
@@ -290,7 +292,7 @@ function TableList({
   db: string;
   schema: string;
   connectionId: string;
-  connectionType: "postgres" | "mysql" | "sqlite";
+  connectionType: "postgres" | "mysql" | "sqlite" | "oracle";
   cache: SchemaCache<SchemaObjectInfo>;
   onTableSelect?: (db: string, schema: string, table: string, type: "table" | "view" | "function", identity?: string, signature?: string) => void;
   onTableDrop?: (db: string, schema: string, table: string) => void;
@@ -402,6 +404,7 @@ function TableList({
   const tableReference = (table: string) => {
     if (connectionType === "mysql") return `${quoteIdent(connectionType, db)}.${quoteIdent(connectionType, table)}`;
     if (connectionType === "postgres") return `${quoteIdent(connectionType, schema || "public")}.${quoteIdent(connectionType, table)}`;
+    if (connectionType === "oracle" && schema) return `${quoteIdent(connectionType, schema)}.${quoteIdent(connectionType, table)}`;
     return quoteIdent(connectionType, table);
   };
 
@@ -490,7 +493,7 @@ function TableList({
       {/* Search input */}
       <div className="px-2 py-1.5 border-b border-border shrink-0">
         <div className="flex items-center gap-1 mb-1.5">
-          {connectionType === "postgres" && <select value={schema} onChange={(event) => onSchemaChange(event.target.value)} className="min-w-0 flex-1 bg-bg-hover text-text-primary text-[11px] px-1.5 py-1 rounded border border-border outline-none" title="Schema">{schemas.map((item) => <option key={item}>{item}</option>)}</select>}
+          {(connectionType === "postgres" || connectionType === "oracle") && <select value={schema} onChange={(event) => onSchemaChange(event.target.value)} className="min-w-0 flex-1 bg-bg-hover text-text-primary text-[11px] px-1.5 py-1 rounded border border-border outline-none" title="Schema">{schemas.map((item) => <option key={item}>{item}</option>)}</select>}
           <button onClick={onCreate} className="flex items-center gap-1 px-2 py-1 rounded border border-border text-[10px] hover:bg-bg-hover whitespace-nowrap" title="Create table"><Plus size={10} />Table</button>
           <button onClick={onImport} className="flex items-center gap-1 px-2 py-1 rounded border border-border text-[10px] hover:bg-bg-hover whitespace-nowrap" title="Import SQL dump"><Upload size={10} />Import</button>
         </div>

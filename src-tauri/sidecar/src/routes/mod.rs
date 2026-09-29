@@ -2,6 +2,7 @@ pub mod apply;
 pub mod cancel;
 pub mod connections;
 pub mod health;
+pub mod oracle_schema;
 pub mod processes;
 pub mod query;
 pub mod schema;

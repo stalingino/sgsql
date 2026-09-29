@@ -24,22 +24,52 @@ export interface SqlErrorMarker {
   message: string;
 }
 
+/** Only Oracle changes how statements are lexed and split. */
+export type StatementDialect = "postgres" | "mysql" | "sqlite" | "oracle";
+
 interface ScanResult {
   semicolons: number[];
   tokens: SqlToken[];
   variables: SqlVariable[];
+  /** Oracle: offsets of SQL*Plus `/` terminator lines. */
+  slashLines: number[];
 }
 
-function scanSql(sql: string): ScanResult {
+/** Closing delimiter of an Oracle q-quote (`q'[...]'`, `q'!...!'`). */
+function qQuoteClose(open: string): string {
+  return ({ "[": "]", "(": ")", "{": "}", "<": ">" } as Record<string, string>)[open] ?? open;
+}
+
+function isAloneOnLine(sql: string, index: number): boolean {
+  const lineStart = sql.lastIndexOf("\n", index - 1) + 1;
+  const lineEnd = sql.indexOf("\n", index + 1);
+  return !sql.slice(lineStart, index).trim() && !sql.slice(index + 1, lineEnd < 0 ? sql.length : lineEnd).trim();
+}
+
+function scanSql(sql: string, dialect?: StatementDialect): ScanResult {
+  const oracle = dialect === "oracle";
   const semicolons: number[] = [];
   const tokens: SqlToken[] = [];
   const variables: SqlVariable[] = [];
+  const slashLines: number[] = [];
   let depth = 0;
   let i = 0;
 
   while (i < sql.length) {
     const char = sql[i];
     const next = sql[i + 1];
+
+    if (oracle && char === "/" && next !== "*" && isAloneOnLine(sql, i)) {
+      slashLines.push(i);
+      i += 1;
+      continue;
+    }
+    if (oracle && /[qQ]/.test(char) && next === "'" && sql[i + 2] && !/[A-Za-z0-9_$]/.test(sql[i - 1] ?? "")) {
+      const close = `${qQuoteClose(sql[i + 2])}'`;
+      const end = sql.indexOf(close, i + 3);
+      i = end < 0 ? sql.length : end + close.length;
+      continue;
+    }
 
     if (char === "-" && next === "-") {
       i += 2;
@@ -60,7 +90,8 @@ function scanSql(sql: string): ScanResult {
       const quote = char;
       i += 1;
       while (i < sql.length) {
-        if (sql[i] === "\\" && quote !== '"') { i += 2; continue; }
+        // Oracle strings have no backslash escapes.
+        if (sql[i] === "\\" && quote !== '"' && !oracle) { i += 2; continue; }
         if (sql[i] === quote) {
           if (sql[i + 1] === quote) { i += 2; continue; }
           i += 1;
@@ -114,7 +145,7 @@ function scanSql(sql: string): ScanResult {
     i += 1;
   }
 
-  return { semicolons, tokens, variables };
+  return { semicolons, tokens, variables, slashLines };
 }
 
 function trimmedRange(sql: string, start: number, end: number): [number, number] {
@@ -123,13 +154,82 @@ function trimmedRange(sql: string, start: number, end: number): [number, number]
   return [start, end];
 }
 
-export function splitSqlStatements(sql: string): SqlStatement[] {
-  const scan = scanSql(sql);
-  const boundaries = [...scan.semicolons.map((position) => position + 1), sql.length];
+/** Whether the statement starting at `tokens[0]` is a PL/SQL unit. */
+function plsqlUnit(tokens: SqlToken[]): "block" | "unit" | null {
+  const words = tokens.slice(0, 6).map((token) => token.value);
+  if (words[0] === "BEGIN" || words[0] === "DECLARE") return "block";
+  if (words[0] !== "CREATE") return null;
+  let index = 1;
+  if (words[index] === "OR" && words[index + 1] === "REPLACE") index += 2;
+  if (["EDITIONABLE", "NONEDITIONABLE", "EDITIONING"].includes(words[index])) index += 1;
+  if (["PROCEDURE", "FUNCTION", "TRIGGER"].includes(words[index])) return "block";
+  // Package specs and bodies, types: no reliable BEGIN/END pairing.
+  if (["PACKAGE", "TYPE", "LIBRARY", "JAVA"].includes(words[index])) return "unit";
+  return null;
+}
+
+/**
+ * Oracle: `/` lines end any statement; semicolons end SQL statements. A
+ * PL/SQL block ends at `/`, or, failing that, at the semicolon after the END
+ * that closes its outermost BEGIN. Package/type units need the `/`.
+ */
+function oracleBoundaries(sql: string, scan: ScanResult): number[] {
+  const boundaries: number[] = [];
+  const cuts = [
+    ...scan.semicolons.map((position) => ({ position, kind: "semicolon" as const })),
+    ...scan.slashLines.map((position) => ({ position, kind: "slash" as const })),
+  ].sort((a, b) => a.position - b.position);
+  let start = 0;
+  let tokenIndex = 0;
+  while (start < sql.length) {
+    while (tokenIndex < scan.tokens.length && scan.tokens[tokenIndex].start < start) tokenIndex += 1;
+    const unit = plsqlUnit(scan.tokens.slice(tokenIndex));
+    const nextSlash = cuts.find((cut) => cut.kind === "slash" && cut.position >= start);
+    let end: number | undefined;
+    if (unit === "block") {
+      let blockDepth = 0;
+      let opened = false;
+      let closedAt = -1;
+      for (let index = tokenIndex; index < scan.tokens.length; index += 1) {
+        const token = scan.tokens[index];
+        if (nextSlash && token.start > nextSlash.position) break;
+        // Declarations before the first BEGIN may hold CASE ... END; only
+        // count inside the body. END IF / END LOOP close what isn't counted.
+        if (token.value === "BEGIN") { blockDepth += 1; opened = true; }
+        else if (token.value === "CASE" && blockDepth > 0) blockDepth += 1;
+        else if (token.value === "END" && blockDepth > 0 && !["IF", "LOOP"].includes(scan.tokens[index + 1]?.value ?? "")) {
+          blockDepth -= 1;
+          if (opened && blockDepth === 0) { closedAt = token.end; break; }
+        }
+      }
+      const semicolon = closedAt >= 0 ? scan.semicolons.find((position) => position >= closedAt) : undefined;
+      end = semicolon !== undefined && (!nextSlash || semicolon < nextSlash.position) ? semicolon + 1 : nextSlash?.position;
+    } else if (unit === "unit") {
+      end = nextSlash?.position;
+    } else {
+      const cut = cuts.find((candidate) => candidate.position >= start);
+      end = cut ? (cut.kind === "semicolon" ? cut.position + 1 : cut.position) : undefined;
+    }
+    if (end === undefined) break;
+    boundaries.push(end);
+    // Step past a `/` line so it is not part of the next statement.
+    start = scan.slashLines.includes(end) ? end + 1 : end;
+  }
+  boundaries.push(sql.length);
+  return boundaries;
+}
+
+export function splitSqlStatements(sql: string, dialect?: StatementDialect): SqlStatement[] {
+  const scan = scanSql(sql, dialect);
+  const boundaries = dialect === "oracle"
+    ? oracleBoundaries(sql, scan)
+    : [...scan.semicolons.map((position) => position + 1), sql.length];
   const statements: SqlStatement[] = [];
   let start = 0;
   for (const boundary of boundaries) {
-    const [trimStart, trimEnd] = trimmedRange(sql, start, boundary);
+    // A `/` terminator line belongs to neither neighbouring statement.
+    const from = scan.slashLines.includes(start) ? start + 1 : start;
+    const [trimStart, trimEnd] = trimmedRange(sql, from, boundary);
     const hasToken = scan.tokens.some((token) => token.start >= trimStart && token.start < trimEnd);
     if (trimStart < trimEnd && hasToken) {
       statements.push({ text: sql.slice(trimStart, trimEnd), start: trimStart, end: trimEnd });
@@ -139,8 +239,8 @@ export function splitSqlStatements(sql: string): SqlStatement[] {
   return statements;
 }
 
-export function statementAtCursor(sql: string, cursor: number): SqlStatement | null {
-  const statements = splitSqlStatements(sql);
+export function statementAtCursor(sql: string, cursor: number, dialect?: StatementDialect): SqlStatement | null {
+  const statements = splitSqlStatements(sql, dialect);
   if (statements.length === 0) return null;
   const clamped = Math.max(0, Math.min(cursor, sql.length));
   const containing = statements.find((statement) => clamped >= statement.start && clamped <= statement.end);
@@ -169,7 +269,7 @@ export function statementReturnsRows(sql: string): boolean {
   return false;
 }
 
-export function applyRowLimit(sql: string, limit: number): string {
+export function applyRowLimit(sql: string, limit: number, dialect?: StatementDialect): string {
   const tokens = statementTokens(sql);
   const first = tokens[0]?.value;
   const withMain = first === "WITH"
@@ -179,6 +279,11 @@ export function applyRowLimit(sql: string, limit: number): string {
   if (limit <= 0 || !supportsLimit) return sql;
   if (tokens.some((token) => token.value === "LIMIT" || token.value === "FETCH")) return sql;
   const withoutTerminator = sql.replace(/;\s*$/, "");
+  // Oracle 12c+ row limiting; ROWNUM filters are left to the user's query.
+  if (dialect === "oracle") {
+    if (tokens.some((token) => token.value === "ROWNUM" || (token.value === "FOR" && tokens.some((t) => t.value === "UPDATE")))) return sql;
+    return `${withoutTerminator} FETCH FIRST ${limit} ROWS ONLY`;
+  }
   return `${withoutTerminator} LIMIT ${limit}`;
 }
 

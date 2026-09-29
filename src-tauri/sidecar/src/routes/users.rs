@@ -78,6 +78,7 @@ pub async fn get_users(client: &DbClient, conn_id: &str, trace_db: &str) -> Resu
         DbClient::MySql { .. } => mysql_users(client, conn_id, trace_db).await,
         DbClient::Postgres { .. } => pg_users(client, conn_id, trace_db).await,
         DbClient::Sqlite { .. } => Ok(json!({ "users": [], "partial": false })),
+        DbClient::Oracle(_) => oracle_users(client, conn_id, trace_db).await,
     }
 }
 
@@ -229,6 +230,7 @@ pub async fn get_user_grants(
         DbClient::MySql { .. } => mysql_user_grants(client, conn_id, trace_db, user, host.unwrap_or("%")).await,
         DbClient::Postgres { .. } => pg_user_grants(client, conn_id, trace_db, user).await,
         DbClient::Sqlite { .. } => Err(SidecarError::msg("SQLite has no user accounts")),
+        DbClient::Oracle(_) => oracle_user_grants(client, conn_id, trace_db, user).await,
     }
 }
 
@@ -537,5 +539,182 @@ async fn pg_user_grants(client: &DbClient, conn_id: &str, trace_db: &str, role: 
         "raw": raw,
         "hostAccess": host_access,
         "objectScope": current_db,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Oracle — users and roles share one namespace. The DBA_* views need
+// SELECT_CATALOG_ROLE (or DBA); without it only ALL_USERS names are visible.
+// ---------------------------------------------------------------------------
+
+/// Oracle-maintained roles still worth offering in the role picker.
+const ORACLE_COMMON_ROLES: &str = "'CONNECT', 'RESOURCE', 'DBA', 'SELECT_CATALOG_ROLE', 'EXECUTE_CATALOG_ROLE', 'DB_DEVELOPER_ROLE'";
+
+async fn oracle_users(client: &DbClient, conn_id: &str, trace_db: &str) -> Result<Value, SidecarError> {
+    let accounts = db::oracle_fetch(
+        client,
+        conn_id,
+        trace_db,
+        "SELECT username AS \"name\", account_status AS \"status\", \
+            TO_CHAR(expiry_date, 'YYYY-MM-DD\"T\"HH24:MI:SS') AS \"expiry\" \
+         FROM dba_users WHERE oracle_maintained = 'N' ORDER BY username",
+        &[],
+    )
+    .await;
+    let accounts = match accounts {
+        Ok(rows) => rows,
+        Err(_) => {
+            let rows = db::oracle_fetch(
+                client,
+                conn_id,
+                trace_db,
+                "SELECT username AS \"name\" FROM all_users WHERE oracle_maintained = 'N' ORDER BY username",
+                &[],
+            )
+            .await?;
+            let users: Vec<Value> = rows
+                .iter()
+                .map(|row| json!({ "name": s_of(row, "name"), "canLogin": true, "superuser": false, "locked": false, "roles": [], "adminOf": [] }))
+                .collect();
+            return Ok(json!({ "users": users, "partial": true }));
+        }
+    };
+    let roles = db::oracle_fetch(
+        client,
+        conn_id,
+        trace_db,
+        &format!("SELECT role AS \"name\" FROM dba_roles WHERE oracle_maintained = 'N' OR role IN ({ORACLE_COMMON_ROLES}) ORDER BY role"),
+        &[],
+    )
+    .await?;
+    let memberships = db::oracle_fetch(
+        client,
+        conn_id,
+        trace_db,
+        "SELECT grantee AS \"grantee\", granted_role AS \"role\", admin_option AS \"admin\" FROM dba_role_privs ORDER BY granted_role",
+        &[],
+    )
+    .await?;
+    let mut member_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut admin_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for row in &memberships {
+        let grantee = s_of(row, "grantee");
+        let role = s_of(row, "role");
+        if bool_of(row, "admin") {
+            admin_of.entry(grantee.clone()).or_default().push(role.clone());
+        }
+        member_of.entry(grantee).or_default().push(role);
+    }
+
+    let account = |name: String, can_login: bool, status: &str, expiry: String| {
+        let roles = member_of.get(&name).cloned().unwrap_or_default();
+        json!({
+            "name": name,
+            "canLogin": can_login,
+            "superuser": roles.iter().any(|role| role == "DBA"),
+            "locked": status.contains("LOCKED"),
+            "inherit": true,
+            "createRole": false,
+            "createDb": false,
+            "replication": false,
+            "bypassRls": false,
+            "connLimit": Value::Null,
+            "validUntil": if expiry.is_empty() { Value::Null } else { Value::from(expiry) },
+            "roles": roles,
+            "adminOf": admin_of.get(&name).cloned().unwrap_or_default(),
+            "status": status,
+        })
+    };
+    let mut users: Vec<Value> = accounts
+        .iter()
+        .map(|row| account(s_of(row, "name"), true, &s_of(row, "status"), s_of(row, "expiry")))
+        .collect();
+    users.extend(roles.iter().map(|row| account(s_of(row, "name"), false, "", String::new())));
+    Ok(json!({ "users": users, "partial": false }))
+}
+
+async fn oracle_user_grants(client: &DbClient, conn_id: &str, trace_db: &str, user: &str) -> Result<Value, SidecarError> {
+    oracle_user_grants_inner(client, conn_id, trace_db, user).await.map_err(|error| error.oracle_needs("Viewing account privileges"))
+}
+
+async fn oracle_user_grants_inner(client: &DbClient, conn_id: &str, trace_db: &str, user: &str) -> Result<Value, SidecarError> {
+    let system = db::oracle_fetch(
+        client,
+        conn_id,
+        trace_db,
+        "SELECT privilege AS \"privilege\", admin_option AS \"admin\" FROM dba_sys_privs WHERE grantee = :1 ORDER BY privilege",
+        &[user],
+    )
+    .await?;
+    let objects = db::oracle_fetch(
+        client,
+        conn_id,
+        trace_db,
+        "SELECT owner AS \"schema\", table_name AS \"name\", type AS \"kind\", privilege AS \"privilege\", grantable AS \"grantable\" \
+         FROM dba_tab_privs WHERE grantee = :1 ORDER BY owner, table_name, privilege",
+        &[user],
+    )
+    .await?;
+    let column_rows = db::oracle_fetch(
+        client,
+        conn_id,
+        trace_db,
+        "SELECT owner AS \"schema\", table_name AS \"name\", column_name AS \"column\", privilege AS \"privilege\" \
+         FROM dba_col_privs WHERE grantee = :1 ORDER BY owner, table_name, column_name, privilege",
+        &[user],
+    )
+    .await?;
+
+    let qi = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+    let mut raw: Vec<String> = Vec::new();
+
+    let mut global = GrantAcc { privileges: Vec::new(), with_grant: false };
+    for row in &system {
+        global.privileges.push(s_of(row, "privilege"));
+        global.with_grant |= bool_of(row, "admin");
+    }
+    if !global.privileges.is_empty() {
+        raw.push(format!(
+            "GRANT {} TO {}{};",
+            global.privileges.join(", "),
+            qi(user),
+            if global.with_grant { " WITH ADMIN OPTION" } else { "" }
+        ));
+    }
+
+    let mut tables: BTreeMap<(String, String), GrantAcc> = BTreeMap::new();
+    let mut routines: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
+    for row in &objects {
+        let key = (s_of(row, "schema"), s_of(row, "name"));
+        match s_of(row, "kind").as_str() {
+            "TABLE" | "VIEW" | "MATERIALIZED VIEW" | "SEQUENCE" | "" => {
+                let entry = tables.entry(key).or_insert(GrantAcc { privileges: Vec::new(), with_grant: false });
+                entry.privileges.push(s_of(row, "privilege"));
+                entry.with_grant |= bool_of(row, "grantable");
+            }
+            kind => routines.entry((key.0, key.1, kind.to_string())).or_default().push(s_of(row, "privilege")),
+        }
+    }
+    for ((schema, table), acc) in &tables {
+        raw.push(format!(
+            "GRANT {} ON {}.{} TO {}{};",
+            acc.privileges.join(", "),
+            qi(schema),
+            qi(table),
+            qi(user),
+            if acc.with_grant { " WITH GRANT OPTION" } else { "" }
+        ));
+    }
+
+    Ok(json!({
+        "global": { "privileges": global.privileges, "withGrant": global.with_grant },
+        "databases": [],
+        "schemas": [],
+        "tables": tables.iter().map(|((schema, table), acc)| json!({ "db": trace_db, "schema": schema, "table": table, "privileges": acc.privileges, "withGrant": acc.with_grant })).collect::<Vec<_>>(),
+        "columns": column_rows.iter().map(|row| json!({ "db": trace_db, "schema": s_of(row, "schema"), "table": s_of(row, "name"), "column": s_of(row, "column"), "privileges": [s_of(row, "privilege")] })).collect::<Vec<_>>(),
+        "routines": routines.iter().map(|((schema, name, kind), privileges)| json!({ "db": trace_db, "schema": schema, "name": name, "kind": kind, "privileges": privileges })).collect::<Vec<_>>(),
+        "raw": raw,
+        "hostAccess": Value::Null,
+        "objectScope": trace_db,
     }))
 }

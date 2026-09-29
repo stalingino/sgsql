@@ -28,7 +28,7 @@ import { modKey } from "../lib/platform";
 
 interface Props {
   connectionId: string;
-  connectionType: "postgres" | "mysql" | "sqlite";
+  connectionType: "postgres" | "mysql" | "sqlite" | "oracle";
   db: string;
   schema: string;
   table: string;
@@ -350,9 +350,24 @@ const COLUMN_TYPES = {
   postgres: ["smallint", "integer", "bigint", "numeric", "decimal", "real", "double precision", "boolean", "char", "varchar", "text", "date", "time", "timestamp", "timestamptz", "interval", "uuid", "json", "jsonb", "bytea", "inet", "serial", "bigserial"],
   mysql: ["tinyint", "smallint", "mediumint", "int", "bigint", "decimal", "float", "double", "boolean", "char", "varchar", "text", "mediumtext", "longtext", "date", "time", "datetime", "timestamp", "year", "json", "binary", "varbinary", "blob", "enum"],
   sqlite: ["INTEGER", "REAL", "TEXT", "BLOB", "NUMERIC"],
+  oracle: ["NUMBER", "NUMBER(10)", "NUMBER(19)", "NUMBER(12,2)", "FLOAT", "BINARY_FLOAT", "BINARY_DOUBLE", "VARCHAR2(255)", "VARCHAR2(4000)", "NVARCHAR2(255)", "CHAR(1)", "CLOB", "NCLOB", "BLOB", "RAW(16)", "DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIMESTAMP WITH LOCAL TIME ZONE", "INTERVAL DAY TO SECOND", "INTERVAL YEAR TO MONTH", "BOOLEAN", "JSON"],
 } as const;
 
-function ColumnsEditor({ columns, dialect, onChange, matchIds }: { columns: EditableColumn[]; dialect: "postgres" | "mysql" | "sqlite"; onChange: (columns: EditableColumn[]) => void; matchIds?: Set<string> | null }) {
+/** Postgres and Oracle cannot move physical columns. */
+function reorderBlocked(dialect: string): string | null {
+  if (dialect === "postgres") return "PostgreSQL cannot safely reorder physical columns";
+  if (dialect === "oracle") return "Oracle cannot reorder physical columns";
+  return null;
+}
+
+function defaultColumnType(dialect: string): string {
+  if (dialect === "postgres") return "text";
+  if (dialect === "mysql") return "varchar(255)";
+  if (dialect === "oracle") return "VARCHAR2(255)";
+  return "TEXT";
+}
+
+function ColumnsEditor({ columns, dialect, onChange, matchIds }: { columns: EditableColumn[]; dialect: "postgres" | "mysql" | "sqlite" | "oracle"; onChange: (columns: EditableColumn[]) => void; matchIds?: Set<string> | null }) {
   const typeListId = useId();
   const update = (id: string, patch: Partial<EditableColumn>) => onChange(columns.map((column) => column.id === id ? { ...column, ...patch } : column));
   const move = (index: number, direction: -1 | 1) => { const next = [...columns]; const target = index + direction; if (target < 0 || target >= next.length) return; [next[index], next[target]] = [next[target], next[index]]; onChange(next); };
@@ -361,7 +376,7 @@ function ColumnsEditor({ columns, dialect, onChange, matchIds }: { columns: Edit
       {['#','Column','Type','Default','Nullable','PK','Unique','Extra / identity / generated','Comment',''].map((label) => <div key={label} className="px-2 py-2 border-r border-border">{label}</div>)}
     </div>
     {columns.map((column, index) => <div key={column.id} className={`grid grid-cols-[44px_minmax(140px,1fr)_minmax(150px,1fr)_minmax(140px,1fr)_70px_54px_58px_minmax(170px,1fr)_minmax(140px,1fr)_48px] border-b border-border hover:bg-bg-hover/40 text-[12px] ${matchIds && !matchIds.has(column.id) ? "hidden" : ""}`}>
-      <div className="px-2 py-1.5 border-r border-border text-text-muted flex flex-col items-center"><button disabled={dialect === "postgres"} title={dialect === "postgres" ? "PostgreSQL cannot safely reorder physical columns" : "Move up"} onClick={() => move(index, -1)} className="leading-3 disabled:opacity-20">▲</button><button disabled={dialect === "postgres"} title={dialect === "postgres" ? "PostgreSQL cannot safely reorder physical columns" : "Move down"} onClick={() => move(index, 1)} className="leading-3 disabled:opacity-20">▼</button></div>
+      <div className="px-2 py-1.5 border-r border-border text-text-muted flex flex-col items-center"><button disabled={!!reorderBlocked(dialect)} title={reorderBlocked(dialect) ?? "Move up"} onClick={() => move(index, -1)} className="leading-3 disabled:opacity-20">▲</button><button disabled={!!reorderBlocked(dialect)} title={reorderBlocked(dialect) ?? "Move down"} onClick={() => move(index, 1)} className="leading-3 disabled:opacity-20">▼</button></div>
       <CellInput value={column.name} onChange={(name) => update(column.id, { name })} />
       <TypeInput value={column.type} listId={typeListId} onChange={(type) => update(column.id, { type })} />
       <CellInput value={column.defaultValue} placeholder="No default" onChange={(defaultValue) => update(column.id, { defaultValue })} />
@@ -373,7 +388,7 @@ function ColumnsEditor({ columns, dialect, onChange, matchIds }: { columns: Edit
       <div className="flex items-center justify-center"><button onClick={() => onChange(columns.filter((item) => item.id !== column.id))} className="p-1 text-text-muted hover:text-error cursor-pointer"><Trash2 size={12} /></button></div>
     </div>)}
     <datalist id={typeListId}>{COLUMN_TYPES[dialect].map((type) => <option key={type} value={type} />)}</datalist>
-    <button onClick={() => onChange([...columns, { id: `new-${crypto.randomUUID()}`, originalName: null, name: "", type: dialect === "postgres" ? "text" : dialect === "mysql" ? "varchar(255)" : "TEXT", nullable: true, defaultValue: "", isPk: false, unique: false, extra: "", comment: "" }])} className="flex items-center gap-1.5 m-2 px-2.5 py-1.5 rounded border border-border hover:bg-bg-hover text-[11px] cursor-pointer"><Plus size={11} />Add column</button>
+    <button onClick={() => onChange([...columns, { id: `new-${crypto.randomUUID()}`, originalName: null, name: "", type: defaultColumnType(dialect), nullable: true, defaultValue: "", isPk: false, unique: false, extra: "", comment: "" }])} className="flex items-center gap-1.5 m-2 px-2.5 py-1.5 rounded border border-border hover:bg-bg-hover text-[11px] cursor-pointer"><Plus size={11} />Add column</button>
   </div>;
 }
 
@@ -495,15 +510,15 @@ function ColumnPillsInput({ columns, selected, onChange, placeholder }: { column
   );
 }
 
-function IndexFormModal({ dialect, columns, value, error, onChange, editingIndexName, onClose, onSubmit }: { dialect: "postgres" | "mysql" | "sqlite"; columns: string[]; value: IndexDraft; error: string | null; onChange: (value: IndexDraft) => void; editingIndexName: string | null; onClose: () => void; onSubmit: () => void }) {
+function IndexFormModal({ dialect, columns, value, error, onChange, editingIndexName, onClose, onSubmit }: { dialect: "postgres" | "mysql" | "sqlite" | "oracle"; columns: string[]; value: IndexDraft; error: string | null; onChange: (value: IndexDraft) => void; editingIndexName: string | null; onClose: () => void; onSubmit: () => void }) {
   return <EditorFormModal title={editingIndexName ? "Edit index" : "Add index"} error={error} onClose={onClose}>
     <div className="flex flex-col gap-3 p-4">
       <SmallInput value={value.name} placeholder="Index name" onChange={(name) => onChange({ ...value, name })} />
       <ColumnPillsInput columns={columns} selected={value.columns} onChange={(next) => onChange({ ...value, columns: next })} placeholder="Add column…" />
       <SmallInput value={value.expressionSql} placeholder="Expression SQL (optional, e.g. lower(email))" onChange={(expressionSql) => onChange({ ...value, expressionSql })} />
-      {dialect !== "sqlite" && <SmallInput value={value.method} placeholder={dialect === "postgres" ? "Method (btree, hash, gin, gist…)" : "Method (BTREE or HASH)"} onChange={(method) => onChange({ ...value, method })} />}
+      {dialect !== "sqlite" && <SmallInput value={value.method} placeholder={dialect === "postgres" ? "Method (btree, hash, gin, gist…)" : dialect === "oracle" ? "Type (NORMAL or BITMAP)" : "Method (BTREE or HASH)"} onChange={(method) => onChange({ ...value, method })} />}
       {dialect === "postgres" && <ColumnPillsInput columns={columns.filter((column) => !value.columns.includes(column))} selected={value.includeColumns} onChange={(next) => onChange({ ...value, includeColumns: next })} placeholder="INCLUDE columns (optional)…" />}
-      {dialect !== "mysql" && <SmallInput value={value.predicate} placeholder="Partial index WHERE predicate" onChange={(predicate) => onChange({ ...value, predicate })} />}
+      {dialect !== "mysql" && dialect !== "oracle" && <SmallInput value={value.predicate} placeholder="Partial index WHERE predicate" onChange={(predicate) => onChange({ ...value, predicate })} />}
       <div className="flex items-center gap-2">
         <label className={`flex items-center gap-2 px-3 py-1.5 rounded-md border cursor-pointer transition-colors select-none ${value.unique ? "border-accent bg-accent/10 text-accent" : "border-border text-text-secondary hover:bg-bg-hover"}`}>
           <input type="checkbox" checked={value.unique} onChange={(event) => onChange({ ...value, unique: event.target.checked })} className="w-4 h-4 accent-accent cursor-pointer" />

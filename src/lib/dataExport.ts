@@ -1,5 +1,5 @@
 export type ExportFormat = "csv" | "json" | "ndjson" | "sql";
-export type ExportDialect = "postgres" | "mysql" | "sqlite";
+export type ExportDialect = "postgres" | "mysql" | "sqlite" | "oracle";
 
 export interface ExportChunkOptions {
   format: ExportFormat;
@@ -23,7 +23,7 @@ export function quoteExportIdentifier(dialect: ExportDialect, value: string): st
 
 export function exportTableReference(dialect: ExportDialect, database: string | undefined, schema: string | undefined, table: string): string {
   if (dialect === "mysql" && database) return `${quoteExportIdentifier(dialect, database)}.${quoteExportIdentifier(dialect, table)}`;
-  if (dialect === "postgres" && schema) return `${quoteExportIdentifier(dialect, schema)}.${quoteExportIdentifier(dialect, table)}`;
+  if ((dialect === "postgres" || dialect === "oracle") && schema) return `${quoteExportIdentifier(dialect, schema)}.${quoteExportIdentifier(dialect, table)}`;
   return quoteExportIdentifier(dialect, table);
 }
 
@@ -35,6 +35,19 @@ function csvValue(value: unknown): string {
   if (value === null || value === undefined) return "";
   const text = typeof value === "object" ? JSON.stringify(value) : String(value);
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+/** Bytes of a binary value as the sidecar sends it (`{ type: "Buffer", data }`). */
+function bufferBytes(value: unknown): number[] | null {
+  if (typeof value !== "object" || value === null) return null;
+  const buffer = value as { type?: unknown; data?: unknown };
+  return buffer.type === "Buffer" && Array.isArray(buffer.data) ? buffer.data as number[] : null;
+}
+
+function oracleSqlValue(value: unknown): string {
+  const bytes = bufferBytes(value);
+  if (bytes) return `HEXTORAW('${bytes.map((byte) => byte.toString(16).padStart(2, "0")).join("").toUpperCase()}')`;
+  return sqlValue(value);
 }
 
 function sqlValue(value: unknown): string {
@@ -63,6 +76,10 @@ export function serializeExportChunk(options: ExportChunkOptions): string {
   if (rows.length === 0) return "";
   const target = exportTableReference(dialect, database, schema, table);
   const columnList = columns.map((column) => quoteExportIdentifier(dialect, column)).join(", ");
+  // Multi-row VALUES needs Oracle 23ai; one INSERT per row works everywhere.
+  if (dialect === "oracle") {
+    return rows.map((row) => `INSERT INTO ${target} (${columnList}) VALUES (${row.map(oracleSqlValue).join(", ")});\n`).join("");
+  }
   const values = rows.map((row) => `  (${row.map(sqlValue).join(", ")})`).join(",\n");
   return `INSERT INTO ${target} (${columnList})\nVALUES\n${values};\n`;
 }

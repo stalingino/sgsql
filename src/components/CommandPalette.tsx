@@ -14,7 +14,7 @@ import { isManagementDatabase, paletteItems, type PaletteItem } from "../lib/com
 
 interface CommandPaletteProps {
   connectionId: string;
-  connectionType: "postgres" | "mysql" | "sqlite";
+  connectionType: "postgres" | "mysql" | "sqlite" | "oracle";
   connectionDatabase: string;
   currentDatabase: string | null;
   cacheKey?: string;

@@ -22,7 +22,7 @@ const MonacoSqlEditor = lazy(() => import("./MonacoSqlEditor"));
 
 interface QueryEditorProps {
   connectionId: string;
-  connectionType: "postgres" | "mysql" | "sqlite";
+  connectionType: "postgres" | "mysql" | "sqlite" | "oracle";
   activeDb: string;
   initialSql?: string;
   initialMemory?: QueryTabMemory;
@@ -266,12 +266,12 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
   // Determine the active statement (for highlighting)
   const activeRange = useMemo(() => {
     if (!sql.trim()) return null;
-    const statement = statementAtCursor(sql, cursorPos);
+    const statement = statementAtCursor(sql, cursorPos, connectionType);
     return statement ? [statement.start, statement.end] as [number, number] : null;
-  }, [sql, cursorPos]);
+  }, [sql, cursorPos, connectionType]);
 
   const defaultSchema = defaultAutocompleteSchema(connectionType);
-  const activeStatement = useMemo(() => statementAtCursor(sql, cursorPos)?.text ?? "", [sql, cursorPos]);
+  const activeStatement = useMemo(() => statementAtCursor(sql, cursorPos, connectionType)?.text ?? "", [sql, cursorPos, connectionType]);
   const tableReferences = useMemo(
     () => findTableReferences(activeStatement, catalog, defaultSchema),
     [activeStatement, catalog, defaultSchema],
@@ -409,7 +409,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
       return {
         id: `result-${Date.now()}-${index}`,
         statement,
-        executedSql: applyRowLimit(substituted, rowLimit),
+        executedSql: applyRowLimit(substituted, rowLimit, connectionType),
         editableContext: null,
         running: true,
       };
@@ -487,7 +487,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
     }
     editorRef.current?.setErrorMarkers(markers);
     setLoading(false);
-  }, [loading, rowLimit, execQueue, execBatch, connectionId, activeDb, atomicRunAll, resolveEditableContext, onCellSelect]);
+  }, [loading, rowLimit, execQueue, execBatch, connectionId, connectionType, activeDb, atomicRunAll, resolveEditableContext, onCellSelect]);
 
   const requestExecution = useCallback((statements: SqlStatement[]) => {
     const variables = Array.from(new Set(statements.flatMap((statement) => findSqlVariables(statement.text).map((variable) => variable.name))));
@@ -499,7 +499,7 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
     if (loading) return;
     const selection = editorRef.current?.getSelection();
     if (selection) {
-      const statements = splitSqlStatements(selection.text).map((statement) => ({
+      const statements = splitSqlStatements(selection.text, connectionType).map((statement) => ({
         ...statement,
         start: statement.start + selection.start,
         end: statement.end + selection.start,
@@ -507,13 +507,13 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
       requestExecution(statements);
       return;
     }
-    const statement = statementAtCursor(sql, cursorPos);
+    const statement = statementAtCursor(sql, cursorPos, connectionType);
     if (statement) requestExecution([statement]);
-  }, [loading, sql, cursorPos, requestExecution]);
+  }, [loading, sql, cursorPos, connectionType, requestExecution]);
 
   const runAll = useCallback(() => {
-    if (!loading) requestExecution(splitSqlStatements(sql));
-  }, [loading, sql, requestExecution]);
+    if (!loading) requestExecution(splitSqlStatements(sql, connectionType));
+  }, [loading, sql, connectionType, requestExecution]);
 
   const rerunLast = useCallback(() => {
     const last = lastExecutedRef.current;
@@ -724,8 +724,8 @@ export function QueryEditor({ connectionId, connectionType, activeDb, initialSql
         </button>
         <button
           onClick={() => setAtomicRunAll((value) => !value)}
-          title={connectionType === "mysql"
-            ? "Run multiple statements on one connection inside a transaction; MySQL DDL may auto-commit"
+          title={connectionType === "mysql" || connectionType === "oracle"
+            ? `Run multiple statements on one connection inside a transaction; ${connectionType === "oracle" ? "Oracle" : "MySQL"} DDL commits implicitly`
             : "Run multiple statements on one connection inside a transaction; any error rolls the batch back"}
           className={`px-2 py-1 rounded-md border text-[11px] transition-colors cursor-pointer ${atomicRunAll ? "border-warning/60 bg-warning/10 text-warning" : "border-border text-text-muted hover:bg-bg-hover"}`}
         >

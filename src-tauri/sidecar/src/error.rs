@@ -11,6 +11,45 @@ pub enum SidecarError {
     Io(#[from] io::Error),
     #[error("{0}")]
     Msg(String),
+    /// oracledb's error type doesn't implement std::error::Error, so it is
+    /// captured here: the message, its ORA- code and whether the session died.
+    #[error("{message}")]
+    Oracle { message: String, code: Option<usize>, lost: bool },
+}
+
+/// ORA- codes that mean the session is gone: killed (28), not logged on
+/// (1012), idle timeout (2396), end-of-file / not connected / lost contact
+/// (3113, 3114, 3135).
+const ORACLE_LOST_SESSION: [usize; 6] = [28, 1012, 2396, 3113, 3114, 3135];
+
+impl SidecarError {
+    /// Replace ORA-00942 on a data-dictionary view with what is missing.
+    pub fn oracle_needs(self, what: &str) -> Self {
+        match &self {
+            SidecarError::Oracle { code: Some(942), .. } => SidecarError::msg(format!("{what} needs SELECT_CATALOG_ROLE (or DBA) on Oracle.")),
+            _ => self,
+        }
+    }
+}
+
+impl From<oracledb::Error> for SidecarError {
+    fn from(error: oracledb::Error) -> Self {
+        use oracledb::ErrorKind;
+        let code = match error.kind() {
+            ErrorKind::DbError(db_error) => Some(db_error.code()),
+            _ => None,
+        };
+        let lost = matches!(
+            error.kind(),
+            ErrorKind::DeadConnection
+                | ErrorKind::NotConnected
+                | ErrorKind::UnableToRecover
+                | ErrorKind::StreamOperation
+                // The driver may close the connection when a call times out.
+                | ErrorKind::CallTimeoutExceeded
+        ) || code.is_some_and(|code| ORACLE_LOST_SESSION.contains(&code));
+        SidecarError::Oracle { message: error.to_string(), code, lost }
+    }
 }
 
 impl SidecarError {
@@ -48,6 +87,12 @@ impl SidecarError {
             SidecarError::Ssh(m) | SidecarError::Msg(m) => msgs.push(m.clone()),
             SidecarError::Sqlx(e) => walk(e, &mut msgs, &mut codes),
             SidecarError::Io(e) => walk(e, &mut msgs, &mut codes),
+            SidecarError::Oracle { message, code, .. } => {
+                msgs.push(message.clone());
+                if let Some(code) = code {
+                    codes.push(format!("ORA-{code:05}"));
+                }
+            }
         }
         (msgs.join(" "), codes.join(" "))
     }
@@ -58,6 +103,9 @@ impl SidecarError {
     }
 
     pub fn is_connection_error(&self) -> bool {
+        if let SidecarError::Oracle { lost, .. } = self {
+            return *lost;
+        }
         if let SidecarError::Sqlx(e) = self {
             match e {
                 sqlx::Error::Io(_) | sqlx::Error::PoolClosed | sqlx::Error::WorkerCrashed => return true,
@@ -135,6 +183,14 @@ fn friendly_from_parts(err: &SidecarError, msgs: &str, codes: &str) -> String {
     // editor unchanged so users can see why their statement was rejected.
     let mysql_login_failed = codes.split_whitespace().any(|code| code == "1045")
         || (has("Access denied for user") && msgs.contains("using password:"));
+    // ORA-01017: invalid username/password; ORA-12514 / ORA-12505: the
+    // listener doesn't know the service name / SID.
+    if has("ORA-01017") {
+        return "Authentication failed. Check your username and password.".into();
+    }
+    if has("ORA-12514") || has("ORA-12505") {
+        return "Service not found. Check the Oracle service name.".into();
+    }
     if has("password authentication failed") || mysql_login_failed {
         return "Authentication failed. Check your username and password.".into();
     }
@@ -203,6 +259,17 @@ mod tests {
     fn connection_reset_is_connection_error() {
         let e = SidecarError::msg("read ECONNRESET");
         assert!(e.is_connection_error());
+    }
+
+    #[test]
+    fn oracle_codes_map_to_friendly_messages() {
+        let login = SidecarError::Oracle { message: "ORA-01017: invalid credential or not authorized; logon denied".into(), code: Some(1017), lost: false };
+        assert_eq!(login.friendly(), "Authentication failed. Check your username and password.");
+        let killed = SidecarError::Oracle { message: "ORA-00028: your session has been killed".into(), code: Some(28), lost: true };
+        assert!(killed.is_connection_error());
+        let missing = SidecarError::Oracle { message: "ORA-00942: table or view \"A\".\"B\" does not exist".into(), code: Some(942), lost: false };
+        assert_eq!(missing.friendly(), "ORA-00942: table or view \"A\".\"B\" does not exist");
+        assert!(!missing.is_connection_error());
     }
 
     #[test]

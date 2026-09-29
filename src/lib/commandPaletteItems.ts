@@ -8,7 +8,7 @@ export interface PaletteItem {
   score: number;
 }
 
-type ConnectionType = "postgres" | "mysql" | "sqlite";
+type ConnectionType = "postgres" | "mysql" | "sqlite" | "oracle";
 
 const MYSQL_MANAGEMENT_DATABASES = new Set(["information_schema", "mysql", "performance_schema", "sys"]);
 

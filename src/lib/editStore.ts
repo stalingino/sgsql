@@ -5,7 +5,7 @@ import { create } from "zustand";
 /** Identifies a specific row by its primary key values */
 export interface RowKey {
   connectionId: string;
-  connectionType: "postgres" | "mysql" | "sqlite";
+  connectionType: "postgres" | "mysql" | "sqlite" | "oracle";
   db: string;
   schema: string;
   table: string;
@@ -52,7 +52,7 @@ function cellKey(rk: RowKey, column: string): string {
 export interface PendingInsert {
   id: string;
   connectionId: string;
-  connectionType: "postgres" | "mysql" | "sqlite";
+  connectionType: "postgres" | "mysql" | "sqlite" | "oracle";
   db: string;
   schema: string;
   table: string;
@@ -154,7 +154,7 @@ interface EditStoreState {
   /* ── Row operations ─────────────────────────────────── */
 
   /** Add a new row (pending insert) */
-  addInsert: (connectionId: string, connectionType: "postgres" | "mysql" | "sqlite", db: string, schema: string, table: string, columns: string[]) => string;
+  addInsert: (connectionId: string, connectionType: "postgres" | "mysql" | "sqlite" | "oracle", db: string, schema: string, table: string, columns: string[]) => string;
 
   /** Mark row(s) for deletion */
   addDelete: (rowKey: RowKey, rowData: unknown[], columns: string[]) => void;
@@ -235,12 +235,12 @@ function sqlValue(val: unknown): string {
 }
 
 /** Quote a column/table identifier */
-function quoteIdent(type: "postgres" | "mysql" | "sqlite", name: string): string {
+function quoteIdent(type: "postgres" | "mysql" | "sqlite" | "oracle", name: string): string {
   if (type === "mysql") return `\`${name.replace(/`/g, "``")}\``;
   return `"${name.replace(/"/g, '""')}"`;
 }
 
-function quoteTableRef(type: "postgres" | "mysql" | "sqlite", schema: string, table: string): string {
+function quoteTableRef(type: "postgres" | "mysql" | "sqlite" | "oracle", schema: string, table: string): string {
   if (!schema) return quoteIdent(type, table);
   return `${quoteIdent(type, schema)}.${quoteIdent(type, table)}`;
 }
@@ -529,6 +529,10 @@ export const useEditStore = create<EditStoreState>((set, get) => ({
       if (ins.connectionType === "mysql") {
         return `INSERT INTO ${quoteTableRef(ins.connectionType, ins.schema, ins.table)} () VALUES ()`;
       }
+      // Oracle has no DEFAULT VALUES form; defaulting one column fills them all.
+      if (ins.connectionType === "oracle" && ins.columns.length > 0) {
+        return `INSERT INTO ${quoteTableRef(ins.connectionType, ins.schema, ins.table)} (${quoteIdent(ins.connectionType, ins.columns[0])}) VALUES (DEFAULT)`;
+      }
       return `INSERT INTO ${quoteTableRef(ins.connectionType, ins.schema, ins.table)} DEFAULT VALUES`;
     }
     const colList = cols.map((c) => quoteIdent(ins.connectionType, c)).join(", ");
@@ -647,7 +651,7 @@ function errorMessage(err: unknown): string {
 /** Build a RowKey from context + row data */
 export function buildRowKey(
   connectionId: string,
-  connectionType: "postgres" | "mysql" | "sqlite",
+  connectionType: "postgres" | "mysql" | "sqlite" | "oracle",
   db: string,
   schema: string,
   table: string,

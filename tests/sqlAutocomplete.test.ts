@@ -138,3 +138,12 @@ describe("SQL autocomplete", () => {
   });
 
 });
+
+describe("Oracle identifier completion", () => {
+  test("quotes names that would not survive upper-case folding", () => {
+    expect(quoteCompletionIdentifier("CUSTOMERS", "oracle")).toBe("CUSTOMERS");
+    expect(quoteCompletionIdentifier("V$SESSION", "oracle")).toBe("V$SESSION");
+    expect(quoteCompletionIdentifier("my_table", "oracle")).toBe('"my_table"');
+    expect(quoteCompletionIdentifier("Mixed", "oracle")).toBe('"Mixed"');
+  });
+});

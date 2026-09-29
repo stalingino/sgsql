@@ -178,6 +178,7 @@ export function DetailPanel({ selection, wasAlreadyOpen, onFieldActivate }: Deta
               rowKey={rowKey}
               canEdit={canEdit}
               dataType={meta?.udtName || meta?.dataType || ""}
+              dialect={selection.tableContext?.connectionType}
               enumValues={meta?.enumValues}
               defaultValue={meta?.defaultValue ?? null}
               insertId={isInsertRow ? selection.insertId : undefined}
@@ -307,6 +308,7 @@ function FieldRow({
   rowKey,
   canEdit,
   dataType,
+  dialect,
   enumValues,
   defaultValue,
   insertId,
@@ -318,6 +320,7 @@ function FieldRow({
   rowKey: RowKey | null;
   canEdit: boolean;
   dataType: string;
+  dialect?: string;
   enumValues?: string[];
   defaultValue: string | null;
   insertId?: string;
@@ -385,7 +388,7 @@ function FieldRow({
   // Pop-out editor: only for free-text-ish fields (json / strings), not enums, booleans, numbers or SQL expressions.
   const canPopOut = !isSqlExpr && !enumValues?.length && !isBoolean && (isJsonField || typeof value === "string" || isCurrentlyNull);
   const [popOutOpen, setPopOutOpen] = useState(false);
-  const dateTimeKind = getDateTimeKind(dataType);
+  const dateTimeKind = getDateTimeKind(dataType, dialect);
   const [pickerAnchor, setPickerAnchor] = useState<HTMLElement | null>(null);
   const closePicker = useCallback(() => setPickerAnchor(null), []);
 

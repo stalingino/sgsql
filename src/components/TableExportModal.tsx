@@ -10,7 +10,7 @@ interface TableExportModalProps {
   connectionId: string;
   db: string;
   schema: string;
-  dialect: "postgres" | "mysql" | "sqlite";
+  dialect: "postgres" | "mysql" | "sqlite" | "oracle";
   tables: string[];
   onClose: () => void;
 }

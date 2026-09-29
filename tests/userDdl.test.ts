@@ -3,10 +3,13 @@ import {
   accountRef,
   attributesOf,
   buildAccountChanges,
+  buildAlterAttributes,
   buildDropAccount,
+  buildExpirePassword,
   buildGrantDiff,
   buildRoleDiff,
   emptyGrants,
+  buildSetPassword,
   maskPasswords,
   type AccountDraft,
   type EditableGrants,
@@ -153,5 +156,43 @@ describe("userDdl", () => {
       "CREATE USER 'a'@'%' IDENTIFIED BY '••••••••' ACCOUNT LOCK",
       "ALTER ROLE \"a\" PASSWORD '••••••••' LOGIN",
     ]);
+  });
+});
+
+describe("Oracle account DDL", () => {
+  const attrs = attributesOf(null, "oracle");
+
+  test("creates upper-cased users with system and object grants", () => {
+    const statements = buildAccountChanges("oracle", null, {
+      name: "app_user",
+      host: "",
+      password: "s3cret",
+      attrs,
+      roles: ["APP_READER"],
+      grants: { ...emptyGrants(), global: { privileges: ["CREATE SESSION"], withGrant: false }, tables: [{ db: "FREEPDB1", schema: "HR", table: "EMPLOYEES", privileges: ["SELECT"], withGrant: true }] },
+    });
+    expect(statements).toEqual([
+      'CREATE USER "APP_USER" IDENTIFIED BY "s3cret"',
+      'GRANT "APP_READER" TO "APP_USER"',
+      'GRANT CREATE SESSION TO "APP_USER"',
+      'GRANT SELECT ON "HR"."EMPLOYEES" TO "APP_USER" WITH GRANT OPTION',
+    ]);
+    expect(maskPasswords(statements)[0]).toBe('CREATE USER "APP_USER" IDENTIFIED BY "••••••••"');
+  });
+
+  test("drops the admin option by revoking and granting again", () => {
+    const before = { ...emptyGrants(), global: { privileges: ["CREATE TABLE"], withGrant: true } };
+    const after = { ...emptyGrants(), global: { privileges: ["CREATE TABLE"], withGrant: false } };
+    expect(buildGrantDiff("oracle", '"APP"', before, after)).toEqual([
+      'REVOKE CREATE TABLE FROM "APP"',
+      'GRANT CREATE TABLE TO "APP"',
+    ]);
+  });
+
+  test("locks, expires and drops", () => {
+    expect(buildAlterAttributes("oracle", '"APP"', attrs, { ...attrs, locked: true })).toEqual(['ALTER USER "APP" ACCOUNT LOCK']);
+    expect(buildExpirePassword("oracle", '"APP"')).toEqual(['ALTER USER "APP" PASSWORD EXPIRE']);
+    expect(buildDropAccount("oracle", '"APP_READER"', { isRole: true })).toEqual(['DROP ROLE "APP_READER"']);
+    expect(() => buildSetPassword("oracle", '"APP"', 'bad"quote')).toThrow();
   });
 });

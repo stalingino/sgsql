@@ -14,7 +14,7 @@ const MonacoSqlEditor = lazy(() => import("./MonacoSqlEditor"));
 
 interface SchemaObjectEditorProps {
   connectionId: string;
-  connectionType: "postgres" | "mysql" | "sqlite";
+  connectionType: "postgres" | "mysql" | "sqlite" | "oracle";
   db: string;
   schema: string;
   name: string;

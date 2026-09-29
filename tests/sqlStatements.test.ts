@@ -45,3 +45,53 @@ describe("SQL statements", () => {
     expect(sqlErrorMarker("syntax error at position: 8", statement)).toMatchObject({ start: 27, end: 28 });
   });
 });
+
+describe("Oracle statement splitting", () => {
+  const texts = (sql: string) => splitSqlStatements(sql, "oracle").map((statement) => statement.text);
+
+  test("keeps PL/SQL blocks whole and splits at slash lines", () => {
+    const sql = "BEGIN\n  UPDATE t SET a = 1;\n  COMMIT;\nEND;\n/\nSELECT * FROM t;\n";
+    expect(texts(sql)).toEqual(["BEGIN\n  UPDATE t SET a = 1;\n  COMMIT;\nEND;", "SELECT * FROM t;"]);
+  });
+
+  test("ends an anonymous block at its closing END without a slash", () => {
+    const sql = "DECLARE n NUMBER; BEGIN IF 1 = 1 THEN n := CASE WHEN 1 = 1 THEN 1 END; END IF; LOOP EXIT; END LOOP; END;\nSELECT 1 FROM dual;";
+    expect(texts(sql)).toEqual([
+      "DECLARE n NUMBER; BEGIN IF 1 = 1 THEN n := CASE WHEN 1 = 1 THEN 1 END; END IF; LOOP EXIT; END LOOP; END;",
+      "SELECT 1 FROM dual;",
+    ]);
+  });
+
+  test("keeps procedures, triggers and packages whole", () => {
+    const sql = [
+      "CREATE OR REPLACE PROCEDURE p AS c NUMBER := CASE WHEN 1 = 1 THEN 1 END; BEGIN NULL; END;",
+      "CREATE OR REPLACE TRIGGER trg BEFORE INSERT ON t FOR EACH ROW BEGIN :NEW.a := 1; END;",
+      "CREATE PACKAGE pkg AS PROCEDURE p; FUNCTION f RETURN NUMBER; END pkg;\n/",
+      "SELECT 2 FROM dual",
+    ].join("\n");
+    expect(texts(sql)).toEqual([
+      "CREATE OR REPLACE PROCEDURE p AS c NUMBER := CASE WHEN 1 = 1 THEN 1 END; BEGIN NULL; END;",
+      "CREATE OR REPLACE TRIGGER trg BEFORE INSERT ON t FOR EACH ROW BEGIN :NEW.a := 1; END;",
+      "CREATE PACKAGE pkg AS PROCEDURE p; FUNCTION f RETURN NUMBER; END pkg;",
+      "SELECT 2 FROM dual",
+    ]);
+  });
+
+  test("understands q-quotes, backslashes and division", () => {
+    expect(texts("SELECT q'[it's; here]' FROM dual; SELECT 'C:\\' FROM dual; SELECT 4 / 2 FROM dual")).toEqual([
+      "SELECT q'[it's; here]' FROM dual;",
+      "SELECT 'C:\\' FROM dual;",
+      "SELECT 4 / 2 FROM dual",
+    ]);
+  });
+
+  test("other dialects are unchanged", () => {
+    expect(splitSqlStatements("BEGIN; SELECT 1; COMMIT;").map((statement) => statement.text)).toEqual(["BEGIN;", "SELECT 1;", "COMMIT;"]);
+  });
+
+  test("limits rows with FETCH FIRST", () => {
+    expect(applyRowLimit("SELECT * FROM t;", 100, "oracle")).toBe("SELECT * FROM t FETCH FIRST 100 ROWS ONLY");
+    expect(applyRowLimit("SELECT * FROM t WHERE ROWNUM <= 5", 100, "oracle")).toBe("SELECT * FROM t WHERE ROWNUM <= 5");
+    expect(applyRowLimit("SELECT * FROM t OFFSET 5 ROWS FETCH NEXT 5 ROWS ONLY", 100, "oracle")).toBe("SELECT * FROM t OFFSET 5 ROWS FETCH NEXT 5 ROWS ONLY");
+  });
+});

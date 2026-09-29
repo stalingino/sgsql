@@ -3,7 +3,7 @@ import { quoteIdent } from "./schemaDdl";
 
 /* ── Types ──────────────────────────────────────────────── */
 
-export type UserDialect = "postgres" | "mysql";
+export type UserDialect = "postgres" | "mysql" | "oracle";
 
 export type GrantScope = "global" | "database" | "schema" | "table";
 
@@ -70,12 +70,31 @@ export const PRIVILEGES: Record<UserDialect, Record<GrantScope, string[]>> = {
     schema: ["USAGE", "CREATE"],
     table: ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"],
   },
+  // Oracle: "global" holds system privileges; one database, no schema grants.
+  oracle: {
+    global: [
+      "CREATE SESSION", "CREATE TABLE", "CREATE VIEW", "CREATE SEQUENCE", "CREATE PROCEDURE", "CREATE TRIGGER",
+      "CREATE TYPE", "CREATE SYNONYM", "CREATE MATERIALIZED VIEW", "CREATE JOB", "UNLIMITED TABLESPACE",
+      "SELECT ANY TABLE", "INSERT ANY TABLE", "UPDATE ANY TABLE", "DELETE ANY TABLE", "EXECUTE ANY PROCEDURE",
+      "SELECT ANY DICTIONARY", "CREATE USER", "ALTER USER", "DROP USER", "CREATE ROLE", "GRANT ANY ROLE",
+      "GRANT ANY PRIVILEGE", "ALTER SYSTEM", "ALTER SESSION",
+    ],
+    database: [],
+    schema: [],
+    table: ["SELECT", "READ", "INSERT", "UPDATE", "DELETE", "ALTER", "INDEX", "REFERENCES", "DEBUG"],
+  },
 };
 
 /** Quick presets offered per scope row in the wizard. */
 export function presetPrivileges(dialect: UserDialect, scope: GrantScope, preset: "read" | "readwrite" | "all"): string[] {
   const vocab = PRIVILEGES[dialect][scope];
   if (preset === "all") return [...vocab];
+  if (dialect === "oracle") {
+    if (scope === "global") {
+      return preset === "read" ? ["CREATE SESSION"] : ["CREATE SESSION", "CREATE TABLE", "CREATE VIEW", "CREATE SEQUENCE", "CREATE PROCEDURE"];
+    }
+    return preset === "read" ? ["SELECT"] : ["SELECT", "INSERT", "UPDATE", "DELETE"];
+  }
   if (dialect === "postgres") {
     if (scope === "database") return preset === "read" ? ["CONNECT"] : ["CONNECT", "TEMPORARY"];
     if (scope === "schema") return preset === "read" ? ["USAGE"] : ["USAGE", "CREATE"];
@@ -86,6 +105,17 @@ export function presetPrivileges(dialect: UserDialect, scope: GrantScope, preset
 }
 
 /* ── Quoting helpers ────────────────────────────────────── */
+
+/** Oracle stores unquoted names upper-case; keep simple new names that way. */
+function oracleAccountName(name: string): string {
+  return /^[A-Za-z][A-Za-z0-9_$#]*$/.test(name) ? name.toUpperCase() : name;
+}
+
+/** Oracle passwords are quoted as identifiers and may not contain `"`. */
+function oraclePassword(password: string): string {
+  if (password.includes('"')) throw new Error("Oracle passwords cannot contain double quotes.");
+  return `"${password}"`;
+}
 
 export function quoteLiteral(dialect: UserDialect, value: string): string {
   return dialect === "mysql"
@@ -102,7 +132,7 @@ export function accountRef(dialect: UserDialect, name: string, host = "%"): stri
 
 /** Role references: MySQL roles are also accounts (`'r'@'%'`). */
 function roleRef(dialect: UserDialect, role: string): string {
-  if (dialect === "postgres") return quoteIdent(dialect, role);
+  if (dialect === "postgres" || dialect === "oracle") return quoteIdent(dialect, role);
   const at = role.lastIndexOf("@");
   return at > 0 ? accountRef(dialect, role.slice(0, at), role.slice(at + 1)) : accountRef(dialect, role, "%");
 }
@@ -112,6 +142,13 @@ function grantTarget(dialect: UserDialect, scope: GrantScope, target: { db?: str
     if (scope === "global") return "*.*";
     if (scope === "database") return `${quoteIdent(dialect, target.db ?? "")}.*`;
     return `${quoteIdent(dialect, target.db ?? "")}.${quoteIdent(dialect, target.table ?? "")}`;
+  }
+  if (dialect === "oracle") {
+    // System privileges have no target; table grants name the object.
+    if (scope === "global") return "";
+    return target.schema
+      ? `${quoteIdent(dialect, target.schema)}.${quoteIdent(dialect, target.table ?? "")}`
+      : quoteIdent(dialect, target.table ?? "");
   }
   if (scope === "database") return `DATABASE ${quoteIdent(dialect, target.db ?? "")}`;
   if (scope === "schema") return `SCHEMA ${quoteIdent(dialect, target.schema ?? "")}`;
@@ -166,9 +203,13 @@ function pgRoleOptions(attrs: AccountAttributes, before?: AccountAttributes): st
 }
 
 export function buildCreateAccount(dialect: UserDialect, draft: AccountDraft): string[] {
-  const name = draft.name.trim();
+  const name = dialect === "oracle" ? oracleAccountName(draft.name.trim()) : draft.name.trim();
   if (!name) throw new Error("User name is required");
   const ref = accountRef(dialect, name, draft.host);
+  if (dialect === "oracle") {
+    const auth = draft.password ? `IDENTIFIED BY ${oraclePassword(draft.password)}` : "NO AUTHENTICATION";
+    return [`CREATE USER ${ref} ${auth}${draft.attrs.locked ? " ACCOUNT LOCK" : ""}`];
+  }
   if (dialect === "mysql") {
     let sql = `CREATE USER ${ref}`;
     if (draft.password) sql += ` IDENTIFIED BY ${quoteLiteral(dialect, draft.password)}`;
@@ -189,6 +230,9 @@ export function buildCreateAccount(dialect: UserDialect, draft: AccountDraft): s
 }
 
 export function buildAlterAttributes(dialect: UserDialect, ref: string, before: AccountAttributes, after: AccountAttributes): string[] {
+  if (dialect === "oracle") {
+    return before.locked !== after.locked ? [`ALTER USER ${ref} ACCOUNT ${after.locked ? "LOCK" : "UNLOCK"}`] : [];
+  }
   if (dialect === "mysql") {
     const parts: string[] = [];
     const limitBefore = before.connLimit ?? 0;
@@ -205,19 +249,22 @@ export function buildAlterAttributes(dialect: UserDialect, ref: string, before: 
 
 export function buildSetPassword(dialect: UserDialect, ref: string, password: string): string[] {
   if (!password) return [];
+  if (dialect === "oracle") return [`ALTER USER ${ref} IDENTIFIED BY ${oraclePassword(password)}`];
   return dialect === "mysql"
     ? [`ALTER USER ${ref} IDENTIFIED BY ${quoteLiteral(dialect, password)}`]
     : [`ALTER ROLE ${ref} PASSWORD ${quoteLiteral(dialect, password)}`];
 }
 
 export function buildExpirePassword(dialect: UserDialect, ref: string): string[] {
-  return dialect === "mysql"
+  return dialect === "mysql" || dialect === "oracle"
     ? [`ALTER USER ${ref} PASSWORD EXPIRE`]
     : [`ALTER ROLE ${ref} VALID UNTIL 'now'`];
 }
 
-export function buildDropAccount(dialect: UserDialect, ref: string, options: { reassignTo?: string } = {}): string[] {
+export function buildDropAccount(dialect: UserDialect, ref: string, options: { reassignTo?: string; isRole?: boolean } = {}): string[] {
   if (dialect === "mysql") return [`DROP USER ${ref}`];
+  // Oracle refuses to drop a user who owns objects; that error is shown as-is.
+  if (dialect === "oracle") return [options.isRole ? `DROP ROLE ${ref}` : `DROP USER ${ref}`];
   const statements: string[] = [];
   if (options.reassignTo) {
     statements.push(`REASSIGN OWNED BY ${ref} TO ${quoteIdent(dialect, options.reassignTo)}`);
@@ -236,7 +283,29 @@ export function buildRoleDiff(dialect: UserDialect, ref: string, before: string[
   return statements;
 }
 
+/**
+ * Oracle: system privileges (no target) use WITH ADMIN OPTION, object
+ * privileges WITH GRANT OPTION. Neither option can be revoked on its own,
+ * so dropping it means revoking and granting again without it.
+ */
+function diffScopedOracle(ref: string, target: string, before: ScopedGrant | undefined, after: ScopedGrant | undefined): string[] {
+  const beforePrivs = before?.privileges ?? [];
+  const afterPrivs = after?.privileges ?? [];
+  const beforeOption = (before?.withGrant ?? false) && beforePrivs.length > 0;
+  const afterOption = (after?.withGrant ?? false) && afterPrivs.length > 0;
+  const on = target ? ` ON ${target}` : "";
+  const option = target ? " WITH GRANT OPTION" : " WITH ADMIN OPTION";
+  const statements: string[] = [];
+  const optionChanged = beforeOption !== afterOption;
+  const revoke = optionChanged ? beforePrivs : beforePrivs.filter((p) => !afterPrivs.includes(p));
+  const grant = optionChanged ? afterPrivs : afterPrivs.filter((p) => !beforePrivs.includes(p));
+  if (revoke.length) statements.push(`REVOKE ${revoke.join(", ")}${on} FROM ${ref}`);
+  if (grant.length) statements.push(`GRANT ${grant.join(", ")}${on} TO ${ref}${afterOption ? option : ""}`);
+  return statements;
+}
+
 function diffScoped(dialect: UserDialect, ref: string, target: string, before: ScopedGrant | undefined, after: ScopedGrant | undefined): string[] {
+  if (dialect === "oracle") return diffScopedOracle(ref, target, before, after);
   const beforePrivs = before?.privileges ?? [];
   const afterPrivs = after?.privileges ?? [];
   const beforeGrant = (before?.withGrant ?? false) && beforePrivs.length > 0;
@@ -269,7 +338,7 @@ function diffScoped(dialect: UserDialect, ref: string, target: string, before: S
 export function buildGrantDiff(dialect: UserDialect, ref: string, before: EditableGrants, after: EditableGrants): string[] {
   const statements: string[] = [];
 
-  if (dialect === "mysql") {
+  if (dialect === "mysql" || dialect === "oracle") {
     statements.push(...diffScoped(dialect, ref, grantTarget(dialect, "global", {}), before.global, after.global));
   }
 
@@ -301,7 +370,8 @@ export function buildAccountChanges(
   before: AccountDraft | null,
   after: AccountDraft,
 ): string[] {
-  const ref = accountRef(dialect, after.name.trim(), after.host);
+  const name = dialect === "oracle" && !before ? oracleAccountName(after.name.trim()) : after.name.trim();
+  const ref = accountRef(dialect, name, after.host);
   const statements: string[] = [];
   if (!before) {
     statements.push(...buildCreateAccount(dialect, after));
@@ -319,6 +389,8 @@ export function buildAccountChanges(
 /** Hide secrets when statements are displayed for review. */
 export function maskPasswords(statements: string[]): string[] {
   return statements.map((sql) =>
-    sql.replace(/\b(IDENTIFIED BY|PASSWORD)\s+'(?:[^'\\]|\\.|'')*'/g, "$1 '••••••••'"),
+    sql
+      .replace(/\b(IDENTIFIED BY|PASSWORD)\s+'(?:[^'\\]|\\.|'')*'/g, "$1 '••••••••'")
+      .replace(/\b(IDENTIFIED BY)\s+"[^"]*"/g, '$1 "••••••••"'),
   );
 }

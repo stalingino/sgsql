@@ -75,7 +75,10 @@ export function UserAccessWizard({ connectionId, dialect, mode, user, grants, al
   const steps = useMemo<StepId[]>(() => (
     dialect === "mysql"
       ? ["account", "roles", "global", "databases", "objects", "review"]
-      : ["account", "roles", "databases", "objects", "review"]
+      // Oracle: one database, so system privileges replace database grants.
+      : dialect === "oracle"
+        ? ["account", "roles", "global", "objects", "review"]
+        : ["account", "roles", "databases", "objects", "review"]
   ), [dialect]);
   const step = steps[stepIndex];
 
@@ -100,8 +103,10 @@ export function UserAccessWizard({ connectionId, dialect, mode, user, grants, al
     const name = draft.name.trim();
     if (!name) return "User name is required.";
     if (mode === "create") {
-      const clash = allUsers.some((existing) => existing.name === name && (dialect === "postgres" || (existing.host ?? "%") === (draft.host || "%")));
-      if (clash) return dialect === "mysql" ? `'${name}'@'${draft.host || "%"}' already exists.` : `Role "${name}" already exists.`;
+      // Oracle upper-cases simple names on creation (see buildCreateAccount).
+      const stored = dialect === "oracle" && /^[A-Za-z][A-Za-z0-9_$#]*$/.test(name) ? name.toUpperCase() : name;
+      const clash = allUsers.some((existing) => existing.name === stored && (dialect !== "mysql" || (existing.host ?? "%") === (draft.host || "%")));
+      if (clash) return dialect === "mysql" ? `'${name}'@'${draft.host || "%"}' already exists.` : `${dialect === "oracle" ? "User or role" : "Role"} "${stored}" already exists.`;
     }
     if (draft.password && draft.password !== confirmPassword) return "Passwords do not match.";
     return null;
@@ -196,7 +201,9 @@ export function UserAccessWizard({ connectionId, dialect, mode, user, grants, al
             )}
             {step === "global" && (
               <section className="flex flex-col gap-3">
-                <StepIntro title="Global privileges" hint="Apply to every database on the server (GRANT … ON *.*). Administrative privileges like SUPER, PROCESS and FILE live here." />
+                {dialect === "oracle"
+                  ? <StepIntro title="System privileges" hint="CREATE SESSION lets the user log in. The admin option lets them grant these privileges on." />
+                  : <StepIntro title="Global privileges" hint="Apply to every database on the server (GRANT … ON *.*). Administrative privileges like SUPER, PROCESS and FILE live here." />}
                 <PrivilegeChips
                   dialect={dialect}
                   scope="global"
@@ -306,10 +313,10 @@ function AccountStep({
   const attrs = draft.attrs;
   return (
     <section className="flex flex-col gap-4 max-w-xl">
-      <StepIntro title="Account" hint={dialect === "mysql" ? "MySQL accounts are a user name plus the host pattern they may connect from." : "Postgres roles double as users when they can log in."} />
+      <StepIntro title="Account" hint={dialect === "mysql" ? "MySQL accounts are a user name plus the host pattern they may connect from." : dialect === "oracle" ? "Each Oracle user owns a schema of the same name. Simple names are stored upper-case." : "Postgres roles double as users when they can log in."} />
       <div className={`grid gap-3 ${dialect === "mysql" ? "grid-cols-[1fr_180px]" : "grid-cols-1"}`}>
-        <Field label={dialect === "mysql" ? "User name" : "Role name"}>
-          <input value={draft.name} disabled={mode === "edit"} onChange={(event) => onChange({ name: event.target.value })} placeholder={dialect === "mysql" ? "app_user" : "app_role"} className="input-field font-mono disabled:opacity-60" autoFocus={mode === "create"} />
+        <Field label={dialect === "postgres" ? "Role name" : "User name"}>
+          <input value={draft.name} disabled={mode === "edit"} onChange={(event) => onChange({ name: event.target.value })} placeholder={dialect === "mysql" ? "app_user" : dialect === "oracle" ? "APP_USER" : "app_role"} className="input-field font-mono disabled:opacity-60" autoFocus={mode === "create"} />
         </Field>
         {dialect === "mysql" && (
           <Field label="Host" hint={draft.host === "%" || draft.host === "" ? "% allows connections from any host." : undefined}>
@@ -345,7 +352,7 @@ function AccountStep({
             <Toggle label="Account locked" hint="Rejects new connections; existing sessions continue." checked={attrs.locked} onChange={(locked) => onAttrsChange({ locked })} />
           </div>
         )}
-        <div className="grid grid-cols-2 gap-3 mt-2">
+        {dialect !== "oracle" && <div className="grid grid-cols-2 gap-3 mt-2">
           <Field label="Connection limit" hint="Blank = unlimited.">
             <input
               type="number"
@@ -360,7 +367,7 @@ function AccountStep({
               <input value={attrs.validUntil ?? ""} onChange={(event) => onAttrsChange({ validUntil: event.target.value || null })} placeholder="never" className="input-field font-mono" />
             </Field>
           )}
-        </div>
+        </div>}
       </div>
     </section>
   );
@@ -376,9 +383,10 @@ function RolesStep({ dialect, draft, allUsers, onChange }: { dialect: UserDialec
       .map((u) => ({
         key: dialect === "mysql" ? ((u.host ?? "%") === "%" ? u.name : `${u.name}@${u.host}`) : u.name,
         label: dialect === "mysql" ? `${u.name}@${u.host ?? "%"}` : u.name,
-        group: dialect === "postgres" ? !u.canLogin : false,
+        group: dialect === "postgres" || dialect === "oracle" ? !u.canLogin : false,
       }))
-      .filter((c) => c.label !== self && c.key !== draft.name);
+      // Oracle can grant roles only, never other users.
+      .filter((c) => c.label !== self && c.key !== draft.name && (dialect !== "oracle" || c.group));
     // Group roles (NOLOGIN) are the usual targets — list them first.
     list.sort((a, b) => Number(b.group) - Number(a.group) || a.label.localeCompare(b.label));
     return list;
@@ -388,7 +396,7 @@ function RolesStep({ dialect, draft, allUsers, onChange }: { dialect: UserDialec
 
   return (
     <section className="flex flex-col gap-3 max-w-xl">
-      <StepIntro title="Role membership" hint={dialect === "mysql" ? "Roles are named collections of privileges (MySQL 8+). Any account can be granted as a role." : "Membership grants every privilege the role holds (when INHERIT is on)."} />
+      <StepIntro title="Role membership" hint={dialect === "mysql" ? "Roles are named collections of privileges (MySQL 8+). Any account can be granted as a role." : dialect === "oracle" ? "Granted roles are enabled by default at logon." : "Membership grants every privilege the role holds (when INHERIT is on)."} />
       <div className="relative">
         <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
         <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter roles…" className="input-field !pl-7" />
@@ -399,7 +407,7 @@ function RolesStep({ dialect, draft, allUsers, onChange }: { dialect: UserDialec
           <label key={candidate.key} className="flex items-center gap-2.5 px-3 py-2 text-xs cursor-pointer hover:bg-bg-hover select-none">
             <input type="checkbox" checked={draft.roles.includes(candidate.key)} onChange={() => toggle(candidate.key)} />
             <span className="font-mono text-text-primary">{candidate.label}</span>
-            {candidate.group && <span className="ml-auto text-[10px] text-text-muted">group role</span>}
+            {candidate.group && dialect !== "oracle" && <span className="ml-auto text-[10px] text-text-muted">group role</span>}
           </label>
         ))}
       </div>
@@ -480,7 +488,9 @@ function targetKey(target: ObjectTarget): string {
 
 function ObjectsStep({ connectionId, dialect, databases, objectDb, grants, onChange }: { connectionId: string; dialect: UserDialect; databases: string[]; objectDb: string; grants: EditableGrants; onChange: (updater: (g: EditableGrants) => EditableGrants) => void }) {
   const isPg = dialect === "postgres";
-  const [db, setDb] = useState(isPg ? objectDb : (databases[0] ?? ""));
+  // Oracle browses schemas like Postgres but has table grants only.
+  const bySchema = isPg || dialect === "oracle";
+  const [db, setDb] = useState(bySchema ? objectDb : (databases[0] ?? ""));
   const [schemas, setSchemas] = useState<string[]>(isPg ? ["public"] : [""]);
   const [schema, setSchema] = useState(isPg ? "public" : "");
   const [tables, setTables] = useState<TableInfo[]>([]);
@@ -489,17 +499,18 @@ function ObjectsStep({ connectionId, dialect, databases, objectDb, grants, onCha
   const [selected, setSelected] = useState<ObjectTarget | null>(null);
 
   useEffect(() => {
-    if (!isPg && !db && databases.length) setDb(databases[0]);
-  }, [databases, db, isPg]);
+    if (!bySchema && !db && databases.length) setDb(databases[0]);
+  }, [databases, db, bySchema]);
 
   useEffect(() => {
-    if (!isPg || !db) return;
+    if (!bySchema || !db) return;
+    const fallback = isPg ? ["public"] : [""];
     fetchSchemas(connectionId, db).then((items) => {
-      const next = items.length ? items : ["public"];
+      const next = items.length ? items : fallback;
       setSchemas(next);
       setSchema((current) => next.includes(current) ? current : next[0]);
-    }).catch(() => setSchemas(["public"]));
-  }, [connectionId, db, isPg]);
+    }).catch(() => setSchemas(fallback));
+  }, [connectionId, db, isPg, bySchema]);
 
   useEffect(() => {
     if (!db) return;
@@ -530,7 +541,7 @@ function ObjectsStep({ connectionId, dialect, databases, objectDb, grants, onCha
   };
   const label = (target: ObjectTarget) => {
     if (target.kind === "schema") return `${target.schema}.*`;
-    return isPg ? `${target.schema}.${target.table}` : `${target.db}.${target.table}`;
+    return bySchema ? `${target.schema}.${target.table}` : `${target.db}.${target.table}`;
   };
   const visibleTables = fuzzySearch(tables, filter, { keys: ["name"] });
   const selectedGrant = selected ? grantFor(selected) : null;
@@ -538,7 +549,7 @@ function ObjectsStep({ connectionId, dialect, databases, objectDb, grants, onCha
 
   return (
     <section className="flex flex-col gap-3 h-full">
-      <StepIntro title="Schemas & tables" hint={isPg ? `Object grants live inside one database; showing ${objectDb}. Grant USAGE on a schema before its tables are reachable.` : "Table-level privileges (GRANT … ON db.table)."} />
+      <StepIntro title="Schemas & tables" hint={isPg ? `Object grants live inside one database; showing ${objectDb}. Grant USAGE on a schema before its tables are reachable.` : dialect === "oracle" ? "Object privileges on tables and views (GRANT … ON schema.table)." : "Table-level privileges (GRANT … ON db.table)."} />
 
       {existing.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
@@ -548,7 +559,7 @@ function ObjectsStep({ connectionId, dialect, databases, objectDb, grants, onCha
             return (
               <button
                 key={key}
-                onClick={() => { setSelected(target); if (target.db !== db && !isPg) setDb(target.db); if (target.schema !== schema && isPg) setSchema(target.schema); }}
+                onClick={() => { setSelected(target); if (target.db !== db && !bySchema) setDb(target.db); if (target.schema !== schema && bySchema) setSchema(target.schema); }}
                 className={`group flex items-center gap-1.5 pl-2 pr-1 py-1 rounded border text-[11px] cursor-pointer transition-colors ${
                   selectedKey === key ? "border-accent bg-accent/10 text-text-primary" : "border-border text-text-secondary hover:bg-bg-hover"
                 }`}
@@ -566,12 +577,12 @@ function ObjectsStep({ connectionId, dialect, databases, objectDb, grants, onCha
       <div className="flex-1 min-h-0 grid grid-cols-[260px_1fr] gap-3">
         {/* Picker */}
         <div className="flex flex-col gap-2 min-h-0">
-          {!isPg && (
+          {!bySchema && (
             <select value={db} onChange={(event) => { setDb(event.target.value); setSelected(null); }} className="input-field">
               {databases.map((item) => <option key={item} value={item}>{item}</option>)}
             </select>
           )}
-          {isPg && (
+          {bySchema && (
             <select value={schema} onChange={(event) => setSchema(event.target.value)} className="input-field">
               {schemas.map((item) => <option key={item} value={item}>{item}</option>)}
             </select>

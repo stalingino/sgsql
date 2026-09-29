@@ -126,7 +126,7 @@ function contentTabTitle(tab: ContentTab): string {
     : [tab.db, tab.schema, tab.type === "function" && tab.signature ? `${tab.table}(${tab.signature})` : tab.table].filter(Boolean).join(".");
 }
 
-function defaultSchema(type: "postgres" | "mysql" | "sqlite"): string {
+function defaultSchema(type: "postgres" | "mysql" | "sqlite" | "oracle"): string {
   if (type === "postgres") return "public";
   if (type === "sqlite") return "main";
   return "";
@@ -973,8 +973,9 @@ function App() {
           {/* Spacer */}
           <div className="w-px h-4 bg-border mx-1" />
 
-          {/* Foreign key checks. SQLite connections already run with them off. */}
-          {activeTab?.connectionId && activeTab.profile.type !== "sqlite" && (() => {
+          {/* Foreign key checks. SQLite connections already run with them off;
+              Oracle has no session-level switch. */}
+          {activeTab?.connectionId && activeTab.profile.type !== "sqlite" && activeTab.profile.type !== "oracle" && (() => {
             const connectionId = activeTab.connectionId;
             const off = fkChecksOffConnections.has(connectionId);
             const how = activeTab.profile.type === "postgres"

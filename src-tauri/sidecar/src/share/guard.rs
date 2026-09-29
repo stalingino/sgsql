@@ -21,7 +21,7 @@ use std::ops::ControlFlow;
 use sqlparser::ast::{
     visit_relations, Expr, ObjectName, ObjectNamePart, Query, Select, ShowCreateObject, Statement, Visit, Visitor,
 };
-use sqlparser::dialect::{Dialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect};
+use sqlparser::dialect::{Dialect, MySqlDialect, OracleDialect, PostgreSqlDialect, SQLiteDialect};
 use sqlparser::parser::Parser;
 
 use super::types::{DbType, Share, TableKey};
@@ -123,6 +123,26 @@ const DENIED_FUNCTIONS: &[&str] = &[
     "master_pos_wait",
     "sys_exec",
     "sys_eval",
+    // Oracle packages (matched against any part of a qualified name):
+    // network and file access, sleeping, dynamic SQL, jobs.
+    "utl_http",
+    "utl_tcp",
+    "utl_smtp",
+    "utl_mail",
+    "utl_file",
+    "utl_inaddr",
+    "httpuritype",
+    "dbms_lock",
+    "dbms_session",
+    "dbms_pipe",
+    "dbms_sql",
+    "dbms_xmlgen",
+    "dbms_xmlquery",
+    "dbms_scheduler",
+    "dbms_job",
+    "dbms_java",
+    "dbms_ldap",
+    "dbms_aq",
     // SQLite
     "readfile",
     "writefile",
@@ -134,6 +154,7 @@ fn dialect(db: DbType) -> Box<dyn Dialect> {
         DbType::Postgres => Box::new(PostgreSqlDialect {}),
         DbType::MySql => Box::new(MySqlDialect {}),
         DbType::Sqlite => Box::new(SQLiteDialect {}),
+        DbType::Oracle => Box::new(OracleDialect {}),
     }
 }
 
@@ -193,8 +214,9 @@ impl Visitor for Scan {
 
     fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
         if let Expr::Function(function) = expr {
-            if let Some(name) = last_ident(&function.name) {
-                let lower = name.to_lowercase();
+            // Any part, so Oracle's `UTL_HTTP.REQUEST(...)` is caught by its package.
+            for part in function.name.0.iter().filter_map(|part| part.as_ident()) {
+                let lower = part.value.to_lowercase();
                 if DENIED_FUNCTIONS.contains(&lower.as_str()) && self.denied_function.is_none() {
                     self.denied_function = Some(lower);
                 }
@@ -311,7 +333,7 @@ fn display_parts(parts: &[String]) -> String {
 fn resolve_parts(share: &Share, parts: &[String]) -> Result<TableKey, GuardError> {
     match (share.db_type, parts) {
         (_, [table]) => Ok(TableKey::new(&share.default_schema, table)),
-        (DbType::Postgres, [schema, table]) | (DbType::MySql, [schema, table]) => Ok(TableKey::new(schema, table)),
+        (DbType::Postgres | DbType::MySql | DbType::Oracle, [schema, table]) => Ok(TableKey::new(schema, table)),
         (DbType::Sqlite, [schema, table]) if schema.eq_ignore_ascii_case("main") => Ok(TableKey::new("main", table)),
         (DbType::Postgres, [database, schema, table]) if database.eq_ignore_ascii_case(&share.database) => {
             Ok(TableKey::new(schema, table))
@@ -367,6 +389,12 @@ fn ensure_allowed(share: &Share, key: TableKey, display: &str) -> Result<TableKe
     }
 }
 
+/// Oracle's one-row DUAL table (`dual` or `sys.dual`) holds no data.
+fn is_oracle_dual(name: &ObjectName) -> bool {
+    let parts: Vec<String> = name.0.iter().filter_map(|part| part.as_ident()).map(|ident| ident.value.to_lowercase()).collect();
+    matches!(parts.iter().map(String::as_str).collect::<Vec<_>>().as_slice(), ["dual"] | ["sys", "dual"])
+}
+
 /// Full check of one SQL string against the share's rules.
 pub fn check(share: &Share, sql: &str) -> Result<Verdict, GuardError> {
     let statement = parse_single(sql, share.db_type)?;
@@ -381,6 +409,9 @@ pub fn check(share: &Share, sql: &str) -> Result<Verdict, GuardError> {
         return Err(GuardError::FunctionNotAllowed(function));
     }
     for name in referenced_tables(&statement) {
+        if share.db_type == DbType::Oracle && is_oracle_dual(&name) {
+            continue;
+        }
         let key = resolve(share, &name)?;
         ensure_allowed(share, key, &name.to_string())?;
     }
@@ -403,6 +434,7 @@ mod tests {
             DbType::Postgres => "public",
             DbType::MySql => "app",
             DbType::Sqlite => "main",
+            DbType::Oracle => "APP",
         };
         let tables: Vec<AllowedTable> = tables
             .iter()
@@ -626,6 +658,38 @@ mod tests {
             check(&share, "SELECT * FROM otherdb.public.users"),
             Err(GuardError::UnsupportedQualifier(_))
         ));
+    }
+
+    #[test]
+    fn oracle_shares_use_the_oracle_dialect() {
+        let ora = share(DbType::Oracle, false, &[("", "employees"), ("hr", "departments")]);
+        assert_eq!(check(&ora, "SELECT * FROM employees FETCH FIRST 10 ROWS ONLY").unwrap().kind, Kind::Read);
+        assert!(check(&ora, "SELECT * FROM \"APP\".\"EMPLOYEES\" WHERE ROWNUM <= 5").is_ok());
+        assert!(check(&ora, "SELECT d.* FROM hr.departments d").is_ok());
+        assert_eq!(check(&ora, "UPDATE employees SET name = 'x' WHERE id = 1").unwrap().kind, Kind::Write);
+        assert!(matches!(check(&ora, "SELECT * FROM salaries"), Err(GuardError::TableNotAllowed { .. })));
+        assert!(matches!(check(&ora, "SELECT * FROM other.employees"), Err(GuardError::TableNotAllowed { .. })));
+    }
+
+    #[test]
+    fn oracle_dual_is_always_readable() {
+        let ora = share(DbType::Oracle, true, &[("", "employees")]);
+        assert!(check(&ora, "SELECT SYSDATE FROM dual").is_ok());
+        assert!(check(&ora, "SELECT 1 FROM SYS.DUAL").is_ok());
+        let pg = share(DbType::Postgres, true, &[("", "users")]);
+        assert!(matches!(check(&pg, "SELECT 1 FROM dual"), Err(GuardError::TableNotAllowed { .. })));
+    }
+
+    #[test]
+    fn oracle_network_and_scheduler_packages_are_denied() {
+        let ora = share(DbType::Oracle, true, &[("", "employees")]);
+        for sql in [
+            "SELECT UTL_HTTP.REQUEST('http://example.com') FROM dual",
+            "SELECT DBMS_XMLGEN.GETXML('select * from salaries') FROM dual",
+            "SELECT sys.utl_inaddr.get_host_address('x') FROM dual",
+        ] {
+            assert!(matches!(check(&ora, sql), Err(GuardError::FunctionNotAllowed(_))), "{sql}");
+        }
     }
 
     #[test]

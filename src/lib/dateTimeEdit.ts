@@ -6,10 +6,11 @@ export type DateTimeKind = "date" | "time" | "datetime";
  * Classify a column data type for the date/time picker. Returns null for
  * anything that isn't a date/time column.
  */
-export function getDateTimeKind(dataType: string): DateTimeKind | null {
+export function getDateTimeKind(dataType: string, dialect?: string): DateTimeKind | null {
   const t = dataType.toLowerCase().trim();
   if (/^(timestamp|datetime)/.test(t)) return "datetime";
-  if (/^date\b/.test(t)) return "date";
+  // Oracle DATE carries a time of day.
+  if (/^date\b/.test(t)) return dialect === "oracle" ? "datetime" : "date";
   if (/^time\b/.test(t)) return "time";
   return null;
 }

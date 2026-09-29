@@ -24,6 +24,11 @@ const TIMEOUTS = [5_000, 15_000, 30_000, 60_000];
 
 type ShareScope = "selected" | "full" | "instance";
 
+/** Schema that unqualified names resolve to: Postgres `public`, Oracle the login user's. */
+function homeSchema(profile: ConnectionProfile): string {
+  return profile.type === "oracle" ? profile.username.toUpperCase() : "public";
+}
+
 function limitations(scope: ShareScope): string {
   return "Enforced by SGSql before each statement reaches the database: one statement per call, " +
     (scope === "instance" ? "only databases accessible to this MySQL connection" : scope === "full" ? "only the current database" : "only the selected tables") +
@@ -151,7 +156,7 @@ function SetupView({ connectionId, profile, db, onStarted, onClose }: Pick<Props
     }
   };
 
-  const showSchema = groups.length > 1 || (groups.length === 1 && profile.type === "postgres" && groups[0][0] !== "public");
+  const showSchema = groups.length > 1 || (groups.length === 1 && groups[0][0] !== homeSchema(profile) && (profile.type === "postgres" || profile.type === "oracle"));
 
   return <>
     {error && <div className="px-4 py-2 text-xs text-error bg-error/10">{error}</div>}
@@ -313,7 +318,7 @@ function ActiveView({ share, profile, onStopped, onClose }: { share: ShareInfo; 
         <span className="ml-auto text-[11px] text-text-muted">{stats.calls} calls · {stats.rejected} rejected · {stats.errors} errors</span>
       </div>
 
-      {!share.fullDatabase && !share.allDatabases && <Chips items={share.tables.map((table) => (profile.type === "postgres" && table.schema !== "public" ? `${table.schema}.${table.name}` : table.name))} />}
+      {!share.fullDatabase && !share.allDatabases && <Chips items={share.tables.map((table) => ((profile.type === "postgres" || profile.type === "oracle") && table.schema !== homeSchema(profile) ? `${table.schema}.${table.name}` : table.name))} />}
 
       <div className="flex items-center gap-1">
         {tabButton("claude", "Claude Code")}

@@ -7,6 +7,7 @@ const PROTOCOL_MAP: Record<string, ConnectionProfile["type"]> = {
   mysql: "mysql",
   sqlite: "sqlite",
   sqlite3: "sqlite",
+  oracle: "oracle",
 };
 
 function decode(value: string): string {
@@ -21,7 +22,7 @@ function encode(value: string): string {
  * Returns true if the string looks like a connection URL we can parse.
  */
 export function isConnectionUrl(value: string): boolean {
-  return /^(postgres(?:ql)?|mysql|sqlite3?)(?:\+ssh)?:\/{2}/i.test(value.trim());
+  return /^(postgres(?:ql)?|mysql|sqlite3?|oracle)(?:\+ssh)?:\/{2}/i.test(value.trim());
 }
 
 /**

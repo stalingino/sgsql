@@ -652,7 +652,7 @@ export function ConnectionManagerWindow() {
     const imported = rawConnections.map((value) => {
       if (!value || typeof value !== "object") throw new Error("The connections file contains an invalid entry");
       const candidate = value as Partial<ConnectionProfile>;
-      if (!candidate.name || !["postgres", "mysql", "sqlite"].includes(candidate.type ?? "")) {
+      if (!candidate.name || !["postgres", "mysql", "sqlite", "oracle"].includes(candidate.type ?? "")) {
         throw new Error("Each imported connection needs a name and supported database type");
       }
       return { ...createDefaultProfile(), ...candidate, id: "" } as ConnectionProfile;
@@ -1468,6 +1468,7 @@ export function ConnectionManagerWindow() {
                 <option value="postgres">PostgreSQL</option>
                 <option value="mysql">MySQL</option>
                 <option value="sqlite">SQLite</option>
+                <option value="oracle">Oracle</option>
               </select>
             </Field>
           </div>
@@ -1510,7 +1511,7 @@ export function ConnectionManagerWindow() {
                 <Field label="Username" className="flex-1">
                   <input
                     type="text"
-                    placeholder="postgres"
+                    placeholder={draft.type === "oracle" ? "system" : draft.type === "mysql" ? "root" : "postgres"}
                     value={draft.username}
                     onChange={(e) => updateDraft({ username: e.target.value })}
                     className="input-field"
@@ -1529,10 +1530,12 @@ export function ConnectionManagerWindow() {
 
               {/* Row: Database + Env */}
               <div className="flex gap-3">
-                <Field label="Database" className="flex-1">
+                {/* Oracle: a service name, or a full (DESCRIPTION=...) connect descriptor. */}
+                <Field label={draft.type === "oracle" ? "Service name" : "Database"} className="flex-1">
                   <input
                     type="text"
-                    placeholder="mydb"
+                    placeholder={draft.type === "oracle" ? "FREEPDB1" : "mydb"}
+                    title={draft.type === "oracle" ? "Service name (e.g. ORCLPDB1), or a full (DESCRIPTION=...) connect descriptor" : undefined}
                     value={draft.database}
                     onChange={(e) => updateDraft({ database: e.target.value })}
                     className="input-field"

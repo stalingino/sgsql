@@ -38,7 +38,12 @@ enum BatchConnection {
     Postgres(PoolConnection<Postgres>),
     MySql(PoolConnection<MySql>),
     Sqlite(PoolConnection<Sqlite>),
+    Oracle(crate::oracle::OraclePinned),
 }
+
+/// Oracle cannot switch foreign-key enforcement off for a session.
+const ORACLE_NO_FK_TOGGLE: &str =
+    "Oracle cannot turn off foreign-key checks for a session. Disable the constraints with ALTER TABLE ... DISABLE CONSTRAINT instead.";
 
 fn dollar_quote_end(chars: &[char], start: usize) -> Option<usize> {
     let mut tag_end = start + 1;
@@ -74,6 +79,7 @@ impl BatchConnection {
             DbClient::Postgres { pool, .. } => Self::Postgres(pool.acquire().await.map_err(SidecarError::from)?),
             DbClient::MySql { pool, .. } => Self::MySql(pool.acquire().await.map_err(SidecarError::from)?),
             DbClient::Sqlite { pool } => Self::Sqlite(pool.acquire().await.map_err(SidecarError::from)?),
+            DbClient::Oracle(session) => Self::Oracle(session.pin().await),
         })
     }
 
@@ -84,6 +90,8 @@ impl BatchConnection {
             Self::Postgres(conn) => drop(conn.detach()),
             Self::MySql(conn) => drop(conn.detach()),
             Self::Sqlite(conn) => drop(conn.detach()),
+            // Never holds a changed session setting (see ORACLE_NO_FK_TOGGLE).
+            Self::Oracle(pinned) => drop(pinned),
         }
     }
 
@@ -102,6 +110,9 @@ impl BatchConnection {
             }
             Self::Sqlite(conn) => {
                 db::exec_sqlite_conn_traced(&mut *conn, conn_id, db_name, sql).await
+            }
+            Self::Oracle(pinned) => {
+                db::traced_result(conn_id, db_name, sql, |n: &u64| Some(*n), pinned.execute(sql)).await
             }
         }
     }
@@ -122,6 +133,33 @@ impl BatchConnection {
             Self::Sqlite(conn) => {
                 db::fetch_sqlite_conn_traced(&mut *conn, conn_id, db_name, sql).await
             }
+            Self::Oracle(pinned) => {
+                db::traced_result(conn_id, db_name, sql, |o: &db::QueryOutput| Some(o.rows.len() as u64), pinned.fetch(sql))
+                    .await
+            }
+        }
+    }
+
+    /// Start a transaction. Oracle has no BEGIN: a transaction starts with the
+    /// first write, so the pinned session just stops committing per statement.
+    async fn begin(&mut self, conn_id: &str, db_name: &str) -> Result<(), SidecarError> {
+        match self {
+            Self::Oracle(pinned) => {
+                pinned.begin();
+                Ok(())
+            }
+            _ => self.execute(conn_id, db_name, "BEGIN").await.map(|_| ()),
+        }
+    }
+
+    async fn finish(&mut self, conn_id: &str, db_name: &str, commit: bool) -> Result<(), SidecarError> {
+        let sql = if commit { "COMMIT" } else { "ROLLBACK" };
+        match self {
+            Self::Oracle(pinned) => {
+                let op = async { if commit { pinned.commit().await } else { pinned.rollback().await } };
+                db::traced_result(conn_id, db_name, sql, |_: &()| None, op).await
+            }
+            _ => self.execute(conn_id, db_name, sql).await.map(|_| ()),
         }
     }
 }
@@ -168,6 +206,7 @@ impl PinnedConnection {
             BatchConnection::Postgres(_) => ("SHOW session_replication_role", "origin", "replica"),
             BatchConnection::MySql(_) => ("SELECT @@SESSION.foreign_key_checks", "1", "0"),
             BatchConnection::Sqlite(_) => ("PRAGMA foreign_keys", "0", "0"),
+            BatchConnection::Oracle(_) => return Err(SidecarError::msg(ORACLE_NO_FK_TOGGLE)),
         };
         let current = self.fetch(conn_id, trace_db, read_sql).await?.first_text();
         let previous = current
@@ -196,6 +235,7 @@ impl PinnedConnection {
             BatchConnection::Postgres(_) => format!("SET session_replication_role = {value}"),
             BatchConnection::MySql(_) => format!("SET FOREIGN_KEY_CHECKS = {value}"),
             BatchConnection::Sqlite(_) => format!("PRAGMA foreign_keys = {value}"),
+            BatchConnection::Oracle(_) => return Err(SidecarError::msg(ORACLE_NO_FK_TOGGLE)),
         };
         self.execute(conn_id, trace_db, &sql).await.map(|_| ())
     }
@@ -336,6 +376,28 @@ fn is_select(sql: &str) -> bool {
     false
 }
 
+/// Oracle returns rows only from queries: `RETURNING ... INTO` fills binds
+/// rather than producing a result set, and there is no SHOW/PRAGMA/VALUES.
+fn oracle_is_select(sql: &str) -> bool {
+    let words = top_level_words(sql);
+    match words.first().map(String::as_str) {
+        Some("SELECT") => true,
+        Some("WITH") => {
+            let main = words.iter().skip(1).find(|word| matches!(word.as_str(), "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "MERGE"));
+            main.map(String::as_str) == Some("SELECT")
+        }
+        _ => false,
+    }
+}
+
+/// Whether `sql` produces a result set on this connection's database.
+pub fn returns_rows(client: &DbClient, sql: &str) -> bool {
+    match client {
+        DbClient::Oracle(_) => oracle_is_select(sql),
+        _ => is_select(sql),
+    }
+}
+
 /// Switch the active database on a connection (MySQL: USE; Postgres and
 /// SQLite: no-op — Postgres queries should use qualified names).
 pub async fn switch_db(
@@ -459,7 +521,7 @@ pub async fn handle_query(bytes: Bytes) -> Response {
         return error_response("Connection not found. Call /connections/open first.", 404);
     };
     let trace_db = record.profile.database.clone();
-    let select = is_select(&sql);
+    let select = returns_rows(&record.entry.client, &sql);
 
     let attempt: Result<Value, SidecarError> = async {
         let (entry, reconnected) = pool::ensure_connection_alive(&connection_id, false).await?;
@@ -542,14 +604,14 @@ pub async fn handle_query_batch(bytes: Bytes) -> Response {
         }
         let batch: Result<(Vec<Value>, bool), SidecarError> = async {
             if body.atomic {
-                connection.execute(&connection_id, &trace_db, "BEGIN").await?;
+                connection.inner().begin(&connection_id, &trace_db).await?;
             }
 
             let mut results = Vec::with_capacity(statements.len());
             let mut failed = false;
             for sql in &statements {
                 let started = Instant::now();
-                let outcome = if is_select(sql) {
+                let outcome = if returns_rows(&entry.client, sql) {
                     connection.fetch(&connection_id, &trace_db, sql).await.map(|output| {
                         let row_count = output.rows.len();
                         json!({
@@ -579,7 +641,7 @@ pub async fn handle_query_batch(bytes: Bytes) -> Response {
 
             let rolled_back = body.atomic && failed;
             if body.atomic {
-                connection.execute(&connection_id, &trace_db, if rolled_back { "ROLLBACK" } else { "COMMIT" }).await?;
+                connection.inner().finish(&connection_id, &trace_db, !rolled_back).await?;
             }
             Ok((results, rolled_back))
         }
@@ -599,7 +661,7 @@ pub async fn handle_query_batch(bytes: Bytes) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_select, PinnedConnection};
+    use super::{is_select, oracle_is_select, PinnedConnection};
     use crate::db::DbClient;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
@@ -631,6 +693,15 @@ mod tests {
         connection.disable_foreign_keys("test", "").await.unwrap();
         drop(connection);
         assert_eq!(pool.size(), 0);
+    }
+
+    #[test]
+    fn oracle_select_detection() {
+        assert!(oracle_is_select("SELECT sid, serial# FROM v$session"));
+        assert!(oracle_is_select("with x as (select 1 from dual) select * from x"));
+        assert!(!oracle_is_select("UPDATE t SET a = 1 RETURNING a INTO :out"));
+        assert!(!oracle_is_select("BEGIN NULL; END;"));
+        assert!(!oracle_is_select("EXPLAIN PLAN FOR SELECT 1 FROM dual"));
     }
 
     #[test]

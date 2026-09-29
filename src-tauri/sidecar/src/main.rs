@@ -1,6 +1,7 @@
 mod auth;
 mod db;
 mod error;
+mod oracle;
 mod pool;
 mod routes;
 mod share;
@@ -56,6 +57,9 @@ fn assert_handlers_send() {
 
 #[tokio::main]
 async fn main() {
+    // sqlx and oracledb both link rustls; with two crypto providers compiled
+    // in, rustls needs the process default chosen explicitly.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let port = get_port();
     let auth = auth::AuthState::new(get_auth_token());
     routes::health::init_uptime();

@@ -31,6 +31,10 @@ thiserror = "2"
 futures = "0.3"
 subtle = "2"
 sqlparser = { version = "0.63", features = ["visitor"] }
+oracledb = "=26.0.0-beta.4"
+# oracledb builds its TLS config from rustls' process default; pin it to ring,
+# the provider sqlx already uses (see main.rs).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

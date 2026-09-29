@@ -10,7 +10,7 @@ use sqlx::{Column, Row, TypeInfo, ValueRef};
 /// wire format never silently loses precision.
 const MAX_SAFE: i64 = 9_007_199_254_740_991;
 
-fn num_i64(v: i64) -> Value {
+pub(crate) fn num_i64(v: i64) -> Value {
     if v.abs() <= MAX_SAFE {
         Value::from(v)
     } else {
@@ -18,7 +18,7 @@ fn num_i64(v: i64) -> Value {
     }
 }
 
-fn num_u64(v: u64) -> Value {
+pub(crate) fn num_u64(v: u64) -> Value {
     if v <= MAX_SAFE as u64 {
         Value::from(v)
     } else {
@@ -26,13 +26,13 @@ fn num_u64(v: u64) -> Value {
     }
 }
 
-fn num_f64(v: f64) -> Value {
+pub(crate) fn num_f64(v: f64) -> Value {
     serde_json::Number::from_f64(v).map(Value::Number).unwrap_or(Value::Null)
 }
 
 /// Node Buffer JSON shape: {"type":"Buffer","data":[...]} — what the JS
 /// drivers produced via JSON.stringify for binary columns.
-fn buffer_json(bytes: Vec<u8>) -> Value {
+pub(crate) fn buffer_json(bytes: Vec<u8>) -> Value {
     json!({ "type": "Buffer", "data": bytes })
 }
 
@@ -58,11 +58,11 @@ pub fn buffer_to_text(v: Value) -> Value {
     }
 }
 
-fn iso_utc(dt: DateTime<Utc>) -> Value {
+pub(crate) fn iso_utc(dt: DateTime<Utc>) -> Value {
     Value::from(dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
 }
 
-fn iso_naive(dt: NaiveDateTime) -> Value {
+pub(crate) fn iso_naive(dt: NaiveDateTime) -> Value {
     Value::from(dt.format("%Y-%m-%dT%H:%M:%S%.3f").to_string())
 }
 

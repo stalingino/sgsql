@@ -45,7 +45,7 @@ import { chooseExportPath, writeExportFile } from "../lib/fileExport";
 
 interface DataTableProps {
   connectionId: string;
-  connectionType: "postgres" | "mysql" | "sqlite";
+  connectionType: "postgres" | "mysql" | "sqlite" | "oracle";
   db: string;
   schema: string;
   table: string;
@@ -68,7 +68,7 @@ interface DataTableProps {
 
 const PAGE_SIZE = 50;
 
-function quotePreviewIdent(type: "postgres" | "mysql" | "sqlite", value: string): string {
+function quotePreviewIdent(type: "postgres" | "mysql" | "sqlite" | "oracle", value: string): string {
   if (type === "mysql") return `\`${value.replace(/`/g, "``")}\``;
   return `"${value.replace(/"/g, '""')}"`;
 }
@@ -81,7 +81,7 @@ function buildPreviewSql({
   where,
   sort,
 }: {
-  connectionType: "postgres" | "mysql" | "sqlite";
+  connectionType: "postgres" | "mysql" | "sqlite" | "oracle";
   db: string;
   schema: string;
   table: string;
@@ -92,11 +92,14 @@ function buildPreviewSql({
     ? `${quotePreviewIdent(connectionType, db || "information_schema")}.${quotePreviewIdent(connectionType, table)}`
     : connectionType === "postgres"
       ? `${quotePreviewIdent(connectionType, schema || "public")}.${quotePreviewIdent(connectionType, table)}`
-      : quotePreviewIdent(connectionType, table);
+      : connectionType === "oracle" && schema
+        ? `${quotePreviewIdent(connectionType, schema)}.${quotePreviewIdent(connectionType, table)}`
+        : quotePreviewIdent(connectionType, table);
   const whereClause = where ? ` WHERE ${where}` : "";
   const orderClause = sort
     ? ` ORDER BY ${quotePreviewIdent(connectionType, sort.column)} ${sort.dir}`
     : "";
+  if (connectionType === "oracle") return `SELECT * FROM ${tableRef}${whereClause}${orderClause} OFFSET 0 ROWS FETCH NEXT ${PAGE_SIZE} ROWS ONLY`;
   return `SELECT * FROM ${tableRef}${whereClause}${orderClause} LIMIT ${PAGE_SIZE} OFFSET 0`;
 }
 
@@ -1055,7 +1058,7 @@ function DataView({
   readOnly,
 }: {
   connectionId: string;
-  connectionType: "postgres" | "mysql" | "sqlite";
+  connectionType: "postgres" | "mysql" | "sqlite" | "oracle";
   db: string;
   schema: string;
   table: string;

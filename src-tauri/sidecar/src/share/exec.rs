@@ -27,6 +27,71 @@ pub enum ShareConn {
     Postgres(sqlx::PgConnection),
     MySql(sqlx::MySqlConnection),
     Sqlite(sqlx::SqliteConnection),
+    Oracle(OracleShareConn),
+}
+
+/// The driver is blocking, so the connection is shared with blocking-pool
+/// threads. Oracle has no autocommit: writes are committed per statement
+/// unless a `transaction` call holds one open.
+pub struct OracleShareConn {
+    conn: std::sync::Arc<std::sync::Mutex<oracledb::Connection>>,
+    in_transaction: bool,
+}
+
+impl OracleShareConn {
+    async fn call<T, F>(&self, f: F) -> Result<T, SidecarError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&oracledb::Connection) -> Result<T, oracledb::Error> + Send + 'static,
+    {
+        let conn = std::sync::Arc::clone(&self.conn);
+        tokio::task::spawn_blocking(move || {
+            let guard = conn.lock().map_err(|_| SidecarError::msg("Oracle connection is unusable"))?;
+            Ok(f(&guard)?)
+        })
+        .await
+        .map_err(|join| SidecarError::msg(format!("Oracle worker failed: {join}")))?
+    }
+}
+
+/// One agent statement on Oracle. Read-only shares run each statement in a
+/// read-only transaction as a database-level backstop to the guard.
+fn oracle_statement(
+    conn: &oracledb::Connection,
+    sql: &str,
+    max_rows: usize,
+    returns_rows: bool,
+    commit: bool,
+    read_only: bool,
+) -> Result<Executed, oracledb::Error> {
+    if read_only {
+        conn.execute("SET TRANSACTION READ ONLY", &[])?;
+    }
+    let run = || -> Result<Executed, oracledb::Error> {
+        let mut out = Executed::default();
+        if returns_rows {
+            let cursor = conn.query(sql, &[])?;
+            out.columns = cursor.columns().iter().map(|column| column.name().to_string()).collect();
+            for row in cursor {
+                if out.rows.len() >= max_rows {
+                    out.truncated = true;
+                    break;
+                }
+                out.rows.push(crate::oracle::row_values(&row?));
+            }
+        } else {
+            out.rows_affected = conn.execute(sql, &[])?.rows_affected();
+            if commit {
+                conn.commit()?;
+            }
+        }
+        Ok(out)
+    };
+    let result = run();
+    if read_only {
+        let _ = conn.rollback();
+    }
+    result
 }
 
 #[derive(Debug)]
@@ -72,12 +137,13 @@ fn timeout_hint(timeout_ms: u64) -> String {
 }
 
 /// Server-side statement timeouts (MySQL max_execution_time, MariaDB
-/// max_statement_time, Postgres statement_timeout).
+/// max_statement_time, Postgres statement_timeout, Oracle call timeout).
 fn is_server_timeout(message: &str) -> bool {
     let lower = message.to_lowercase();
     lower.contains("maximum statement execution time exceeded")
         || lower.contains("max_statement_time exceeded")
         || lower.contains("statement timeout")
+        || lower.contains("call timeout was exceeded")
 }
 
 impl From<GuardError> for ToolError {
@@ -166,6 +232,24 @@ async fn connect(share: &Share) -> Result<ShareConn, SidecarError> {
             }
             Ok(ShareConn::MySql(conn))
         }
+        DbType::Oracle => {
+            let (profile, host) = (profile.clone(), host.clone());
+            let connect = tokio::task::spawn_blocking(move || -> Result<oracledb::Connection, SidecarError> {
+                let conn = crate::oracle::connect_blocking(&profile, &host, port)?;
+                // Oracle has no session statement timeout; the driver's call
+                // timeout ends the call (and the connection) instead.
+                conn.set_call_timeout(Some(Duration::from_millis(timeout_ms)))?;
+                Ok(conn)
+            });
+            let conn = tokio::time::timeout(Duration::from_secs(15), connect)
+                .await
+                .map_err(|_| SidecarError::msg("connect timeout"))?
+                .map_err(|join| SidecarError::msg(format!("Oracle worker failed: {join}")))??;
+            Ok(ShareConn::Oracle(OracleShareConn {
+                conn: std::sync::Arc::new(std::sync::Mutex::new(conn)),
+                in_transaction: false,
+            }))
+        }
         DbType::Sqlite => {
             let options = SqliteConnectOptions::new()
                 .filename(&profile.database)
@@ -202,6 +286,14 @@ pub async fn close(share: &Share) {
         }
         Some(ShareConn::Sqlite(c)) => {
             let _ = c.close().await;
+        }
+        Some(ShareConn::Oracle(c)) => {
+            let _ = c
+                .call(|conn| {
+                    let _ = conn.rollback();
+                    Ok(())
+                })
+                .await;
         }
         None => {}
     }
@@ -249,17 +341,31 @@ macro_rules! run_statement {
     }};
 }
 
-async fn run_statement(conn: &mut ShareConn, sql: &str, max_rows: usize, drain: bool) -> Result<Executed, sqlx::Error> {
+async fn run_statement(
+    share: &Share,
+    conn: &mut ShareConn,
+    sql: &str,
+    max_rows: usize,
+    drain: bool,
+    returns_rows: bool,
+) -> Result<Executed, SidecarError> {
     match conn {
         ShareConn::Postgres(c) => {
             run_statement!(c, sql, max_rows, drain, value::pg_row_values, |_: &sqlx::postgres::PgQueryResult| None)
+                .map_err(SidecarError::from)
         }
         ShareConn::MySql(c) => run_statement!(c, sql, max_rows, drain, value::mysql_row_values, |done: &sqlx::mysql::MySqlQueryResult| {
             Some(done.last_insert_id() as i64).filter(|id| *id > 0)
-        }),
+        })
+        .map_err(SidecarError::from),
         ShareConn::Sqlite(c) => run_statement!(c, sql, max_rows, drain, value::sqlite_row_values, |done: &sqlx::sqlite::SqliteQueryResult| {
             Some(done.last_insert_rowid()).filter(|id| *id > 0)
-        }),
+        })
+        .map_err(SidecarError::from),
+        ShareConn::Oracle(c) => {
+            let (sql, commit, read_only) = (sql.to_string(), !c.in_transaction, share.read_only);
+            c.call(move |conn| oracle_statement(conn, &sql, max_rows, returns_rows, commit, read_only)).await
+        }
     }
 }
 
@@ -270,7 +376,7 @@ async fn exec_statement(share: &Share, conn: &mut ShareConn, sql: &str, verdict:
     let started = Instant::now();
     let t = trace::start(&share.connection_id, &trace_db(share), sql);
     let is_write = verdict.kind == guard::Kind::Write;
-    let op = run_statement(conn, sql, share.max_rows, is_write);
+    let op = run_statement(share, conn, sql, share.max_rows, is_write, verdict.returns_rows);
     let result = tokio::time::timeout(Duration::from_millis(share.timeout_ms + 1_000), op).await;
     let duration_ms = started.elapsed().as_secs_f64() * 1_000.0;
 
@@ -286,8 +392,7 @@ async fn exec_statement(share: &Share, conn: &mut ShareConn, sql: &str, verdict:
                 duration_ms,
             })
         }
-        Ok(Err(cause)) => {
-            let error = SidecarError::from(cause);
+        Ok(Err(error)) => {
             t.failure(&error.to_string());
             let mut message = error.friendly();
             if is_server_timeout(&message) {
@@ -340,13 +445,28 @@ async fn control(share: &Share, conn: &mut ShareConn, sql: &str) -> Result<(), S
     let t = trace::start(&share.connection_id, &trace_db(share), sql);
     let op = async {
         match conn {
-            ShareConn::Postgres(c) => c.execute(sql).await.map(|_| ()),
-            ShareConn::MySql(c) => c.execute(sql).await.map(|_| ()),
-            ShareConn::Sqlite(c) => c.execute(sql).await.map(|_| ()),
+            ShareConn::Postgres(c) => c.execute(sql).await.map(|_| ()).map_err(SidecarError::from),
+            ShareConn::MySql(c) => c.execute(sql).await.map(|_| ()).map_err(SidecarError::from),
+            ShareConn::Sqlite(c) => c.execute(sql).await.map(|_| ()).map_err(SidecarError::from),
+            // Oracle has no BEGIN: a transaction starts with the first write.
+            ShareConn::Oracle(c) => match sql {
+                "COMMIT" => {
+                    c.in_transaction = false;
+                    c.call(|conn| conn.commit()).await
+                }
+                "ROLLBACK" => {
+                    c.in_transaction = false;
+                    c.call(|conn| conn.rollback()).await
+                }
+                _ => {
+                    c.in_transaction = true;
+                    Ok(())
+                }
+            },
         }
     };
     let result = match tokio::time::timeout(Duration::from_millis(share.timeout_ms + 1_000), op).await {
-        Ok(result) => result.map_err(SidecarError::from),
+        Ok(result) => result,
         Err(_) => Err(SidecarError::msg(format!("{sql} did not finish within the share's timeout"))),
     };
     match &result {
@@ -382,7 +502,7 @@ pub async fn run_batch(share: &Share, statements: &[String]) -> Result<Vec<Query
 
     let begin = match share.db_type {
         DbType::MySql => "START TRANSACTION",
-        DbType::Postgres | DbType::Sqlite => "BEGIN",
+        DbType::Postgres | DbType::Sqlite | DbType::Oracle => "BEGIN",
     };
     let mut slot = share.conn.lock().await;
     // Nothing has run yet, so a stale idle connection can be replaced safely.
@@ -469,7 +589,7 @@ async fn pooled_client(share: &Share) -> Result<std::sync::Arc<pool::PoolEntry>,
 
 fn introspection_scope<'a>(share: &Share, table: &'a AllowedTable) -> (Option<&'a str>, Option<&'a str>) {
     match share.db_type {
-        DbType::Postgres => (None, Some(table.schema.as_str())),
+        DbType::Postgres | DbType::Oracle => (None, Some(table.schema.as_str())),
         DbType::MySql => (Some(table.schema.as_str()), None),
         DbType::Sqlite => (None, None),
     }
@@ -481,7 +601,7 @@ fn normalize_columns(share: &Share, raw: &Value) -> (Vec<Value>, Vec<String>) {
     for column in raw.get("columns").and_then(Value::as_array).into_iter().flatten() {
         let name = s(column, "column_name");
         let data_type = match share.db_type {
-            DbType::Postgres => {
+            DbType::Postgres | DbType::Oracle => {
                 let formatted = s(column, "formatted_type");
                 if formatted.is_empty() { s(column, "data_type") } else { formatted }
             }
@@ -575,7 +695,7 @@ fn normalize_indexes(share: &Share, raw: &Value) -> Vec<Value> {
                 })
             })
             .collect(),
-        DbType::Sqlite => rows
+        DbType::Sqlite | DbType::Oracle => rows
             .iter()
             .map(|row| {
                 json!({
@@ -620,7 +740,7 @@ async fn metadata_entry(share: &Share, table: &str, key: &TableKey, client: &DbC
         let hint = if similar.is_empty() { String::new() } else { format!(" Similar tables: {}.", similar.join(", ")) };
         return Err(ToolError::Rejected(format!(
             "Table \"{table}\" was not found in {} \"{}\".{hint}",
-            if share.db_type == DbType::Postgres { "schema" } else { "database" },
+            if matches!(share.db_type, DbType::Postgres | DbType::Oracle) { "schema" } else { "database" },
             entry.schema
         )));
     };
@@ -699,7 +819,9 @@ pub async fn list_tables(share: &Share, database: Option<&str>) -> Result<Vec<Al
         share.database.clone()
     };
     let listing = match share.db_type {
-        DbType::Postgres => schema::get_catalog(&pooled.client, &share.connection_id, &trace_db(share), Some(&share.database)).await?,
+        DbType::Postgres | DbType::Oracle => {
+            schema::get_catalog(&pooled.client, &share.connection_id, &trace_db(share), Some(&share.database)).await?
+        }
         DbType::MySql => schema::get_tables(&pooled.client, &share.connection_id, &trace_db(share), Some(&mysql_db), None).await?,
         DbType::Sqlite => schema::get_tables(&pooled.client, &share.connection_id, &trace_db(share), None, None).await?,
     };
@@ -709,7 +831,7 @@ pub async fn list_tables(share: &Share, database: Option<&str>) -> Result<Vec<Al
         .flatten()
         .map(|table| AllowedTable {
             schema: match share.db_type {
-                DbType::Postgres => s(table, "schema"),
+                DbType::Postgres | DbType::Oracle => s(table, "schema"),
                 DbType::MySql => mysql_db.clone(),
                 DbType::Sqlite => share.default_schema.clone(),
             },

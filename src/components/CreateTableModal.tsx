@@ -7,7 +7,7 @@ import { HighlightedSQL } from "../lib/highlightSQL";
 
 interface Props {
   connectionId: string;
-  dialect: "postgres" | "mysql" | "sqlite";
+  dialect: "postgres" | "mysql" | "sqlite" | "oracle";
   db: string;
   schema: string;
   onClose: () => void;
@@ -17,7 +17,7 @@ interface Props {
 function newColumn(dialect: Props["dialect"]): EditableColumn {
   return {
     id: crypto.randomUUID(), originalName: null, name: "",
-    type: dialect === "postgres" ? "text" : dialect === "mysql" ? "varchar(255)" : "TEXT",
+    type: dialect === "postgres" ? "text" : dialect === "mysql" ? "varchar(255)" : dialect === "oracle" ? "VARCHAR2(255)" : "TEXT",
     nullable: true, defaultValue: "", isPk: false, unique: false, extra: "", comment: "",
   };
 }

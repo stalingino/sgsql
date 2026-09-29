@@ -52,3 +52,24 @@ describe("SQL dump import", () => {
     expect(() => prepareSqlImport("-- comments only", "sqlite")).toThrow("non-empty SQL dump");
   });
 });
+
+describe("Oracle SQL import", () => {
+  test("drops SQL*Plus directives and keeps PL/SQL units whole", () => {
+    const dump = [
+      "SET DEFINE OFF;",
+      "REM INSERTING into CUSTOMERS",
+      "Insert into CUSTOMERS (ID,NAME) values (1,'Ada');",
+      "UPDATE customers",
+      "SET name = 'x' WHERE id = 1;",
+      "CREATE OR REPLACE TRIGGER trg BEFORE INSERT ON customers FOR EACH ROW",
+      "BEGIN :NEW.name := UPPER(:NEW.name); END;",
+      "/",
+      "COMMIT;",
+    ].join("\n");
+    expect(prepareSqlImport(dump, "oracle")).toEqual([
+      "Insert into CUSTOMERS (ID,NAME) values (1,'Ada');",
+      "UPDATE customers\nSET name = 'x' WHERE id = 1;",
+      "CREATE OR REPLACE TRIGGER trg BEFORE INSERT ON customers FOR EACH ROW\nBEGIN :NEW.name := UPPER(:NEW.name); END;",
+    ]);
+  });
+});

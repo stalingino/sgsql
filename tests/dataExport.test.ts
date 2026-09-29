@@ -54,3 +54,21 @@ describe("data export", () => {
     expect(text).toContain("(1, NULL)");
   });
 });
+
+describe("Oracle SQL export", () => {
+  test("writes one INSERT per row with schema-qualified names and HEXTORAW", () => {
+    const sql = serializeExportChunk({
+      format: "sql",
+      columns: ["ID", "NAME", "DATA"],
+      rows: [[1, "O'Brien", { type: "Buffer", data: [222, 173] }], [2, null, null]],
+      dialect: "oracle",
+      table: "PEOPLE",
+      schema: "APP",
+      first: true,
+    });
+    expect(sql).toBe(
+      `INSERT INTO "APP"."PEOPLE" ("ID", "NAME", "DATA") VALUES (1, 'O''Brien', HEXTORAW('DEAD'));\n` +
+      `INSERT INTO "APP"."PEOPLE" ("ID", "NAME", "DATA") VALUES (2, NULL, NULL);\n`,
+    );
+  });
+});

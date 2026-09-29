@@ -204,6 +204,55 @@ async fn apply_mysql(
     batch
 }
 
+/// Oracle commits implicitly before and after every DDL statement.
+fn is_oracle_ddl(sql: &str) -> bool {
+    let first = sql
+        .trim_start()
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    matches!(
+        first.as_str(),
+        "CREATE" | "ALTER" | "DROP" | "TRUNCATE" | "RENAME" | "COMMENT" | "GRANT" | "REVOKE" | "PURGE" | "FLASHBACK" | "ANALYZE" | "AUDIT" | "NOAUDIT"
+    )
+}
+
+async fn apply_oracle(
+    session: &crate::oracle::OracleSession,
+    connection_id: String,
+    trace_db: String,
+    statements: Vec<String>,
+    disable_fk: bool,
+    applied: &mut usize,
+    progress: Option<&UnboundedSender<String>>,
+    total: usize,
+) -> Result<(), SidecarError> {
+    if disable_fk {
+        return Err(SidecarError::msg(
+            "Oracle cannot turn off foreign-key checks for a session. Disable the constraints with ALTER TABLE ... DISABLE CONSTRAINT instead.",
+        ));
+    }
+    let mut pinned = session.pin().await;
+    pinned.begin();
+    let batch: Result<(), SidecarError> = async {
+        for statement in &statements {
+            db::traced_result(&connection_id, &trace_db, statement, |n: &u64| Some(*n), pinned.execute(statement)).await?;
+            *applied += 1;
+            report_progress(progress, *applied, total)?;
+        }
+        Ok(())
+    }
+    .await;
+    match batch {
+        Ok(()) => db::traced_result(&connection_id, &trace_db, "COMMIT", |_: &()| None, pinned.commit()).await,
+        Err(error) => {
+            let _ = db::traced_result(&connection_id, &trace_db, "ROLLBACK", |_: &()| None, pinned.rollback()).await;
+            Err(error)
+        }
+    }
+}
+
 struct ApplySuccess {
     reconnected: bool,
     applied: usize,
@@ -243,7 +292,12 @@ async fn run_apply(
         });
     };
     let trace_db = record.profile.database.clone();
-    let is_mysql = matches!(record.entry.client, DbClient::MySql { .. });
+    // Whether earlier statements stay committed when a later one fails.
+    let partial_commits = match &record.entry.client {
+        DbClient::MySql { .. } => true,
+        DbClient::Oracle(_) => statements.iter().any(|sql| is_oracle_ddl(sql)),
+        _ => false,
+    };
 
     let started = Instant::now();
     let mut applied: usize = 0;
@@ -283,6 +337,19 @@ async fn run_apply(
                         )
                         .await
                     }
+                    DbClient::Oracle(session) => {
+                        apply_oracle(
+                            session,
+                            connection_id.clone(),
+                            trace_db.clone(),
+                            statements.clone(),
+                            body.disable_foreign_keys,
+                            &mut applied,
+                            progress.as_ref(),
+                            total,
+                        )
+                        .await
+                    }
                     DbClient::MySql { .. } => {
                         apply_mysql(
                             &entry.client,
@@ -309,13 +376,13 @@ async fn run_apply(
             Ok(ApplySuccess {
                 reconnected,
                 applied,
-                atomic: !is_mysql,
+                atomic: !partial_commits,
                 duration: started.elapsed().as_secs_f64() * 1_000.0,
             })
         }
         Err(error) => {
             let message = error.friendly();
-            let suffix = if is_mysql && applied > 0 {
+            let suffix = if partial_commits && applied > 0 {
                 format!(
                     " ({applied} statement{} already committed)",
                     if applied == 1 { "" } else { "s" }

@@ -17,6 +17,9 @@ use crate::types::ConnectionProfile;
 const IDLE_CHECK_AFTER_MS: u64 = 30_000;
 const HEALTH_CHECK_TIMEOUT_MS: u64 = 3_000;
 const CONNECT_TIMEOUT_MS: u64 = 5_000;
+/// Oracle logon takes several round trips (and often a TLS handshake to a
+/// cloud listener), so it gets more headroom.
+const ORACLE_CONNECT_TIMEOUT_MS: u64 = 15_000;
 
 pub struct PoolEntry {
     pub client: DbClient,
@@ -46,6 +49,16 @@ static RECONNECTING: LazyLock<Mutex<HashMap<String, ReconnectFuture>>> = LazyLoc
 
 pub fn get_record(id: &str) -> Option<Arc<PoolRecord>> {
     POOL.lock().unwrap().get(id).cloned()
+}
+
+/// The pooled connection whose Oracle session is `sid,serial`, if the app
+/// owns it.
+pub fn oracle_record_for_session(sid: usize, serial: usize) -> Option<Arc<PoolRecord>> {
+    POOL.lock()
+        .unwrap()
+        .values()
+        .find(|record| matches!(&record.entry.client, DbClient::Oracle(session) if session.sid == sid && session.serial == serial))
+        .cloned()
 }
 
 pub fn has_connection(id: &str) -> bool {
@@ -83,6 +96,7 @@ async fn close_client(client: &DbClient) {
         DbClient::Postgres { pool, .. } => pool.close().await,
         DbClient::MySql { pool, .. } => pool.close().await,
         DbClient::Sqlite { pool } => pool.close().await,
+        DbClient::Oracle(session) => session.close().await,
     }
 }
 
@@ -220,6 +234,15 @@ async fn build_client(profile: &ConnectionProfile, host: &str, port: u16) -> Res
                 .map_err(SidecarError::from)?;
             Ok(DbClient::Sqlite { pool })
         }
+        "oracle" => {
+            let session = with_timeout(
+                crate::oracle::OracleSession::open(profile, host, port),
+                ORACLE_CONNECT_TIMEOUT_MS,
+                "connect timeout",
+            )
+            .await?;
+            Ok(DbClient::Oracle(session))
+        }
         other => Err(SidecarError::msg(format!("Unsupported connection type: {other}"))),
     }
 }
@@ -249,6 +272,8 @@ async fn fetch_server_version(client: &DbClient, conn_id: &str, db: &str) -> Res
         DbClient::Postgres { .. } => "SHOW server_version",
         DbClient::MySql { .. } => "SELECT version() AS v",
         DbClient::Sqlite { .. } => "SELECT sqlite_version() AS v",
+        // Reported during logon; no round trip needed.
+        DbClient::Oracle(session) => return Ok(session.version.clone()),
     };
     let output = crate::db::fetch_raw(client, conn_id, db, sql).await?;
     Ok(output
@@ -313,6 +338,12 @@ async fn reconnect_internal(id: String) -> Result<Arc<PoolEntry>, String> {
 pub async fn ensure_connection_alive(id: &str, force: bool) -> Result<(Arc<PoolEntry>, bool), SidecarError> {
     let record = get_record(id).ok_or_else(|| SidecarError::msg("Connection not found"))?;
 
+    // A session killed by /cancel is gone; replace it before sending work.
+    if matches!(&record.entry.client, DbClient::Oracle(session) if session.was_killed()) {
+        let entry = reconnect(id).await?;
+        return Ok((entry, true));
+    }
+
     if matches!(record.entry.client, DbClient::Sqlite { .. }) {
         record.last_used_ms.store(now_ms(), Ordering::Relaxed);
         return Ok((Arc::clone(&record.entry), false));
@@ -346,6 +377,12 @@ pub async fn ensure_connection_alive(id: &str, force: bool) -> Result<(Arc<PoolE
                 "MySQL connection health check timed out",
             )
             .await
+        }
+        // The session lock is held while a statement runs, so a busy session
+        // is alive by definition; don't queue a ping behind a long query.
+        DbClient::Oracle(session) if session.is_busy() => Ok(()),
+        DbClient::Oracle(session) => {
+            with_timeout(session.ping(), HEALTH_CHECK_TIMEOUT_MS, "Oracle connection health check timed out").await
         }
         DbClient::Sqlite { .. } => unreachable!(),
     };

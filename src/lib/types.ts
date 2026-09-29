@@ -5,7 +5,7 @@ export const DEFAULT_CONNECTION_FOLDER = "Connections";
 export interface ConnectionProfile {
   id: string;
   name: string;
-  type: "postgres" | "mysql" | "sqlite";
+  type: "postgres" | "mysql" | "sqlite" | "oracle";
   host: string;
   port: number;
   database: string;
@@ -92,5 +92,6 @@ export const DB_TYPE_PORTS: Record<ConnectionProfile["type"], number> = {
   postgres: 5432,
   mysql: 3306,
   sqlite: 0,
+  oracle: 1521,
 };
 

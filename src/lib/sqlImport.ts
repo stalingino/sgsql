@@ -1,6 +1,6 @@
 import { splitSqlStatements } from "./sqlStatements";
 
-export type SqlImportDialect = "postgres" | "mysql" | "sqlite";
+export type SqlImportDialect = "postgres" | "mysql" | "sqlite" | "oracle";
 
 function withoutLeadingComments(sql: string): string {
   let value = sql.trim();
@@ -108,11 +108,19 @@ function splitMysqlDump(sql: string): string[] {
   return statements;
 }
 
+/**
+ * SQL*Plus client commands that SQL Developer and sqlplus scripts carry but
+ * the server rejects. `SET` only with SQL*Plus settings, never UPDATE's SET.
+ */
+const SQLPLUS_DIRECTIVE = /^\s*(?:REM(?:ARK)?\b|PROMPT\b|SPOOL\b|WHENEVER\b|EXIT\b|QUIT\b|SET\s+(?:DEFINE|ECHO|FEEDBACK|HEADING|LINESIZE|PAGESIZE|SERVEROUTPUT|TERMOUT|VERIFY|SQLBLANKLINES|TIMING|TRIMSPOOL|LONG|SCAN|ESCAPE|CONCAT)\b).*$/gim;
+
 /** Parse an SQL dump for the dedicated import connection/transaction path. */
 export function prepareSqlImport(sql: string, dialect: SqlImportDialect): string[] {
   const parsed = dialect === "mysql"
     ? splitMysqlDump(sql)
-    : splitSqlStatements(sql).map((statement) => statement.text.trim());
+    : dialect === "oracle"
+      ? splitSqlStatements(sql.replace(SQLPLUS_DIRECTIVE, ""), "oracle").map((statement) => statement.text.trim())
+      : splitSqlStatements(sql).map((statement) => statement.text.trim());
   const statements = parsed.filter((statement) => !isTransactionBoundary(statement));
 
   if (statements.length === 0) throw new Error("Enter SQL or choose a non-empty SQL dump");

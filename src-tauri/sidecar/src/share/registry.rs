@@ -81,6 +81,9 @@ pub fn create(req: CreateShareRequest, profile: &ConnectionProfile) -> Result<Ar
             (db.clone(), db)
         }
         DbType::Sqlite => (profile.database.clone(), "main".to_string()),
+        // Unquoted Oracle user names are stored upper-case; the user's own
+        // schema is where unqualified names resolve.
+        DbType::Oracle => (profile.database.clone(), profile.username.to_uppercase()),
     };
 
     let mut allowed = HashSet::new();

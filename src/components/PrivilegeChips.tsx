@@ -88,7 +88,8 @@ export function PrivilegeChips({ dialect, scope, value, onChange, withGrant, onW
           {onWithGrantChange && (
             <label className="ml-auto flex items-center gap-1.5 text-[11px] text-text-secondary cursor-pointer select-none">
               <input type="checkbox" checked={withGrant ?? false} onChange={(event) => onWithGrantChange(event.target.checked)} />
-              With grant option
+              {/* Oracle system privileges carry an admin option instead. */}
+              {dialect === "oracle" && scope === "global" ? "With admin option" : "With grant option"}
             </label>
           )}
         </div>

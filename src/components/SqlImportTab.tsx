@@ -10,7 +10,7 @@ const MonacoSqlEditor = lazy(() => import("./MonacoSqlEditor"));
 interface SqlImportTabProps {
   connectionId: string;
   db: string;
-  dialect: "postgres" | "mysql" | "sqlite";
+  dialect: "postgres" | "mysql" | "sqlite" | "oracle";
   onImported: () => void;
 }
 
@@ -142,9 +142,11 @@ export function SqlImportTab({ connectionId, db, dialect, onImported }: SqlImpor
         </div>
       )}
 
-      {dialect === "mysql" && (
+      {(dialect === "mysql" || dialect === "oracle") && (
         <div className="border-t border-warning/30 bg-warning/10 px-4 py-2 text-[11px] text-warning">
-          MySQL imports use one connection, but DDL can auto-commit and cannot always be rolled back.
+          {dialect === "oracle"
+            ? "Oracle imports use one transaction, but DDL commits implicitly and cannot be rolled back. PL/SQL units must end with a / line."
+            : "MySQL imports use one connection, but DDL can auto-commit and cannot always be rolled back."}
         </div>
       )}
       {error && <div className="border-t border-error/30 bg-error/10 px-4 py-2 text-xs text-error">{error}</div>}

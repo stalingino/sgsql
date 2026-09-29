@@ -126,6 +126,7 @@ export function CellEditorModal({ selection, onClose }: CellEditorModalProps) {
       isNull={isNull && !isSqlExpr}
       valueKind={valueKind}
       enumValues={meta?.enumValues}
+      dateTimeKind={getDateTimeKind(dataType, ctx?.connectionType)}
       // A SQL expression (DEFAULT / NOW()) has no editable text; show it read-only.
       readOnly={!canEdit || isSqlExpr}
       onApply={handleApply}

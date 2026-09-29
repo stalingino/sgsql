@@ -32,7 +32,7 @@ export interface CellSelection {
   /** Table context for edit support */
   tableContext?: {
     connectionId: string;
-    connectionType: "postgres" | "mysql" | "sqlite";
+    connectionType: "postgres" | "mysql" | "sqlite" | "oracle";
     db: string;
     schema: string;
     table: string;

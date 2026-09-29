@@ -1,6 +1,6 @@
 import type { ColumnInfo, ForeignKeyInfo, IndexInfo } from "./schema";
 
-export type SqlDialect = "postgres" | "mysql" | "sqlite";
+export type SqlDialect = "postgres" | "mysql" | "sqlite" | "oracle";
 
 export interface EditableColumn {
   id: string;
@@ -39,7 +39,18 @@ export function quoteIdent(dialect: SqlDialect, value: string): string {
 function tableRef(dialect: SqlDialect, db: string, schema: string, table: string): string {
   if (dialect === "mysql") return `${quoteIdent(dialect, db)}.${quoteIdent(dialect, table)}`;
   if (dialect === "postgres") return `${quoteIdent(dialect, schema || "public")}.${quoteIdent(dialect, table)}`;
+  // Oracle: an unqualified name resolves in the session's own schema.
+  if (dialect === "oracle") return schemaQualified(dialect, schema, table);
   return quoteIdent(dialect, table);
+}
+
+function schemaQualified(dialect: SqlDialect, schema: string, name: string): string {
+  return schema ? `${quoteIdent(dialect, schema)}.${quoteIdent(dialect, name)}` : quoteIdent(dialect, name);
+}
+
+/** Dialects whose column comments are separate COMMENT ON statements. */
+function commentsAreStatements(dialect: SqlDialect): boolean {
+  return dialect === "postgres" || dialect === "oracle";
 }
 
 export function buildRenameTable(dialect: SqlDialect, db: string, schema: string, table: string, newName: string): string {
@@ -47,6 +58,10 @@ export function buildRenameTable(dialect: SqlDialect, db: string, schema: string
 }
 
 function columnDefinition(dialect: SqlDialect, column: EditableColumn, includePk = false): string {
+  if (dialect === "oracle") {
+    // Identity and virtual-column clauses must precede inline constraints.
+    return `${quoteIdent(dialect, column.name)} ${column.type.trim()}${column.defaultValue.trim() ? ` DEFAULT ${column.defaultValue.trim()}` : ""}${column.extra?.trim() ? ` ${column.extra.trim()}` : ""}${column.nullable ? "" : " NOT NULL"}${column.unique ? " UNIQUE" : ""}${includePk && column.isPk ? " PRIMARY KEY" : ""}`;
+  }
   return `${quoteIdent(dialect, column.name)} ${column.type.trim()}${column.defaultValue.trim() ? ` DEFAULT ${column.defaultValue.trim()}` : ""}${column.nullable ? "" : " NOT NULL"}${column.unique ? " UNIQUE" : ""}${includePk && column.isPk ? " PRIMARY KEY" : ""}${column.extra?.trim() ? ` ${column.extra.trim()}` : ""}${dialect === "mysql" && column.comment?.trim() ? ` COMMENT ${quoteLiteral(column.comment.trim())}` : ""}`;
 }
 
@@ -79,7 +94,9 @@ export function buildCreateTable(dialect: SqlDialect, db: string, schema: string
       ? quoteIdent(dialect, fk.foreignTable)
       : dialect === "mysql"
         ? `${quoteIdent(dialect, fk.foreignSchema || db)}.${quoteIdent(dialect, fk.foreignTable)}`
-        : `${quoteIdent(dialect, fk.foreignSchema || schema || "public")}.${quoteIdent(dialect, fk.foreignTable)}`;
+        : dialect === "oracle"
+          ? schemaQualified(dialect, fk.foreignSchema || schema, fk.foreignTable)
+          : `${quoteIdent(dialect, fk.foreignSchema || schema || "public")}.${quoteIdent(dialect, fk.foreignTable)}`;
     definitions.push(`CONSTRAINT ${quoteIdent(dialect, fk.name)} FOREIGN KEY (${local.map((name) => quoteIdent(dialect, name)).join(", ")}) REFERENCES ${foreignRef} (${remote.map((name) => quoteIdent(dialect, name)).join(", ")})`);
   }
   return `CREATE TABLE ${tableRef(dialect, db, schema, table)} (\n  ${definitions.join(",\n  ")}\n)`;
@@ -87,7 +104,7 @@ export function buildCreateTable(dialect: SqlDialect, db: string, schema: string
 
 export function buildCreateTableStatements(dialect: SqlDialect, db: string, schema: string, table: string, columns: EditableColumn[], foreignKeys: ForeignKeyInfo[] = []): string[] {
   const create = buildCreateTable(dialect, db, schema, table, columns, foreignKeys);
-  if (dialect !== "postgres") return [create];
+  if (!commentsAreStatements(dialect)) return [create];
   const ref = tableRef(dialect, db, schema, table);
   return [create, ...columns.filter((column) => column.comment?.trim()).map((column) => `COMMENT ON COLUMN ${ref}.${quoteIdent(dialect, column.name)} IS ${quoteLiteral(column.comment!.trim())}`)];
 }
@@ -209,6 +226,9 @@ export function buildColumnMigration({
   if (dialect === "postgres" && survivingOriginalOrder.join("\0") !== desiredOriginalOrder.join("\0")) {
     throw new Error("PostgreSQL does not support safely reordering physical columns. Create a replacement table if physical order is required.");
   }
+  if (dialect === "oracle" && survivingOriginalOrder.join("\0") !== desiredOriginalOrder.join("\0")) {
+    throw new Error("Oracle cannot reorder physical columns. Create a replacement table if physical order is required.");
+  }
   for (const old of original) {
     if (!currentNames.has(old.name)) statements.push(`ALTER TABLE ${ref} DROP COLUMN ${quoteIdent(dialect, old.name)}`);
   }
@@ -216,13 +236,17 @@ export function buildColumnMigration({
     const column = columns[columnIndex];
     const mysqlPosition = columnIndex === 0 ? " FIRST" : ` AFTER ${quoteIdent("mysql", columns[columnIndex - 1].name)}`;
     if (!column.originalName) {
-      statements.push(`ALTER TABLE ${ref} ADD COLUMN ${columnDefinition(dialect, column)}${dialect === "mysql" ? mysqlPosition : ""}`);
-      if (dialect === "postgres" && column.comment?.trim()) statements.push(`COMMENT ON COLUMN ${ref}.${quoteIdent(dialect, column.name)} IS ${quoteLiteral(column.comment.trim())}`);
+      statements.push(dialect === "oracle"
+        ? `ALTER TABLE ${ref} ADD (${columnDefinition(dialect, column)})`
+        : `ALTER TABLE ${ref} ADD COLUMN ${columnDefinition(dialect, column)}${dialect === "mysql" ? mysqlPosition : ""}`);
+      if (commentsAreStatements(dialect) && column.comment?.trim()) statements.push(`COMMENT ON COLUMN ${ref}.${quoteIdent(dialect, column.name)} IS ${quoteLiteral(column.comment.trim())}`);
       continue;
     }
     const old = original.find((item) => item.name === column.originalName);
     if (!old) continue;
-    if (dialect === "mysql") {
+    if (dialect === "oracle") {
+      statements.push(...oracleColumnChanges(ref, old, column));
+    } else if (dialect === "mysql") {
       if (JSON.stringify(stripId(old)) !== JSON.stringify(stripId(column))) {
         statements.push(`ALTER TABLE ${ref} CHANGE COLUMN ${quoteIdent(dialect, old.name)} ${columnDefinition(dialect, column)}${orderChanged ? mysqlPosition : ""}`);
       } else if (orderChanged) {
@@ -258,12 +282,35 @@ export function buildColumnMigration({
   const oldPk = original.filter((column) => column.isPk).map((column) => column.name).join("\0");
   const nextPk = columns.filter((column) => column.isPk).map((column) => column.name).join("\0");
   if (oldPk !== nextPk) {
-    if (oldPk) statements.push(dialect === "mysql"
+    if (oldPk) statements.push(dialect === "mysql" || dialect === "oracle"
       ? `ALTER TABLE ${ref} DROP PRIMARY KEY`
       : `DO $$ DECLARE pk_name text; BEGIN SELECT con.conname INTO pk_name FROM pg_constraint con JOIN pg_class rel ON rel.oid = con.conrelid JOIN pg_namespace ns ON ns.oid = rel.relnamespace WHERE con.contype = 'p' AND ns.nspname = ${quoteLiteral(schema || "public")} AND rel.relname = ${quoteLiteral(table)}; IF pk_name IS NOT NULL THEN EXECUTE format('ALTER TABLE %I.%I DROP CONSTRAINT %I', ${quoteLiteral(schema || "public")}, ${quoteLiteral(table)}, pk_name); END IF; END $$`);
     const pkColumns = columns.filter((column) => column.isPk);
     if (pkColumns.length) statements.push(`ALTER TABLE ${ref} ADD PRIMARY KEY (${pkColumns.map((column) => quoteIdent(dialect, column.name)).join(", ")})`);
   }
+  return statements;
+}
+
+/** ALTER statements for one existing Oracle column (MODIFY takes a column list). */
+function oracleColumnChanges(ref: string, old: EditableColumn, column: EditableColumn): string[] {
+  const statements: string[] = [];
+  if (old.name !== column.name) statements.push(`ALTER TABLE ${ref} RENAME COLUMN ${quoteIdent("oracle", old.name)} TO ${quoteIdent("oracle", column.name)}`);
+  const name = quoteIdent("oracle", column.name);
+  const modify = (clause: string) => statements.push(`ALTER TABLE ${ref} MODIFY (${name} ${clause})`);
+  if (old.type !== column.type) modify(column.type.trim());
+  if (old.defaultValue !== column.defaultValue) modify(`DEFAULT ${column.defaultValue.trim() || "NULL"}`);
+  if (old.nullable !== column.nullable) modify(column.nullable ? "NULL" : "NOT NULL");
+  if ((old.unique ?? false) !== (column.unique ?? false)) {
+    statements.push(column.unique ? `ALTER TABLE ${ref} ADD UNIQUE (${name})` : `ALTER TABLE ${ref} DROP UNIQUE (${name})`);
+  }
+  const oldExtra = (old.extra ?? "").trim();
+  const nextExtra = (column.extra ?? "").trim();
+  if (oldExtra !== nextExtra) {
+    if (/\bAS IDENTITY\b/i.test(oldExtra) && !nextExtra) modify("DROP IDENTITY");
+    else if (/\bAS IDENTITY\b/i.test(oldExtra) && /^GENERATED\s+(?:ALWAYS|BY DEFAULT(?:\s+ON NULL)?)\s+AS IDENTITY$/i.test(nextExtra)) modify(nextExtra);
+    else throw new Error(`Oracle cannot change the identity or virtual-column clause of ${column.name} in place; use reviewed manual DDL.`);
+  }
+  if ((old.comment ?? "") !== (column.comment ?? "")) statements.push(`COMMENT ON COLUMN ${ref}.${name} IS ${quoteLiteral(column.comment?.trim() ?? "")}`);
   return statements;
 }
 
@@ -277,6 +324,15 @@ export function buildCreateIndex(dialect: SqlDialect, db: string, schema: string
   if (dialect === "mysql" && (options.predicate?.trim() || options.includeColumns?.length)) throw new Error("MySQL does not support partial indexes or INCLUDE columns.");
   if (dialect === "sqlite" && options.includeColumns?.length) throw new Error("SQLite does not support INCLUDE columns.");
   if (dialect === "sqlite" && options.method?.trim()) throw new Error("SQLite does not support selectable index methods.");
+  if (dialect === "oracle") {
+    if (options.predicate?.trim() || options.includeColumns?.length) throw new Error("Oracle does not support partial indexes or INCLUDE columns.");
+    const method = options.method?.trim().toUpperCase() ?? "";
+    if (method && method !== "BITMAP" && method !== "NORMAL") throw new Error("Oracle index type must be NORMAL or BITMAP.");
+    if (method === "BITMAP" && unique) throw new Error("Oracle bitmap indexes cannot be unique.");
+    const keys = [...columns.map((column) => quoteIdent(dialect, column)), ...(options.expressionSql?.trim() ? [options.expressionSql.trim()] : [])].join(", ");
+    // The index lives in the table's schema, not the session's.
+    return `CREATE ${unique ? "UNIQUE " : method === "BITMAP" ? "BITMAP " : ""}INDEX ${schemaQualified(dialect, schema, name)} ON ${tableRef(dialect, db, schema, table)} (${keys})`;
+  }
   const method = options.method?.trim() ? ` USING ${options.method.trim()}` : "";
   const include = options.includeColumns?.length ? ` INCLUDE (${options.includeColumns.map((column) => quoteIdent(dialect, column)).join(", ")})` : "";
   const predicate = options.predicate?.trim() ? ` WHERE ${options.predicate.trim()}` : "";
@@ -289,6 +345,7 @@ export function buildCreateIndex(dialect: SqlDialect, db: string, schema: string
 export function buildDropIndex(dialect: SqlDialect, db: string, schema: string, table: string, name: string): string {
   if (dialect === "mysql") return `DROP INDEX ${quoteIdent(dialect, name)} ON ${tableRef(dialect, db, schema, table)}`;
   if (dialect === "postgres") return `DROP INDEX ${quoteIdent(dialect, schema || "public")}.${quoteIdent(dialect, name)}`;
+  if (dialect === "oracle") return `DROP INDEX ${schemaQualified(dialect, schema, name)}`;
   return `DROP INDEX ${quoteIdent(dialect, name)}`;
 }
 
@@ -307,9 +364,12 @@ export function buildAddForeignKey(dialect: SqlDialect, db: string, schema: stri
   const remoteColumns = fk.foreignColumns?.filter(Boolean).length ? fk.foreignColumns.filter(Boolean) : [fk.foreignColumn].filter(Boolean);
   if (!fk.name.trim() || localColumns.length === 0 || !fk.foreignTable.trim() || remoteColumns.length === 0) throw new Error("Constraint name, local column, referenced table, and referenced column are required.");
   if (localColumns.length !== remoteColumns.length) throw new Error("Foreign keys require the same number of local and referenced columns.");
+  if (dialect === "oracle" && fk.onUpdate && fk.onUpdate !== "NO ACTION") throw new Error("Oracle foreign keys do not support ON UPDATE actions.");
   const foreignRef = dialect === "mysql"
     ? `${quoteIdent(dialect, fk.foreignSchema || db)}.${quoteIdent(dialect, fk.foreignTable)}`
-    : `${quoteIdent(dialect, fk.foreignSchema || schema)}.${quoteIdent(dialect, fk.foreignTable)}`;
+    : dialect === "oracle"
+      ? schemaQualified(dialect, fk.foreignSchema || schema, fk.foreignTable)
+      : `${quoteIdent(dialect, fk.foreignSchema || schema)}.${quoteIdent(dialect, fk.foreignTable)}`;
   return `ALTER TABLE ${tableRef(dialect, db, schema, table)} ADD CONSTRAINT ${quoteIdent(dialect, fk.name)} FOREIGN KEY (${localColumns.map((name) => quoteIdent(dialect, name)).join(", ")}) REFERENCES ${foreignRef} (${remoteColumns.map((name) => quoteIdent(dialect, name)).join(", ")})${fk.onUpdate && fk.onUpdate !== "NO ACTION" ? ` ON UPDATE ${fk.onUpdate}` : ""}${fk.onDelete && fk.onDelete !== "NO ACTION" ? ` ON DELETE ${fk.onDelete}` : ""}`;
 }
 

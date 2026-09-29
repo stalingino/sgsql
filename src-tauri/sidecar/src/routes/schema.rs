@@ -9,6 +9,8 @@ use crate::error::SidecarError;
 use crate::pool;
 use crate::trace;
 
+use super::oracle_schema as oracle;
+
 pub(crate) fn s_of(v: &Value, key: &str) -> String {
     let value = v.get(key).or_else(|| {
         v.as_object()?
@@ -37,10 +39,10 @@ fn text_of(v: &Value) -> String {
 
 /// Quote an identifier per dialect.
 pub fn quote_ident(db_type: &str, name: &str) -> String {
-    if db_type == "mysql" {
-        format!("`{name}`")
-    } else {
-        format!("\"{name}\"")
+    match db_type {
+        "mysql" => format!("`{name}`"),
+        "oracle" => oracle::qident(name),
+        _ => format!("\"{name}\""),
     }
 }
 
@@ -216,6 +218,7 @@ pub(crate) async fn database_names(client: &DbClient, conn_id: &str, trace_db: &
         }
         // SQLite has no concept of multiple databases.
         DbClient::Sqlite { .. } => Ok(vec!["main".to_string()]),
+        DbClient::Oracle(_) => oracle::database_names(client, conn_id, trace_db).await,
     }
 }
 
@@ -305,6 +308,7 @@ pub(crate) async fn get_catalog(
                 })
                 .collect()
         }
+        DbClient::Oracle(_) => oracle::catalog(client, conn_id, trace_db, &databases, current_db).await?,
     };
     Ok(json!({ "databases": databases, "tables": tables }))
 }
@@ -333,6 +337,7 @@ async fn get_schemas(client: &DbClient, conn_id: &str, trace_db: &str) -> Result
         DbClient::MySql { .. } => Ok(json!({ "schemas": [] })),
         // SQLite doesn't have schemas.
         DbClient::Sqlite { .. } => Ok(json!({ "schemas": ["main"] })),
+        DbClient::Oracle(_) => oracle::schemas(client, conn_id, trace_db).await,
     }
 }
 
@@ -400,6 +405,7 @@ pub(crate) async fn get_tables(
                 .collect();
             Ok(json!({ "tables": tables }))
         }
+        DbClient::Oracle(_) => oracle::tables(client, conn_id, trace_db, schema).await,
     }
 }
 
@@ -500,6 +506,7 @@ async fn get_schema_objects(
                 }))
                 .collect()
         }
+        DbClient::Oracle(_) => oracle::objects(client, conn_id, trace_db, schema).await?,
     };
     Ok(json!({ "objects": objects }))
 }
@@ -620,6 +627,7 @@ pub(crate) async fn get_columns(
                 .collect();
             Ok(json!({ "columns": columns }))
         }
+        DbClient::Oracle(_) => oracle::columns(client, conn_id, trace_db, schema, table).await,
     }
 }
 
@@ -692,6 +700,7 @@ pub(crate) async fn get_indexes(
             }
             Ok(json!({ "indexes": indexes }))
         }
+        DbClient::Oracle(_) => oracle::indexes(client, conn_id, trace_db, schema, table).await,
     }
 }
 
@@ -780,6 +789,7 @@ pub(crate) async fn get_foreign_keys(
                 .collect();
             Ok(json!({ "foreignKeys": fks }))
         }
+        DbClient::Oracle(_) => oracle::foreign_keys(client, conn_id, trace_db, schema, table).await,
     }
 }
 
@@ -846,6 +856,7 @@ pub(crate) async fn get_table_ddl(
                 .unwrap_or_default();
             Ok(json!({ "ddl": ddl }))
         }
+        DbClient::Oracle(_) => oracle::table_ddl(client, conn_id, trace_db, schema, table).await,
     }
 }
 
@@ -899,6 +910,7 @@ async fn get_schema_object_ddl(
             Ok(json!({ "ddl": format!("{ddl};") }))
         }
         DbClient::Sqlite { .. } => Err(SidecarError::msg("SQLite does not store user-defined functions")),
+        DbClient::Oracle(_) => oracle::object_ddl(client, conn_id, trace_db, schema, name, identity).await,
     }
 }
 
@@ -1271,6 +1283,9 @@ async fn get_rows(
                 "totalEstimate": count,
                 "query": query,
             }))
+        }
+        DbClient::Oracle(_) => {
+            oracle::rows(client, conn_id, trace_db, schema, table, safe_limit, offset, order_by, &where_sql).await
         }
     }
 }

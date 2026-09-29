@@ -1,7 +1,8 @@
 # SGSql
 
-**Stupidly Good SQL** — a fast desktop SQL client for MySQL, PostgreSQL and
-SQLite, with a built-in way to share a connection with AI agents over MCP.
+**Stupidly Good SQL** — a fast desktop SQL client for MySQL, PostgreSQL,
+SQLite and Oracle, with a built-in way to share a connection with AI agents
+over MCP.
 
 ![SGSql welcome screen](docs/screenshots/welcome.png)
 
@@ -10,7 +11,8 @@ need. SGSql opens fast, runs your query and gets out of the way.
 
 ## Features
 
-- **MySQL, PostgreSQL and SQLite**, including connections over SSH tunnels
+- **MySQL, PostgreSQL, SQLite and Oracle**, including connections over SSH
+  tunnels. Oracle needs no client libraries (see [Oracle notes](#oracle-notes))
 - **Monaco editor** (the editor behind VS Code) with schema-aware autocomplete
 - **Fast data grid** with inline row editing, filters, sorting and a
   pending-changes panel to review, save or revert edits
@@ -284,7 +286,35 @@ In the app, users can check for updates manually from Settings → Updates, or
 you can wire `checkForUpdate()` from `src/lib/updater.ts` into a startup
 check.
 
+## Oracle notes
+
+Oracle connections use the pure-Rust [`oracledb`](https://github.com/oracle/rust-oracledb)
+driver, so no Oracle Client or Instant Client install is needed.
+
+- **Versions**: Oracle 12c or later (table paging uses `OFFSET … FETCH`).
+- **Connecting**: enter the service name (e.g. `ORCLPDB1`), or a full
+  `(DESCRIPTION=…)` connect descriptor for SIDs and failover lists. "Use SSL"
+  connects over TCPS.
+- **Session formats**: each session sets `NLS_DATE_FORMAT` and
+  `NLS_TIMESTAMP_FORMAT` to ISO (`YYYY-MM-DD HH24:MI:SS`) so edited dates
+  convert back. Queries that rely on the database's default date format for
+  implicit conversions should use `DATE '…'` or `TO_DATE` instead.
+- **Scripts**: end PL/SQL blocks, procedures, packages and triggers with a
+  `/` line, as in SQL*Plus. SQL Developer exports import as-is.
+- **Transactions**: every statement commits on its own unless you run a
+  batch with Atomic on. DDL commits implicitly, as it always does in Oracle.
+- **Privileges**: cancelling a running query and the process list need the
+  `ALTER SYSTEM` privilege and `SELECT_CATALOG_ROLE`; user management needs
+  `SELECT_CATALOG_ROLE` (or DBA). Cancelling ends the session and SGSql
+  reconnects automatically.
+- **Foreign-key checks** can't be switched off per session in Oracle, so the
+  toggle is hidden for Oracle connections.
+
 ## License
 
 Free for personal and other non-commercial use under the
 [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+Oracle support includes the [`oracledb`](https://github.com/oracle/rust-oracledb)
+crate, Copyright (c) 2026, Oracle and/or its affiliates, used under the
+[Universal Permissive License (UPL) 1.0](https://oss.oracle.com/licenses/upl).

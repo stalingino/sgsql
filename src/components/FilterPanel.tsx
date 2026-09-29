@@ -30,7 +30,7 @@ const NO_VALUE_OPS = new Set(["IS NULL", "IS NOT NULL"]);
 
 interface FilterPanelProps {
   columns: string[];
-  connectionType: "postgres" | "mysql" | "sqlite";
+  connectionType: "postgres" | "mysql" | "sqlite" | "oracle";
   filters: FilterRow[];
   onFiltersChange: (filters: FilterRow[]) => void;
   onApply: () => void;
@@ -55,7 +55,7 @@ export function createFilter(): FilterRow {
   };
 }
 
-function quoteIdent(type: "postgres" | "mysql" | "sqlite", name: string): string {
+function quoteIdent(type: "postgres" | "mysql" | "sqlite" | "oracle", name: string): string {
   if (type === "mysql") return `\`${name}\``;
   return `"${name}"`;
 }
@@ -66,7 +66,7 @@ function quoteValue(val: string): string {
 
 export function buildWhereClause(
   filters: FilterRow[],
-  connectionType: "postgres" | "mysql" | "sqlite",
+  connectionType: "postgres" | "mysql" | "sqlite" | "oracle",
   enabledOnly: boolean,
 ): string {
   const parts: string[] = [];
@@ -214,7 +214,7 @@ function FilterRowItem({
 }: {
   filter: FilterRow;
   columns: string[];
-  connectionType: "postgres" | "mysql" | "sqlite";
+  connectionType: "postgres" | "mysql" | "sqlite" | "oracle";
   onChange: (patch: Partial<FilterRow>) => void;
   onRemove: () => void;
   onApply: () => void;
@@ -353,7 +353,7 @@ function RawSqlInput({
 }: {
   value: string;
   columns: string[];
-  connectionType: "postgres" | "mysql" | "sqlite";
+  connectionType: "postgres" | "mysql" | "sqlite" | "oracle";
   onChange: (sql: string) => void;
   onApply: () => void;
   inputRef?: React.Ref<HTMLInputElement>;
