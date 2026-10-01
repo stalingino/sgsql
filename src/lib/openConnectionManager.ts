@@ -1,5 +1,5 @@
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { getSavedWindowState } from "./useWindowPersist";
+import { getUsableWindowState } from "./useWindowPersist";
 
 export async function openConnectionManager(): Promise<void> {
   const existing = await WebviewWindow.getByLabel("connection-manager");
@@ -8,7 +8,7 @@ export async function openConnectionManager(): Promise<void> {
     return;
   }
 
-  const saved = getSavedWindowState("connection-manager");
+  const saved = await getUsableWindowState("connection-manager");
 
   new WebviewWindow("connection-manager", {
     url: "/connection-manager.html",

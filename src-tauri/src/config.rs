@@ -27,6 +27,9 @@ pub async fn config_save(
         .map_err(|e| e.to_string())?
         .join("sgsql-config.json");
 
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
     let content = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
     std::fs::write(&path, content).map_err(|e| e.to_string())
 }
